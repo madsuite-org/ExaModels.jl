@@ -5,6 +5,7 @@ import MathOptInterface as MOI
 
 function __init__()
     setglobal!(ExaModels, :Optimizer, Optimizer)
+    setglobal!(ExaModels, :SIMDMode, SIMDMode)
     return
 end
 
@@ -948,6 +949,285 @@ function MOI.set(::Optimizer, ::MOI.NLPBlock, ::MOI.NLPBlockData)
         Please use the new MOI-based interface.
         """,
     )
+end
+
+###
+### ExaModels as an MOI.Nonlinear automatic-differentiation backend
+###
+### This is the reverse role of `ExaModels.Optimizer` above: instead of
+### ExaModels pretending to be a solver, any MOI solver that supports
+### `MOI.AutomaticDifferentiationBackend` can evaluate its nonlinear model
+### through ExaModels by setting the backend to `ExaModels.SIMDMode()`.
+
+"""
+    SIMDMode(; device = nothing)
+
+An automatic-differentiation backend for `MOI.Nonlinear` that evaluates the
+model with ExaModels' SIMD abstraction instead of
+`MOI.Nonlinear.SparseReverseMode`.
+
+`device` is the `KernelAbstractions` device to evaluate on (`nothing` means
+the CPU).
+
+Pass it to solvers via `MOI.AutomaticDifferentiationBackend()`.
+
+The variables of the model must be `MOI.VariableIndex.(1:n)`: the constraints
+are translated to SIMD-grouped bins as they are added, referencing the
+variables by their raw index, so `MOI.initialize` errors if the
+`ordered_variables` of the evaluator are not the identity.
+"""
+struct SIMDMode{B} <: MOI.Nonlinear.AbstractAutomaticDifferentiation
+    device::B
+end
+
+SIMDMode(; device = nothing) = SIMDMode(device)
+
+"""
+    SIMDNonlinearModel
+
+The nonlinear model built by `MOI.Nonlinear.model(::ExaModels.SIMDMode)`.
+
+The objective and the constraints are translated to SIMD-grouped bins as they
+are added, with the same machinery as `ExaModels.Optimizer`; the `ExaCore` is
+assembled during `MOI.initialize` of the evaluator, once the number of
+variables is known.
+
+Unlike `MOI.Nonlinear.Model`, this model consumes `MOI.ScalarAffineFunction`
+and `MOI.ScalarQuadraticFunction` objectives and constraints natively (their
+terms are grouped into SIMD kernels), so it must not be wrapped in
+`MOI.Nonlinear.ModelWithQuad`.
+"""
+mutable struct SIMDNonlinearModel
+    objs::Vector{Bin}
+    cons::Vector{Bin}
+    lcon::Vector{Float64}
+    ucon::Vector{Float64}
+    linearity::Vector{MOI.Nonlinear.Linearity}
+    objective_linearity::MOI.Nonlinear.Linearity
+
+    function SIMDNonlinearModel()
+        return new(
+            Bin[],
+            Bin[],
+            Float64[],
+            Float64[],
+            MOI.Nonlinear.Linearity[],
+            MOI.Nonlinear.CONSTANT,
+        )
+    end
+end
+
+# ExaModels handles affine and quadratic functions natively, so only the
+# oracle layer is stacked on top.
+function MOI.Nonlinear.model(::SIMDMode)
+    return MOI.Nonlinear.ModelWithOracles(SIMDNonlinearModel())
+end
+
+MOI.Nonlinear.exploits_structure(::SIMDMode) = true
+
+_linearity(::MOI.VariableIndex) = MOI.Nonlinear.LINEAR
+_linearity(::MOI.ScalarAffineFunction) = MOI.Nonlinear.LINEAR
+_linearity(::MOI.ScalarQuadraticFunction) = MOI.Nonlinear.QUADRATIC
+_linearity(::Any) = MOI.Nonlinear.NONLINEAR
+
+function MOI.Nonlinear.set_objective(model::SIMDNonlinearModel, obj)
+    empty!(model.objs)
+    model.objective_linearity = MOI.Nonlinear.CONSTANT
+    if obj !== nothing
+        update_bin!(model.objs, ObjectiveBin(), obj)
+        model.objective_linearity = _linearity(obj)
+    end
+    return
+end
+
+function MOI.Nonlinear.add_constraint(
+    model::SIMDNonlinearModel,
+    f::Union{
+        MOI.ScalarAffineFunction{Float64},
+        MOI.ScalarQuadraticFunction{Float64},
+        MOI.ScalarNonlinearFunction,
+    },
+    s::Union{
+        MOI.GreaterThan{Float64},
+        MOI.LessThan{Float64},
+        MOI.EqualTo{Float64},
+        MOI.Interval{Float64},
+    },
+)
+    row = length(model.lcon) + 1
+    update_bin!(model.cons, ConstraintBin(row), f)
+    l, u = _bounds(s)
+    push!(model.lcon, l)
+    push!(model.ucon, u)
+    push!(model.linearity, _linearity(f))
+    return MOI.Nonlinear.ConstraintIndex(row)
+end
+
+function MOI.Nonlinear.register_operator(
+    ::SIMDNonlinearModel,
+    op::Symbol,
+    ::Int,
+    ::Function...,
+)
+    return error(
+        "The operator `$op` cannot be registered: ExaModels does not " *
+        "support user-defined operators through `ExaModels.SIMDMode`.",
+    )
+end
+
+function MOI.Nonlinear.add_parameter(::SIMDNonlinearModel, ::Real)
+    return error(
+        "`MOI.Nonlinear` parameters are not supported by " *
+        "`ExaModels.SIMDMode`.",
+    )
+end
+
+function MOI.Nonlinear.add_expression(::SIMDNonlinearModel, expr)
+    return error(
+        "`MOI.Nonlinear` expressions are not supported by " *
+        "`ExaModels.SIMDMode`.",
+    )
+end
+
+mutable struct SIMDEvaluator{B} <: MOI.AbstractNLPEvaluator
+    model::SIMDNonlinearModel
+    mode::SIMDMode{B}
+    ordered_variables::Vector{MOI.VariableIndex}
+    # The `ExaModels.ExaModel`, built during `MOI.initialize`.
+    exa::Any
+end
+
+function MOI.Nonlinear.Evaluator(
+    model::SIMDNonlinearModel,
+    mode::SIMDMode,
+    ordered_variables::Vector{MOI.VariableIndex},
+)
+    return SIMDEvaluator(model, mode, ordered_variables, nothing)
+end
+
+function MOI.features_available(::SIMDEvaluator)
+    return [:Grad, :Jac, :JacVec, :Hess, :HessVec]
+end
+
+function MOI.Nonlinear.num_constraints(d::SIMDEvaluator)
+    return length(d.model.lcon)
+end
+
+function MOI.Nonlinear.constraint_bounds(d::SIMDEvaluator)
+    return MOI.NLPBoundsPair[
+        MOI.NLPBoundsPair(l, u) for (l, u) in zip(d.model.lcon, d.model.ucon)
+    ]
+end
+
+MOI.Nonlinear.constraint_linearity(d::SIMDEvaluator) = copy(d.model.linearity)
+
+MOI.Nonlinear.objective_linearity(d::SIMDEvaluator) = d.model.objective_linearity
+
+MOI.Nonlinear._has_objective(d::SIMDEvaluator) = !isempty(d.model.objs)
+
+function MOI.initialize(d::SIMDEvaluator, features::Vector{Symbol})
+    T = Float64
+    n = length(d.ordered_variables)
+    # The bins reference the variables by their raw index, so the columns of
+    # the evaluator must coincide with the variable indices.
+    if d.ordered_variables != MOI.VariableIndex.(1:n)
+        error(
+            "`ExaModels.SIMDMode` requires the variables of the model " *
+            "to be `MOI.VariableIndex.(1:n)`, in order.",
+        )
+    end
+    c = ExaModels.ExaCore(
+        T;
+        backend = d.mode.device,
+        minimize = true,
+        concrete = Val(true),
+    )
+    c, _ = ExaModels.add_var(
+        c,
+        n;
+        start = zeros(T, n),
+        lvar = fill(typemin(T), n),
+        uvar = fill(typemax(T), n),
+    )
+    m = d.model
+    if !isempty(m.cons)
+        c, cons =
+            ExaModels.add_con(c, length(m.lcon); lcon = m.lcon, ucon = m.ucon)
+        for bin in m.cons
+            c, _ = ExaModels.add_con!(c, cons, (bin.head for _ in bin.data))
+        end
+    end
+    for bin in m.objs
+        c, _ = ExaModels.add_obj(c, bin.head, bin.data)
+    end
+    prod = :JacVec in features || :HessVec in features
+    d.exa = ExaModels.ExaModel(c; prod = prod)
+    return
+end
+
+function _exa(d::SIMDEvaluator)
+    if d.exa === nothing
+        error("You must call `MOI.initialize` before evaluating.")
+    end
+    return d.exa
+end
+
+MOI.eval_objective(d::SIMDEvaluator, x) = ExaModels.NLPModels.obj(_exa(d), x)
+
+function MOI.eval_objective_gradient(d::SIMDEvaluator, grad, x)
+    ExaModels.NLPModels.grad!(_exa(d), x, grad)
+    return
+end
+
+function MOI.eval_constraint(d::SIMDEvaluator, g, x)
+    ExaModels.NLPModels.cons!(_exa(d), x, g)
+    return
+end
+
+function MOI.jacobian_structure(d::SIMDEvaluator)
+    exa = _exa(d)
+    nnzj = exa.meta.nnzj
+    rows, cols = Vector{Int}(undef, nnzj), Vector{Int}(undef, nnzj)
+    ExaModels.NLPModels.jac_structure!(exa, rows, cols)
+    return collect(zip(rows, cols))
+end
+
+function MOI.eval_constraint_jacobian(d::SIMDEvaluator, J, x)
+    ExaModels.NLPModels.jac_coord!(_exa(d), x, J)
+    return
+end
+
+function MOI.hessian_lagrangian_structure(d::SIMDEvaluator)
+    exa = _exa(d)
+    nnzh = exa.meta.nnzh
+    rows, cols = Vector{Int}(undef, nnzh), Vector{Int}(undef, nnzh)
+    ExaModels.NLPModels.hess_structure!(exa, rows, cols)
+    return collect(zip(rows, cols))
+end
+
+function MOI.eval_hessian_lagrangian(d::SIMDEvaluator, H, x, σ, μ)
+    ExaModels.NLPModels.hess_coord!(_exa(d), x, μ, H; obj_weight = σ)
+    return
+end
+
+function MOI.eval_constraint_jacobian_product(d::SIMDEvaluator, y, x, w)
+    ExaModels.NLPModels.jprod!(_exa(d), x, w, y)
+    return
+end
+
+function MOI.eval_constraint_jacobian_transpose_product(
+    d::SIMDEvaluator,
+    y,
+    x,
+    w,
+)
+    ExaModels.NLPModels.jtprod!(_exa(d), x, w, y)
+    return
+end
+
+function MOI.eval_hessian_lagrangian_product(d::SIMDEvaluator, h, x, v, σ, μ)
+    ExaModels.NLPModels.hprod!(_exa(d), x, μ, v, h; obj_weight = σ)
+    return
 end
 
 end # module

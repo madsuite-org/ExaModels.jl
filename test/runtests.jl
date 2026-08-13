@@ -37,8 +37,12 @@ include("OracleTest/OracleTest.jl")
 include("SubexprTest/SubexprTest.jl")
 include("PrecompileTest/PrecompileTest.jl")
 include("ReductionTest/ReductionTest.jl")
+include("SIMDModeTest/SIMDModeTest.jl")
 
 @testset verbose = true "ExaModels test" begin
+    @info "Running SIMDMode Test"
+    SIMDModeTest.runtests()
+
     @info "Running Argument Test"
     ArgumentTest.runtests()
 
