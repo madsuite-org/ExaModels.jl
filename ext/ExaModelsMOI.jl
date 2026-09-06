@@ -997,31 +997,36 @@ and `MOI.ScalarQuadraticFunction` objectives and constraints natively (their
 terms are grouped into SIMD kernels), so it must not be wrapped in
 `MOI.Nonlinear.ModelWithQuad`.
 """
-mutable struct SIMDNonlinearModel
+mutable struct SIMDNonlinearModel <: MOI.ModelLike
+    variables::MOI.Utilities.VariablesContainer{Float64}
     objs::Vector{Bin}
     cons::Vector{Bin}
+    dual_start::Vector{Union{Nothing,Float64}}
     lcon::Vector{Float64}
     ucon::Vector{Float64}
     linearity::Vector{MOI.Nonlinear.Linearity}
     objective_linearity::MOI.Nonlinear.Linearity
+    sense::MOI.OptimizationSense
 
     function SIMDNonlinearModel()
         return new(
+            MOI.Utilities.VariablesContainer{Float64}(),
             Bin[],
             Bin[],
+            Union{Nothing,Float64}[],
             Float64[],
             Float64[],
             MOI.Nonlinear.Linearity[],
             MOI.Nonlinear.CONSTANT,
+            MOI.FEASIBILITY_SENSE,
         )
     end
 end
 
-# ExaModels handles affine and quadratic functions natively, so only the
-# oracle layer is stacked on top.
-function MOI.Nonlinear.model(::SIMDMode)
-    return MOI.Nonlinear.ModelWithOracles(SIMDNonlinearModel())
-end
+# ExaModels handles affine, quadratic, and scalar nonlinear functions in one
+# representation. In particular, do not stack ModelWithQuad or
+# ModelWithOracles around it: that would change the evaluator row ordering.
+MOI.Nonlinear.model(::SIMDMode) = SIMDNonlinearModel()
 
 MOI.Nonlinear.exploits_structure(::SIMDMode) = true
 
@@ -1037,6 +1042,141 @@ function MOI.Nonlinear.set_objective(model::SIMDNonlinearModel, obj)
         update_bin!(model.objs, ObjectiveBin(), obj)
         model.objective_linearity = _linearity(obj)
     end
+    return
+end
+
+const _SIMDFunction = Union{
+    MOI.ScalarAffineFunction{Float64},
+    MOI.ScalarQuadraticFunction{Float64},
+    MOI.ScalarNonlinearFunction,
+}
+const _SIMDObjectiveFunction = Union{MOI.VariableIndex,_SIMDFunction}
+const _SIMDSet = Union{
+    MOI.GreaterThan{Float64},
+    MOI.LessThan{Float64},
+    MOI.EqualTo{Float64},
+    MOI.Interval{Float64},
+}
+
+MOI.supports_incremental_interface(::SIMDNonlinearModel) = true
+MOI.add_variable(model::SIMDNonlinearModel) = MOI.add_variable(model.variables)
+MOI.is_valid(model::SIMDNonlinearModel, x::MOI.VariableIndex) =
+    MOI.is_valid(model.variables, x)
+MOI.get(model::SIMDNonlinearModel, attr::MOI.NumberOfVariables) =
+    MOI.get(model.variables, attr)
+MOI.get(model::SIMDNonlinearModel, attr::MOI.ListOfVariableIndices) =
+    MOI.get(model.variables, attr)
+
+function MOI.empty!(model::SIMDNonlinearModel)
+    MOI.empty!(model.variables)
+    empty!(model.objs)
+    empty!(model.cons)
+    empty!(model.dual_start)
+    empty!(model.lcon)
+    empty!(model.ucon)
+    empty!(model.linearity)
+    model.objective_linearity = MOI.Nonlinear.CONSTANT
+    model.sense = MOI.FEASIBILITY_SENSE
+    return
+end
+MOI.is_empty(model::SIMDNonlinearModel) =
+    MOI.is_empty(model.variables) && isempty(model.cons) &&
+    isempty(model.objs) && model.sense == MOI.FEASIBILITY_SENSE
+
+MOI.supports_constraint(
+    ::SIMDNonlinearModel,
+    ::Type{MOI.VariableIndex},
+    ::Type{<:_SIMDSet},
+) = true
+MOI.supports_constraint(
+    ::SIMDNonlinearModel,
+    ::Type{<:_SIMDFunction},
+    ::Type{<:_SIMDSet},
+) = true
+MOI.supports_constraint(
+    ::SIMDNonlinearModel,
+    ::Type{MOI.VectorOfVariables},
+    ::Type{<:MOI.VectorNonlinearOracle},
+) = false
+
+function MOI.add_constraint(
+    model::SIMDNonlinearModel,
+    x::MOI.VariableIndex,
+    set::_SIMDSet,
+)
+    return MOI.add_constraint(model.variables, x, set)
+end
+
+MOI.is_valid(
+    model::SIMDNonlinearModel,
+    ci::MOI.ConstraintIndex{MOI.VariableIndex,<:_SIMDSet},
+) = MOI.is_valid(model.variables, ci)
+function MOI.get(
+    model::SIMDNonlinearModel,
+    attr::Union{
+        MOI.NumberOfConstraints{MOI.VariableIndex,<:_SIMDSet},
+        MOI.ListOfConstraintIndices{MOI.VariableIndex,<:_SIMDSet},
+    },
+)
+    return MOI.get(model.variables, attr)
+end
+function MOI.get(
+    model::SIMDNonlinearModel,
+    attr::Union{MOI.ConstraintFunction,MOI.ConstraintSet},
+    ci::MOI.ConstraintIndex{MOI.VariableIndex,<:_SIMDSet},
+)
+    return MOI.get(model.variables, attr, ci)
+end
+function MOI.set(
+    model::SIMDNonlinearModel,
+    attr::MOI.ConstraintSet,
+    ci::MOI.ConstraintIndex{MOI.VariableIndex,S},
+    set::S,
+) where {S<:_SIMDSet}
+    return MOI.set(model.variables, attr, ci, set)
+end
+
+function MOI.is_valid(
+    model::SIMDNonlinearModel,
+    ci::MOI.ConstraintIndex{F,S},
+) where {F<:_SIMDFunction,S<:_SIMDSet}
+    return 1 <= ci.value <= length(model.lcon)
+end
+
+MOI.supports(::SIMDNonlinearModel, ::MOI.ObjectiveSense) = true
+MOI.get(model::SIMDNonlinearModel, ::MOI.ObjectiveSense) = model.sense
+function MOI.set(model::SIMDNonlinearModel, ::MOI.ObjectiveSense, sense)
+    model.sense = sense
+    return
+end
+MOI.supports(::SIMDNonlinearModel, ::MOI.ObjectiveFunction{<:_SIMDObjectiveFunction}) = true
+function MOI.set(
+    model::SIMDNonlinearModel,
+    ::MOI.ObjectiveFunction{F},
+    f::F,
+) where {F<:_SIMDObjectiveFunction}
+    return MOI.Nonlinear.set_objective(model, f)
+end
+
+MOI.Nonlinear._variable_bounds(model::SIMDNonlinearModel) =
+    (model.variables.lower, model.variables.upper)
+MOI.Nonlinear._has_nonlinear_data(model::SIMDNonlinearModel) =
+    !isempty(model.cons) || !isempty(model.objs)
+MOI.Nonlinear._is_nonlinear_input(::SIMDNonlinearModel, ::Any, ::Any) = true
+MOI.Nonlinear._is_nonlinear_objective(::SIMDNonlinearModel, ::Any) = true
+MOI.Nonlinear.constraint_rows(::SIMDNonlinearModel, ci::MOI.ConstraintIndex{<:_SIMDFunction,<:_SIMDSet}) = [ci.value]
+MOI.Nonlinear.constraint_dual_starts(model::SIMDNonlinearModel) = model.dual_start
+
+function MOI.supports(
+    ::SIMDNonlinearModel,
+    ::MOI.ConstraintDualStart,
+    ::Type{<:MOI.ConstraintIndex{<:_SIMDFunction,<:_SIMDSet}},
+)
+    return true
+end
+MOI.get(model::SIMDNonlinearModel, ::MOI.ConstraintDualStart, ci::MOI.ConstraintIndex{<:_SIMDFunction,<:_SIMDSet}) = model.dual_start[ci.value]
+function MOI.set(model::SIMDNonlinearModel, ::MOI.ConstraintDualStart, ci::MOI.ConstraintIndex{<:_SIMDFunction,<:_SIMDSet}, value)
+    model.dual_start[ci.value] = value
     return
 end
 
@@ -1060,7 +1200,13 @@ function MOI.Nonlinear.add_constraint(
     push!(model.lcon, l)
     push!(model.ucon, u)
     push!(model.linearity, _linearity(f))
+    push!(model.dual_start, nothing)
     return MOI.Nonlinear.ConstraintIndex(row)
+end
+
+function MOI.add_constraint(model::SIMDNonlinearModel, f::_SIMDFunction, s::_SIMDSet)
+    MOI.Nonlinear.add_constraint(model, f, s)
+    return MOI.ConstraintIndex{typeof(f),typeof(s)}(length(model.lcon))
 end
 
 function MOI.Nonlinear.register_operator(
@@ -1172,10 +1318,14 @@ function _exa(d::SIMDEvaluator)
     return d.exa
 end
 
-MOI.eval_objective(d::SIMDEvaluator, x) = ExaModels.NLPModels.obj(_exa(d), x)
+function MOI.eval_objective(d::SIMDEvaluator, x)
+    return MOI.Nonlinear._objective_sign(d.model.sense) *
+           ExaModels.NLPModels.obj(_exa(d), x)
+end
 
 function MOI.eval_objective_gradient(d::SIMDEvaluator, grad, x)
     ExaModels.NLPModels.grad!(_exa(d), x, grad)
+    grad .*= MOI.Nonlinear._objective_sign(d.model.sense)
     return
 end
 
@@ -1206,7 +1356,8 @@ function MOI.hessian_lagrangian_structure(d::SIMDEvaluator)
 end
 
 function MOI.eval_hessian_lagrangian(d::SIMDEvaluator, H, x, σ, μ)
-    ExaModels.NLPModels.hess_coord!(_exa(d), x, μ, H; obj_weight = σ)
+    sign = MOI.Nonlinear._objective_sign(d.model.sense)
+    ExaModels.NLPModels.hess_coord!(_exa(d), x, μ, H; obj_weight = sign * σ)
     return
 end
 
@@ -1226,7 +1377,15 @@ function MOI.eval_constraint_jacobian_transpose_product(
 end
 
 function MOI.eval_hessian_lagrangian_product(d::SIMDEvaluator, h, x, v, σ, μ)
-    ExaModels.NLPModels.hprod!(_exa(d), x, μ, v, h; obj_weight = σ)
+    sign = MOI.Nonlinear._objective_sign(d.model.sense)
+    ExaModels.NLPModels.hprod!(
+        _exa(d),
+        x,
+        μ,
+        v,
+        h;
+        obj_weight = sign * σ,
+    )
     return
 end
 
