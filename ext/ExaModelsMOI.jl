@@ -1004,8 +1004,6 @@ mutable struct SIMDNonlinearModel <: MOI.ModelLike
     dual_start::Vector{Union{Nothing,Float64}}
     lcon::Vector{Float64}
     ucon::Vector{Float64}
-    linearity::Vector{MOI.Nonlinear.Linearity}
-    objective_linearity::MOI.Nonlinear.Linearity
     sense::MOI.OptimizationSense
 
     function SIMDNonlinearModel()
@@ -1016,8 +1014,6 @@ mutable struct SIMDNonlinearModel <: MOI.ModelLike
             Union{Nothing,Float64}[],
             Float64[],
             Float64[],
-            MOI.Nonlinear.Linearity[],
-            MOI.Nonlinear.CONSTANT,
             MOI.FEASIBILITY_SENSE,
         )
     end
@@ -1028,19 +1024,13 @@ end
 # ModelWithOracles around it: that would change the evaluator row ordering.
 MOI.Nonlinear.model(::SIMDMode) = SIMDNonlinearModel()
 
-MOI.Nonlinear.exploits_structure(::SIMDMode) = true
-
-_linearity(::MOI.VariableIndex) = MOI.Nonlinear.LINEAR
-_linearity(::MOI.ScalarAffineFunction) = MOI.Nonlinear.LINEAR
-_linearity(::MOI.ScalarQuadraticFunction) = MOI.Nonlinear.QUADRATIC
-_linearity(::Any) = MOI.Nonlinear.NONLINEAR
-
 function MOI.Nonlinear.set_objective(model::SIMDNonlinearModel, obj)
     empty!(model.objs)
-    model.objective_linearity = MOI.Nonlinear.CONSTANT
     if obj !== nothing
         update_bin!(model.objs, ObjectiveBin(), obj)
-        model.objective_linearity = _linearity(obj)
+        if model.sense == MOI.FEASIBILITY_SENSE
+            model.sense = MOI.MIN_SENSE
+        end
     end
     return
 end
@@ -1074,8 +1064,6 @@ function MOI.empty!(model::SIMDNonlinearModel)
     empty!(model.dual_start)
     empty!(model.lcon)
     empty!(model.ucon)
-    empty!(model.linearity)
-    model.objective_linearity = MOI.Nonlinear.CONSTANT
     model.sense = MOI.FEASIBILITY_SENSE
     return
 end
@@ -1199,7 +1187,6 @@ function MOI.Nonlinear.add_constraint(
     l, u = _bounds(s)
     push!(model.lcon, l)
     push!(model.ucon, u)
-    push!(model.linearity, _linearity(f))
     push!(model.dual_start, nothing)
     return MOI.Nonlinear.ConstraintIndex(row)
 end
@@ -1255,19 +1242,11 @@ function MOI.features_available(::SIMDEvaluator)
     return [:Grad, :Jac, :JacVec, :Hess, :HessVec]
 end
 
-function MOI.Nonlinear.num_constraints(d::SIMDEvaluator)
-    return length(d.model.lcon)
-end
-
-function MOI.Nonlinear.constraint_bounds(d::SIMDEvaluator)
+function MOI.Nonlinear._constraint_bounds(d::SIMDEvaluator)
     return MOI.NLPBoundsPair[
         MOI.NLPBoundsPair(l, u) for (l, u) in zip(d.model.lcon, d.model.ucon)
     ]
 end
-
-MOI.Nonlinear.constraint_linearity(d::SIMDEvaluator) = copy(d.model.linearity)
-
-MOI.Nonlinear.objective_linearity(d::SIMDEvaluator) = d.model.objective_linearity
 
 MOI.Nonlinear._has_objective(d::SIMDEvaluator) = !isempty(d.model.objs)
 

@@ -2,19 +2,21 @@ module SIMDModeTest
 
 using Test
 import ExaModels
+import Ipopt
 import MathOptInterface as MOI
 
 function runtests()
-
-
-
-    
     @testset "SIMDMode adapter" begin
-        x, y = MOI.VariableIndex(1), MOI.VariableIndex(2)
         mode = ExaModels.SIMDMode()
         @test mode isa MOI.Nonlinear.AbstractAutomaticDifferentiation
         model = MOI.Nonlinear.model(mode)
-        @test model isa MOI.Nonlinear.ModelWithOracles
+        @test model isa MOI.ModelLike
+        x, y = MOI.add_variables(model, 2)
+        @test !MOI.supports_constraint(
+            model,
+            MOI.VectorOfVariables,
+            MOI.VectorNonlinearOracle{Float64},
+        )
         # Objective: x^2 (handled natively by ExaModels, no quad layer).
         MOI.Nonlinear.set_objective(
             model,
@@ -24,18 +26,6 @@ function runtests()
                 0.0,
             ),
         )
-        # Constraints, in row order: the oracle layer's rows come first.
-        oracle = MOI.VectorNonlinearOracle(;
-            dimension = 1,
-            l = [0.0],
-            u = [1.0],
-            eval_f = (ret, z) -> (ret[1] = z[1]^2),
-            jacobian_structure = [(1, 1)],
-            eval_jacobian = (ret, z) -> (ret[1] = 2.0 * z[1]),
-            hessian_lagrangian_structure = [(1, 1)],
-            eval_hessian_lagrangian = (ret, z, μ) -> (ret[1] = 2.0 * μ[1]),
-        )
-        MOI.Nonlinear.add_constraint(model, MOI.VectorOfVariables([x]), oracle)
         MOI.Nonlinear.add_constraint(
             model,
             MOI.ScalarAffineFunction(
@@ -59,47 +49,38 @@ function runtests()
         sin_x = MOI.ScalarNonlinearFunction(:sin, Any[x])
         MOI.Nonlinear.add_constraint(model, sin_x, MOI.LessThan(0.5))
         d = MOI.Nonlinear.Evaluator(model, mode, [x, y])
-        @test d isa MOI.Nonlinear.EvaluatorWithOracles
-        @test MOI.features_available(d) == [:Grad, :Jac, :Hess]
+        @test d isa MOI.AbstractNLPEvaluator
+        @test MOI.features_available(d) == [:Grad, :Jac, :JacVec, :Hess, :HessVec]
         # Row queries work before MOI.initialize.
-        @test MOI.Nonlinear.num_constraints(d) == 4
-        @test MOI.Nonlinear.constraint_bounds(d) == [
-            MOI.NLPBoundsPair(0.0, 1.0),
+        @test length(MOI.Nonlinear._constraint_bounds(d)) == 3
+        @test MOI.Nonlinear._constraint_bounds(d) == [
             MOI.NLPBoundsPair(-Inf, 4.0),
             MOI.NLPBoundsPair(0.0, 1.0),
             MOI.NLPBoundsPair(-Inf, 0.5),
         ]
-        @test MOI.Nonlinear.constraint_linearity(d) == [
-            MOI.Nonlinear.NONLINEAR,
-            MOI.Nonlinear.LINEAR,
-            MOI.Nonlinear.QUADRATIC,
-            MOI.Nonlinear.NONLINEAR,
-        ]
-        @test MOI.Nonlinear.objective_linearity(d) == MOI.Nonlinear.QUADRATIC
         MOI.initialize(d, [:Grad, :Jac, :Hess])
         xv = [1.0, 2.0]
         @test MOI.eval_objective(d, xv) == 1.0
         grad = fill(NaN, 2)
         MOI.eval_objective_gradient(d, grad, xv)
         @test grad == [2.0, 0.0]
-        g = fill(NaN, 4)
+        g = fill(NaN, 3)
         MOI.eval_constraint(d, g, xv)
-        @test g ≈ [1.0, 8.0, 5.0, sin(1.0)]
+        @test g ≈ [8.0, 5.0, sin(1.0)]
         J_structure = MOI.jacobian_structure(d)
         J_values = fill(NaN, length(J_structure))
         MOI.eval_constraint_jacobian(d, J_values, xv)
-        J = zeros(4, 2)
+        J = zeros(3, 2)
         for ((row, col), value) in zip(J_structure, J_values)
             J[row, col] += value
         end
         @test J ≈ [
-            2.0 0.0
             2.0 3.0
             4.0 2.0
             cos(1.0) 0.0
         ]
         H_structure = MOI.hessian_lagrangian_structure(d)
-        σ, μ = 2.0, [10.0, 100.0, 1_000.0, 10_000.0]
+        σ, μ = 2.0, [100.0, 1_000.0, 10_000.0]
         H_values = fill(NaN, length(H_structure))
         MOI.eval_hessian_lagrangian(d, H_values, xv, σ, μ)
         H = zeros(2, 2)
@@ -109,9 +90,39 @@ function runtests()
                 H[col, row] += value
             end
         end
-        @test H[1, 1] ≈ 2σ + 2 * μ[1] + 2 * μ[3] - sin(1.0) * μ[4]
-        @test H[1, 2] ≈ μ[3]
+        @test H[1, 1] ≈ 2σ + 2 * μ[2] - sin(1.0) * μ[3]
+        @test H[1, 2] ≈ μ[2]
         @test H[2, 2] ≈ 0.0
+    end
+    @testset "Ipopt with SIMDMode" begin
+        model = Ipopt.Optimizer()
+        MOI.set(model, MOI.Silent(), true)
+        mode = ExaModels.SIMDMode()
+        MOI.set(model, MOI.AutomaticDifferentiationBackend(), mode)
+        @test MOI.get(model, MOI.AutomaticDifferentiationBackend()) === mode
+        x, y = MOI.add_variables(model, 2)
+        MOI.add_constraint(model, x, MOI.GreaterThan(0.0))
+        MOI.add_constraint(model, y, MOI.GreaterThan(0.0))
+        objective = MOI.ScalarQuadraticFunction(
+            [
+                MOI.ScalarQuadraticTerm(2.0, x, x),
+                MOI.ScalarQuadraticTerm(2.0, y, y),
+            ],
+            [
+                MOI.ScalarAffineTerm(-2.0, x),
+                MOI.ScalarAffineTerm(-4.0, y),
+            ],
+            5.0,
+        )
+        MOI.set(model, MOI.ObjectiveFunction{typeof(objective)}(), objective)
+        MOI.set(model, MOI.ObjectiveSense(), MOI.MIN_SENSE)
+        constraint = MOI.ScalarNonlinearFunction(:+, Any[x, y])
+        MOI.add_constraint(model, constraint, MOI.GreaterThan(3.0))
+        MOI.optimize!(model)
+        @test MOI.get(model, MOI.TerminationStatus()) == MOI.LOCALLY_SOLVED
+        @test MOI.get(model, MOI.VariablePrimal(), x) ≈ 1.0 atol = 1e-4
+        @test MOI.get(model, MOI.VariablePrimal(), y) ≈ 2.0 atol = 1e-4
+        @test MOI.get(model, MOI.ObjectiveValue()) ≈ 0.0 atol = 1e-8
     end
     @testset "SIMDMode requires identity variable order" begin
         x, y = MOI.VariableIndex(1), MOI.VariableIndex(2)
