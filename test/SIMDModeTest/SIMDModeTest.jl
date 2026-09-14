@@ -3,7 +3,10 @@ module SIMDModeTest
 using Test
 import ExaModels
 import Ipopt
+import JuMP
 import MathOptInterface as MOI
+import NLPModelsJuMP
+import Percival
 
 function runtests()
     @testset "SIMDMode adapter" begin
@@ -52,12 +55,9 @@ function runtests()
         @test d isa MOI.AbstractNLPEvaluator
         @test MOI.features_available(d) == [:Grad, :Jac, :JacVec, :Hess, :HessVec]
         # Row queries work before MOI.initialize.
-        @test length(MOI.Nonlinear._constraint_bounds(d)) == 3
-        @test MOI.Nonlinear._constraint_bounds(d) == [
-            MOI.NLPBoundsPair(-Inf, 4.0),
-            MOI.NLPBoundsPair(0.0, 1.0),
-            MOI.NLPBoundsPair(-Inf, 0.5),
-        ]
+        bounds = MOI.Utilities.constraint_bounds(model)
+        @test bounds.lower == [-Inf, 0.0, -Inf]
+        @test bounds.upper == [4.0, 1.0, 0.5]
         MOI.initialize(d, [:Grad, :Jac, :Hess])
         xv = [1.0, 2.0]
         @test MOI.eval_objective(d, xv) == 1.0
@@ -123,6 +123,18 @@ function runtests()
         @test MOI.get(model, MOI.VariablePrimal(), x) ≈ 1.0 atol = 1e-4
         @test MOI.get(model, MOI.VariablePrimal(), y) ≈ 2.0 atol = 1e-4
         @test MOI.get(model, MOI.ObjectiveValue()) ≈ 0.0 atol = 1e-8
+    end
+    @testset "NLPModelsJuMP with SIMDMode" begin
+        model = JuMP.Model(NLPModelsJuMP.Optimizer)
+        JuMP.set_attribute(model, "solver", Percival.PercivalSolver)
+        mode = ExaModels.SIMDMode()
+        JuMP.set_attribute(model, MOI.AutomaticDifferentiationBackend(), mode)
+        JuMP.@variable(model, x, start = 0.5)
+        JuMP.@objective(model, Min, (sin(x) - sin(1.0))^2)
+        JuMP.optimize!(model)
+        @test JuMP.termination_status(model) == MOI.LOCALLY_SOLVED
+        @test JuMP.value(x) ≈ 1.0 atol = 1e-4
+        @test JuMP.objective_value(model) ≈ 0.0 atol = 1e-8
     end
     @testset "SIMDMode requires identity variable order" begin
         x, y = MOI.VariableIndex(1), MOI.VariableIndex(2)

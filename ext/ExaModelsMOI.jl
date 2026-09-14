@@ -1146,13 +1146,11 @@ function MOI.set(
     return MOI.Nonlinear.set_objective(model, f)
 end
 
-MOI.Nonlinear._variable_bounds(model::SIMDNonlinearModel) =
-    (model.variables.lower, model.variables.upper)
-MOI.Nonlinear._has_nonlinear_data(model::SIMDNonlinearModel) =
-    !isempty(model.cons) || !isempty(model.objs)
-MOI.Nonlinear._is_nonlinear_input(::SIMDNonlinearModel, ::Any, ::Any) = true
-MOI.Nonlinear._is_nonlinear_objective(::SIMDNonlinearModel, ::Any) = true
-MOI.Nonlinear.constraint_rows(::SIMDNonlinearModel, ci::MOI.ConstraintIndex{<:_SIMDFunction,<:_SIMDSet}) = [ci.value]
+MOI.Utilities.variable_bounds(model::SIMDNonlinearModel) =
+    MOI.Utilities.Hyperrectangle(model.variables.lower, model.variables.upper)
+MOI.Utilities.rows(::SIMDNonlinearModel, ci::MOI.ConstraintIndex{<:_SIMDFunction,<:_SIMDSet}) = ci.value
+MOI.Utilities.constraint_bounds(model::SIMDNonlinearModel) =
+    MOI.Utilities.Hyperrectangle(model.lcon, model.ucon)
 MOI.Nonlinear.constraint_dual_starts(model::SIMDNonlinearModel) = model.dual_start
 
 function MOI.supports(
@@ -1242,13 +1240,8 @@ function MOI.features_available(::SIMDEvaluator)
     return [:Grad, :Jac, :JacVec, :Hess, :HessVec]
 end
 
-function MOI.Nonlinear._constraint_bounds(d::SIMDEvaluator)
-    return MOI.NLPBoundsPair[
-        MOI.NLPBoundsPair(l, u) for (l, u) in zip(d.model.lcon, d.model.ucon)
-    ]
-end
-
-MOI.Nonlinear._has_objective(d::SIMDEvaluator) = !isempty(d.model.objs)
+_objective_sign(sense::MOI.OptimizationSense) =
+    sense == MOI.MAX_SENSE ? -1.0 : sense == MOI.MIN_SENSE ? 1.0 : 0.0
 
 function MOI.initialize(d::SIMDEvaluator, features::Vector{Symbol})
     T = Float64
@@ -1298,13 +1291,13 @@ function _exa(d::SIMDEvaluator)
 end
 
 function MOI.eval_objective(d::SIMDEvaluator, x)
-    return MOI.Nonlinear._objective_sign(d.model.sense) *
+    return _objective_sign(d.model.sense) *
            ExaModels.NLPModels.obj(_exa(d), x)
 end
 
 function MOI.eval_objective_gradient(d::SIMDEvaluator, grad, x)
     ExaModels.NLPModels.grad!(_exa(d), x, grad)
-    grad .*= MOI.Nonlinear._objective_sign(d.model.sense)
+    grad .*= _objective_sign(d.model.sense)
     return
 end
 
@@ -1335,7 +1328,7 @@ function MOI.hessian_lagrangian_structure(d::SIMDEvaluator)
 end
 
 function MOI.eval_hessian_lagrangian(d::SIMDEvaluator, H, x, σ, μ)
-    sign = MOI.Nonlinear._objective_sign(d.model.sense)
+    sign = _objective_sign(d.model.sense)
     ExaModels.NLPModels.hess_coord!(_exa(d), x, μ, H; obj_weight = sign * σ)
     return
 end
@@ -1356,7 +1349,7 @@ function MOI.eval_constraint_jacobian_transpose_product(
 end
 
 function MOI.eval_hessian_lagrangian_product(d::SIMDEvaluator, h, x, v, σ, μ)
-    sign = MOI.Nonlinear._objective_sign(d.model.sense)
+    sign = _objective_sign(d.model.sense)
     ExaModels.NLPModels.hprod!(
         _exa(d),
         x,
