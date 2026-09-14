@@ -27,8 +27,12 @@ include("PrettyPrintTest.jl")
 include("ConcreteModeTest.jl")
 # include("OptimalControlTest/OptimalControlTest.jl")
 include("OracleTest/OracleTest.jl")
+include("SIMDModeTest/SIMDModeTest.jl")
 
 @testset verbose = true "ExaModels test" begin
+    @info "Running SIMDMode Test"
+    SIMDModeTest.runtests()
+
     @info "Running Argument Test"
     ArgumentTest.runtests()
 
