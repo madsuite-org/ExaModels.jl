@@ -1,41 +1,70 @@
-# # JuMP Interface (Experimental)
+# # JuMP Interface
 
-# ## JuMP to an ExaModel
-# We have an experimental interface to JuMP model. A JuMP model can be directly converted to a `ExaModel`. It is as simple as this:
+# This tutorial explains how to use ExaModels with [JuMP](https://jump.dev).
 
-using ExaModels, JuMP, CUDA
+# ## As an Optimizer
+
+# ExaModels can be called from JuMP using `ExaModels.Optimizer`. The first
+# argument to `Optimizer` is any NLPModels-compatible solver.
+
+using JuMP
+import ExaModels
+import NLPModelsIpopt
 
 N = 10
-jm = Model()
-
-@variable(jm, x[i=1:N], start = mod(i, 2) == 1 ? -1.2 : 1.0)
+model = Model(() -> ExaModels.Optimizer(NLPModelsIpopt.ipopt))
+@variable(model, x[i in 1:N], start = mod(i, 2) == 1 ? -1.2 : 1.0)
 @constraint(
-    jm,
-    s[i=1:(N-2)],
-    3x[i+1]^3 + 2x[i+2] - 5 + sin(x[i+1] - x[i+2])sin(x[i+1] + x[i+2]) + 4x[i+1] -
-    x[i]exp(x[i] - x[i+1]) - 3 == 0.0
+    model,
+    [i in 1:(N-2)],
+    (3 * x[i+1]^3 + 2 * x[i+2] - 5) +
+    sin(x[i+1] - x[i+2]) * sin(x[i+1] + x[i+2]) +
+    4 * x[i+1] - x[i] * exp(x[i] - x[i+1]) - 3 == 0.0
 )
-@objective(jm, Min, sum(100(x[i-1]^2 - x[i])^2 + (x[i-1] - 1)^2 for i = 2:N))
+@objective(
+    model,
+    Min,
+    sum(100 * (x[i-1]^2 - x[i])^2 + (x[i-1] - 1)^2 for i in 2:N),
+)
+optimize!(model)
 
-em = ExaModel(jm; backend = CUDABackend())
+# Behind the scenes, `ExaModels.Optimizer` converts the JuMP model into an
+# equivalent `ExaModels.ExaModel` before passing it to NLPModelsIpopt.
 
-# Here, note that only scalar objective/constraints created via `@constraint` and `@objective` API are supported. Older syntax like `@NLconstraint` and `@NLobjective` are not supported.
-# We can solve the model using any of the solvers supported by ExaModels. For example, we can use MadNLP.
-# Note that `CUDSS` must be loaded alongside `MadNLPGPU`: it is the default linear solver for GPU sparse
-# models and it triggers MadNLPGPU's CUDA extension, which provides the GPU KKT machinery.
+# For large structured nonlinear models, using `ExaModels.Optimizer` can be
+# significantly faster than using `Ipopt.Optimizer` directly because
+# `ExaModels.Optimizer` uses ExaModel's automatic differentiation routines
+# instead using JuMP's default automatic differentiation library.
 
-using MadNLPGPU, CUDSS
+# ## Accessing the ExaModel
 
-result = madnlp(em)
+# You can also construct the ExaModel directly:
 
+exa_model = ExaModels.ExaModel(model)
 
-# ## JuMP Optimizer
-# Alternatively, one can use the `Optimizer` interface provided by `ExaModels`. This feature can be used as follows.
+# ## Backends
 
-using ExaModels, JuMP, CUDA
-using MadNLP, MadNLPGPU, CUDSS
+# Pass a backend as the second argument of `ExaModels.Optimizer` to change the
+# backend. For example, to create use a multi-threaded CPU routine, do:
 
-set_optimizer(jm, () -> ExaModels.Optimizer(MadNLP.madnlp, CUDABackend()))
-optimize!(jm)
+import KernelAbstractions
+set_optimizer(
+    model,
+    () -> ExaModels.Optimizer(NLPModelsIpopt.ipopt, KernelAbstractions.CPU()),
+)
+optimize!(model)
 
-# Again, only scalar objective/constraints created via `@constraint` and `@objective` API are supported. Older syntax like `@NLconstraint` and `@NLobjective` are not supported.
+# ## GPUs
+
+# To use MadNLP's GPU support, do:
+
+import CUDA
+import CUDSS
+import MadNLP
+import MadNLPGPU
+
+set_optimizer(
+    model,
+    () -> ExaModels.Optimizer(MadNLP.madnlp, CUDA.CUDABackend()),
+)
+optimize!(model)
