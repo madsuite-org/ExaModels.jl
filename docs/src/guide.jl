@@ -92,6 +92,22 @@ c2 = ExaCore(concrete = Val(true))
 # @add_con(c, dx[t, i] - something for t in 1:T, i in 1:N)
 # ```
 #
+# When subexpressions are deeply nested (subexpressions referencing other
+# subexpressions), inlining duplicates the tree at every use site, and compilation
+# cost grows multiplicatively with the nesting depth. Passing `buffered = true`
+# stores the subexpression in an internal buffer instead: each element is evaluated
+# once per model evaluation, consumers reference the buffered value through a single
+# leaf node, and first- and second-order derivatives are propagated through the
+# buffer, so compilation cost is additive in the nesting depth.
+# ```julia
+# @add_expr(c, s, x[i]^2 + sin(x[i+1]) for i in 1:(N - 1); buffered = true)
+# @add_expr(c, t, s[i] * s[i+1] for i in 1:(N - 2); buffered = true)
+# @add_obj(c, t[i]^2 for i in 1:(N - 2))
+# ```
+# Inlining (the default) remains preferable for subexpressions used only once or
+# twice at shallow depth; buffered subexpressions currently support the default
+# (CPU) backend.
+#
 # For a comprehensive example using subexpressions, see the [Distillation Column example](@ref distillation).
 
 # ## ExaModel

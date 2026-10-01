@@ -1,6 +1,8 @@
 module SubexprTest
 
 using Test, ExaModels
+using KernelAbstractions
+using MadNLP, NLPModelsIpopt
 import NLPModels
 
 # Builds the same nested two-stage model with inlined (buffered = false) or
@@ -243,6 +245,81 @@ function runtests()
             gm = _lag_grad(m1, pert(k, -h), yv)
             @test H1[:, k] ≈ (gp .- gm) ./ 2h rtol = 1e-4
         end
+    end
+
+    # API surface: macro + named form, kwarg pass-through, refs retrieval,
+    # parameters interleaved around buffered stages, set_parameter! after build.
+    @testset "Buffered subexpressions (API surface + parameters)" begin
+        function _par_model(; buffered = false)
+            c = ExaCore(concrete = Val(true))
+            c, x = add_var(c, 4)
+            c, p = add_par(c, 3; value = 0.5)
+            c, s = add_expr(c, (p[i] * x[i]^2 + sin(x[i+1]) for i in 1:3); buffered)
+            c, q = add_par(c, 2; value = 2.0)
+            c, t = add_expr(c, (s[i] * q[1] + s[i+1] * q[2] for i in 1:2); buffered)
+            c, _ = add_obj(c, ((t[i] - 1.0)^2 for i in 1:2))
+            return c, p, ExaModel(c)
+        end
+        c0, p0, m0 = _par_model(buffered = false)
+        c1, p1, m1 = _par_model(buffered = true)
+        xv = [0.3, -0.2, 0.7, 0.4]
+        d0 = zeros(4); d1 = zeros(4)
+
+        @test NLPModels.obj(m1, xv) ≈ NLPModels.obj(m0, xv) rtol = 1e-14
+        NLPModels.grad!(m0, xv, d0)
+        NLPModels.grad!(m1, xv, d1)
+        @test d1 ≈ d0 rtol = 1e-14
+        @test _dense_hess(m1, xv, nothing) ≈ _dense_hess(m0, xv, nothing) rtol = 1e-14
+
+        # updating a parameter must not disturb the buffered segments
+        set_parameter!(c0, p0, [1.5, -0.5, 2.5])
+        set_parameter!(c1, p1, [1.5, -0.5, 2.5])
+        @test NLPModels.obj(m1, xv) ≈ NLPModels.obj(m0, xv) rtol = 1e-14
+        NLPModels.grad!(m0, xv, d0)
+        NLPModels.grad!(m1, xv, d1)
+        @test d1 ≈ d0 rtol = 1e-14
+
+        # macro named form registers the handle in the core/model
+        c = ExaCore(concrete = Val(true))
+        @add_var(c, z, 4)
+        @add_expr(c, sb, z[i]^2 + z[i+1] for i in 1:3; buffered = true)
+        @add_obj(c, sb[i]^2 for i in 1:3)
+        @test sb isa BufferedExpression
+        m = ExaModel(c)
+        @test m.sb isa BufferedExpression
+        @test NLPModels.obj(m, ones(4)) ≈ 12.0 rtol = 1e-14  # 3 terms, (1+1)^2 each
+
+        # non-default backends are refused at add time
+        cb = ExaCore(concrete = Val(true), backend = CPU())
+        cb, xb = add_var(cb, 3)
+        @test_throws ErrorException add_expr(cb, (xb[i]^2 for i in 1:2); buffered = true)
+    end
+
+    # End-to-end: a real solver consumes the buffered callbacks; identical
+    # problems must reach the same solution as the inlined formulation.
+    @testset "Buffered subexpressions (solver round-trip)" begin
+        function _solve_model(; buffered = false)
+            c = ExaCore(concrete = Val(true))
+            c, x = add_var(c, 6)
+            c, s = add_expr(c, (x[i]^2 + sin(x[i+1]) for i in 1:5); buffered)
+            c, t = add_expr(c, (s[i] * s[i+1] + x[i] for i in 1:4); buffered)
+            c, _ = add_obj(c, ((t[i] - 1.0)^2 + 0.1 * x[i]^2 for i in 1:4))
+            c, _ = add_con(c, (t[i] + x[i+2] for i in 1:4); lcon = -10.0, ucon = 10.0)
+            return ExaModel(c)
+        end
+        m0 = _solve_model(buffered = false)
+        m1 = _solve_model(buffered = true)
+
+        r0 = madnlp(m0; print_level = MadNLP.ERROR)
+        r1 = madnlp(m1; print_level = MadNLP.ERROR)
+        @test r1.status == r0.status
+        @test r1.objective ≈ r0.objective rtol = 1e-8
+        @test r1.solution ≈ r0.solution rtol = 1e-6
+
+        i0 = ipopt(m0; print_level = 0)
+        i1 = ipopt(m1; print_level = 0)
+        @test i1.objective ≈ i0.objective rtol = 1e-8
+        @test i1.solution ≈ i0.solution rtol = 1e-6
     end
 
     @testset "Buffered subexpressions (multi-dimensional)" begin

@@ -23,6 +23,7 @@ subexpression's own reverse pass is later seeded.
 struct SubexprNode{I} <: AbstractNode
     i::I
 end
+Base.show(io::IO, node::SubexprNode{I}) where {I} = print(io, "subexpr(θ[", node.i, "])")
 
 """
     AdjointNodeSubexpr{I, T} <: AbstractAdjointNode

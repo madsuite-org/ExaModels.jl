@@ -1415,6 +1415,9 @@ end
 end
 
 @inline function _add_expr(c::C, gen, ::Val{true}, name, tag) where {T,C<:ExaCore{T}}
+    c.backend === nothing || error(
+        "buffered subexpressions currently support only the default (CPU) backend",
+    )
     ns = _infer_subexpr_dims(gen.iter)
 
     gen = _adapt_gen(gen)
