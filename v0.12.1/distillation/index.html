@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Example: Distillation Column · ExaModels.jl</title><meta name="title" content="Example: Distillation Column · ExaModels.jl"/><meta property="og:title" content="Example: Distillation Column · ExaModels.jl"/><meta property="twitter:title" content="Example: Distillation Column · ExaModels.jl"/><meta name="description" content="Documentation for ExaModels.jl."/><meta property="og:description" content="Documentation for ExaModels.jl."/><meta property="twitter:description" content="Documentation for ExaModels.jl."/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.63.2/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script><link href="../assets/documentercitations/citations-hover.css" rel="stylesheet" type="text/css"/><link href="../assets/documentercitations/citations.css" rel="stylesheet" type="text/css"/><link href="../assets/favicon.ico" rel="icon" type="image/x-icon"/><link href="../assets/citations.css" rel="stylesheet" type="text/css"/><script src="../assets/documentercitations/citations-data.js"></script><script src="../assets/documentercitations/citations-hover.js"></script><script src="../assets/documentercitations/citations-backlinks.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><a class="docs-logo" href="../"><img src="../assets/logo.svg" alt="ExaModels.jl logo"/></a><div class="docs-package-name"><span class="docs-autofit"><a href="../">ExaModels.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">Introduction</a></li><li><a class="tocitem" href="../simd/">Mathematical Abstraction</a></li><li><input class="collapse-toggle" id="menuitem-3" type="checkbox" checked/><label class="tocitem" for="menuitem-3"><span class="docs-label">Tutorial</span><i class="docs-chevron"></i></label><ul class="collapsed"><li><a class="tocitem" href="../guide/">Getting Started</a></li><li><a class="tocitem" href="../patterns/">Macro Behavior: Returning <code>core</code> from Functions</a></li><li><a class="tocitem" href="../recipe/">Model recipes: building once, instantiating with data</a></li><li><a class="tocitem" href="../constraint_augmentation/">Constraint Augmentation with <code>add_con!</code></a></li><li><a class="tocitem" href="../performance/">Performance Tips</a></li><li><a class="tocitem" href="../gpu/">CPU and GPU acceleration</a></li><li><a class="tocitem" href="../parameters/">Parameters</a></li><li><a class="tocitem" href="../develop/">Developing Extensions</a></li><li><a class="tocitem" href="../quad/">Example: Quadrotor</a></li><li class="is-active"><a class="tocitem" href>Example: Distillation Column</a><ul class="internal"><li><a class="tocitem" href="#Subexpressions-in-ExaModels"><span>Subexpressions in ExaModels</span></a></li><li><a class="tocitem" href="#Original-Model-(without-subexpressions)"><span>Original Model (without subexpressions)</span></a></li><li><a class="tocitem" href="#Model-with-Lifted-Subexpressions"><span>Model with Lifted Subexpressions</span></a></li><li><a class="tocitem" href="#Running-the-Models"><span>Running the Models</span></a></li><li><a class="tocitem" href="#Comparison-Results"><span>Comparison Results</span></a></li></ul></li><li><a class="tocitem" href="../opf/">Example: Optimal Power Flow</a></li><li><a class="tocitem" href="../upgrade/">Upgrading from v0.9 to v0.10</a></li></ul></li><li><a class="tocitem" href="../oracle/">Oracle Constraints</a></li><li><a class="tocitem" href="../jump/">JuMP Interface (experimental)</a></li><li><a class="tocitem" href="../core/">API Manual</a></li><li><a class="tocitem" href="../ref/">References</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Tutorial</a></li><li class="is-active"><a href>Example: Distillation Column</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Example: Distillation Column</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/madsuite-org/ExaModels.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/madsuite-org/ExaModels.jl/blob/main/docs/src/distillation.jl" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="distillation"><a class="docs-heading-anchor" href="#distillation">Example: Distillation Column</a><a id="distillation-1"></a><a class="docs-heading-anchor-permalink" href="#distillation" title="Permalink"></a></h1><p>This example demonstrates the use of <a href="../core/#ExaModels.@add_expr-Tuple"><code>@add_expr</code></a> to define reusable subexpressions that simplify complex models.  We compare two formulations of a distillation column: one written by hand and one that uses named subexpressions for readability.</p><h2 id="Subexpressions-in-ExaModels"><a class="docs-heading-anchor" href="#Subexpressions-in-ExaModels">Subexpressions in ExaModels</a><a id="Subexpressions-in-ExaModels-1"></a><a class="docs-heading-anchor-permalink" href="#Subexpressions-in-ExaModels" title="Permalink"></a></h2><p>The <a href="../core/#ExaModels.@add_expr-Tuple"><code>@add_expr</code></a> macro (or <a href="../core/#ExaModels.add_expr-Union{Tuple{C}, Tuple{T}, Tuple{C, Base.Generator}} where {T, C&lt;:(ExaCore{T})}"><code>add_expr</code></a>) creates an <strong>inlined subexpression</strong>: a named expression template that is substituted directly wherever it is indexed. No auxiliary variables or extra constraints are added to the problem.</p><pre><code class="language-julia hljs">@add_expr(c, s, x[i]^2 for i in 1:n)   # s[i] expands to x[i]^2 at each use site</code></pre><p>The benefit is purely notational: repeated sub-expressions like finite-difference stencils can be named once and reused across many constraints, keeping model code concise without changing the NLP structure.</p><h2 id="Original-Model-(without-subexpressions)"><a class="docs-heading-anchor" href="#Original-Model-(without-subexpressions)">Original Model (without subexpressions)</a><a id="Original-Model-(without-subexpressions)-1"></a><a class="docs-heading-anchor-permalink" href="#Original-Model-(without-subexpressions)" title="Permalink"></a></h2><p>This is the original formulation where expressions like <code>(xA[t, i] - xA[t-1, i]) / dt</code> are repeated in multiple constraints.</p><pre><code class="language-julia hljs">using ExaModels, NLPModelsIpopt
+
+function distillation_column_model(T = 3; backend = nothing)
+
+    NT = 30
+    FT = 17
+    Ac = 0.5
+    At = 0.25
+    Ar = 1.0
+    D = 0.2
+    F = 0.4
+    ybar = 0.8958
+    ubar = 2.0
+    alpha = 1.6
+    dt = 10 / T
+    xAf = 0.5
+    xA0s = ExaModels.convert_array([(i, 0.5) for i = 0:(NT+1)], backend)
+
+    itr0 = ExaModels.convert_array(collect(Iterators.product(1:T, 1:(FT-1))), backend)
+    itr1 = ExaModels.convert_array(collect(Iterators.product(1:T, (FT+1):NT)), backend)
+    itr2 = ExaModels.convert_array(collect(Iterators.product(0:T, 0:(NT+1))), backend)
+
+    c = ExaCore(; backend, concrete = Val(true))
+
+    @add_var(c, xA, 0:T, 0:(NT+1); start = 0.5)
+    @add_var(c, yA, 0:T, 0:(NT+1); start = 0.5)
+    @add_var(c, u, 0:T; start = 1.0)
+    @add_var(c, V, 0:T; start = 1.0)
+    @add_var(c, L2, 0:T; start = 1.0)
+
+    @add_obj(c, (yA[t, 1] - ybar)^2 for t = 0:T)
+    @add_obj(c, (u[t] - ubar)^2 for t = 0:T)
+
+    @add_con(c, xA[0, i] - xA0 for (i, xA0) in xA0s)
+    @add_con(
+        c,
+        (xA[t, 0] - xA[t-1, 0]) / dt - (1 / Ac) * (yA[t, 1] - xA[t, 0]) for t = 1:T
+    )
+    @add_con(
+        c,
+        (xA[t, i] - xA[t-1, i]) / dt -
+        (1 / At) * (u[t] * D * (yA[t, i-1] - xA[t, i]) - V[t] * (yA[t, i] - yA[t, i+1])) for
+        (t, i) in itr0
+    )
+    @add_con(
+        c,
+        (xA[t, FT] - xA[t-1, FT]) / dt -
+        (1 / At) * (
+            F * xAf + u[t] * D * xA[t, FT-1] - L2[t] * xA[t, FT] -
+            V[t] * (yA[t, FT] - yA[t, FT+1])
+        ) for t = 1:T
+    )
+    @add_con(
+        c,
+        (xA[t, i] - xA[t-1, i]) / dt -
+        (1 / At) * (L2[t] * (yA[t, i-1] - xA[t, i]) - V[t] * (yA[t, i] - yA[t, i+1])) for
+        (t, i) in itr1
+    )
+    @add_con(
+        c,
+        (xA[t, NT+1] - xA[t-1, NT+1]) / dt -
+        (1 / Ar) * (L2[t] * xA[t, NT] - (F - D) * xA[t, NT+1] - V[t] * yA[t, NT+1]) for
+        t = 1:T
+    )
+    @add_con(c, V[t] - u[t] * D - D for t = 0:T)
+    @add_con(c, L2[t] - u[t] * D - F for t = 0:T)
+    @add_con(
+        c,
+        yA[t, i] * (1 - xA[t, i]) - alpha * xA[t, i] * (1 - yA[t, i]) for (t, i) in itr2
+    )
+
+    return ExaModel(c)
+end</code></pre><pre><code class="nohighlight hljs">distillation_column_model (generic function with 2 methods)</code></pre><h2 id="Model-with-Lifted-Subexpressions"><a class="docs-heading-anchor" href="#Model-with-Lifted-Subexpressions">Model with Lifted Subexpressions</a><a id="Model-with-Lifted-Subexpressions-1"></a><a class="docs-heading-anchor-permalink" href="#Model-with-Lifted-Subexpressions" title="Permalink"></a></h2><p>Uses subexpressions for time derivatives and vapor differences. This adds auxiliary variables and constraints but makes the model more readable.</p><pre><code class="language-julia hljs">function distillation_column_model_with_subexpr(T = 3; backend = nothing)
+
+    NT = 30
+    FT = 17
+    Ac = 0.5
+    At = 0.25
+    Ar = 1.0
+    D = 0.2
+    F = 0.4
+    ybar = 0.8958
+    ubar = 2.0
+    alpha = 1.6
+    dt = 10 / T
+    xAf = 0.5
+    xA0s = ExaModels.convert_array([(i, 0.5) for i in 0:(NT + 1)], backend)
+
+    c = ExaCore(; backend, concrete = Val(true))
+
+    # Decision variables
+    @add_var(c, xA, 0:T, 0:(NT + 1); start = 0.5)
+    @add_var(c, yA, 0:T, 0:(NT + 1); start = 0.5)
+    @add_var(c, u, 0:T; start = 1.0)
+    @add_var(c, V, 0:T; start = 1.0)
+    @add_var(c, L2, 0:T; start = 1.0)
+
+    # Subexpressions - define common terms once
+    @add_expr(c, dxA, (xA[t, i] - xA[t - 1, i]) / dt for t in 1:T, i in 0:(NT + 1))
+    @add_expr(c, dyA, yA[t, i] - yA[t, i + 1] for t in 0:T, i in 0:NT)
+
+    # Objectives
+    @add_obj(c, (yA[t, 1] - ybar)^2 for t in 0:T)
+    @add_obj(c, (u[t] - ubar)^2 for t in 0:T)
+
+    # Initial conditions
+    @add_con(c, xA[0, i] - xA0 for (i, xA0) in xA0s)
+
+    # Condenser - now using dxA subexpression
+    @add_con(c, dxA[t, 0] - (1 / Ac) * (yA[t, 1] - xA[t, 0]) for t in 1:T)
+
+    # Rectifying section - cleaner with dxA and dyA
+    itr_rect = ExaModels.convert_array(collect(Iterators.product(1:T, 1:(FT - 1))), backend)
+    @add_con(c, dxA[t, i] - (1 / At) * (u[t] * D * (yA[t, i - 1] - xA[t, i]) - V[t] * dyA[t, i]) for (t, i) in itr_rect)
+
+    # Feed tray
+    @add_con(c, dxA[t, FT] - (1 / At) * (F * xAf + u[t] * D * xA[t, FT - 1] - L2[t] * xA[t, FT] - V[t] * dyA[t, FT]) for t in 1:T)
+
+    # Stripping section
+    itr_strip = ExaModels.convert_array(collect(Iterators.product(1:T, (FT + 1):NT)), backend)
+    @add_con(c, dxA[t, i] - (1 / At) * (L2[t] * (yA[t, i - 1] - xA[t, i]) - V[t] * dyA[t, i]) for (t, i) in itr_strip)
+
+    # Reboiler
+    @add_con(c, dxA[t, NT + 1] - (1 / Ar) * (L2[t] * xA[t, NT] - (F - D) * xA[t, NT + 1] - V[t] * yA[t, NT + 1]) for t in 1:T)
+
+    # Flow relationships
+    @add_con(c, V[t] - u[t] * D - D for t in 0:T)
+    @add_con(c, L2[t] - u[t] * D - F for t in 0:T)
+
+    # VLE
+    itr_vle = ExaModels.convert_array(collect(Iterators.product(0:T, 0:(NT + 1))), backend)
+    @add_con(c, yA[t, i] * (1 - xA[t, i]) - alpha * xA[t, i] * (1 - yA[t, i]) for (t, i) in itr_vle)
+
+    return ExaModel(c)
+end</code></pre><pre><code class="nohighlight hljs">distillation_column_model_with_subexpr (generic function with 2 methods)</code></pre><h2 id="Running-the-Models"><a class="docs-heading-anchor" href="#Running-the-Models">Running the Models</a><a id="Running-the-Models-1"></a><a class="docs-heading-anchor-permalink" href="#Running-the-Models" title="Permalink"></a></h2><p>Let&#39;s compare both formulations and verify they converge to the same solution.</p><pre><code class="language-julia hljs">T_val = 10</code></pre><pre><code class="nohighlight hljs">10</code></pre><p>Without subexpressions:</p><pre><code class="language-julia hljs">m_orig = distillation_column_model(T_val)
+result_orig = ipopt(m_orig; print_level = 0)</code></pre><pre><code class="nohighlight hljs">&quot;Execution stats: first-order stationary&quot;</code></pre><p>With subexpressions:</p><pre><code class="language-julia hljs">m_subexpr = distillation_column_model_with_subexpr(T_val)
+result_subexpr = ipopt(m_subexpr; print_level = 0)</code></pre><pre><code class="nohighlight hljs">&quot;Execution stats: first-order stationary&quot;</code></pre><h2 id="Comparison-Results"><a class="docs-heading-anchor" href="#Comparison-Results">Comparison Results</a><a id="Comparison-Results-1"></a><a class="docs-heading-anchor-permalink" href="#Comparison-Results" title="Permalink"></a></h2><pre><code class="language-julia hljs">println(&quot;=&quot;^62)
+println(&quot;Distillation Column Model Comparison (T=$T_val)&quot;)
+println(&quot;=&quot;^62)
+println()
+println(&quot;| Model               | Variables | Constraints | Iterations | Objective |&quot;)
+println(&quot;|---------------------|-----------|-------------|------------|-----------|&quot;)
+println(&quot;| Original            | $(lpad(m_orig.meta.nvar, 9)) | $(lpad(m_orig.meta.ncon, 11)) | $(lpad(result_orig.iter, 10)) | $(round(result_orig.objective, digits = 6)) |&quot;)
+println(&quot;| With subexpressions | $(lpad(m_subexpr.meta.nvar, 9)) | $(lpad(m_subexpr.meta.ncon, 11)) | $(lpad(result_subexpr.iter, 10)) | $(round(result_subexpr.objective, digits = 6)) |&quot;)
+println()</code></pre><pre><code class="nohighlight hljs">==============================================================
+Distillation Column Model Comparison (T=10)
+==============================================================
+
+| Model               | Variables | Constraints | Iterations | Objective |
+|---------------------|-----------|-------------|------------|-----------|
+| Original            |       737 |         726 |          7 | 0.15107 |
+| With subexpressions |       737 |         726 |          7 | 0.15107 |
+
+</code></pre><p>Both formulations are equivalent NLPs and converge to the same solution:</p><pre><code class="language-julia hljs">println(&quot;Same objective: &quot;, isapprox(result_orig.objective, result_subexpr.objective, rtol = 1.0e-4))</code></pre><pre><code class="nohighlight hljs">Same objective: true
+</code></pre><hr/><p><em>This page was generated using <a href="https://github.com/fredrikekre/Literate.jl">Literate.jl</a>.</em></p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../quad/">« Example: Quadrotor</a><a class="docs-footer-nextpage" href="../opf/">Example: Optimal Power Flow »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.19.0 on <span class="colophon-date" title="Wednesday 30 September 2026 23:44">Wednesday 30 September 2026</span>. Using Julia version 1.13.1.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
