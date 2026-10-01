@@ -1679,7 +1679,15 @@ function _merge_candidate(cons::Vector{Any}, f, dims, name, tag)
     isempty(cons) && return nothing
     prev = cons[1]
     prev isa Constraint || return nothing
-    (prev.tag === nothing && typeof(prev.f) == typeof(f) && length(prev.size) == 1) || return nothing
+    (prev.tag === nothing && length(prev.size) == 1) || return nothing
+    # The merged block evaluates every row with PREV's tree, so merging is
+    # sound only when the trees are equal BY VALUE, not merely by type: two
+    # structurally identical expressions over different variable blocks (or
+    # with different baked-in scalars) share a type but differ in the offset
+    # and coefficient FIELDS.  `===` compares immutable trees recursively and
+    # falls back to identity on anything heap-allocated, which refuses the
+    # merge — the safe direction.
+    prev.f.f === f.f || return nothing
     return prev
 end
 

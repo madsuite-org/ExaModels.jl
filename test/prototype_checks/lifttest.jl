@@ -22,3 +22,11 @@ def = cL[1:20]; pat = cL[21:end]
 @assert maximum(abs, pat .- cS) < 1e-14
 @assert !(maximum(abs, NLPModels.cons(mL, vcat(x0, e1v .+ 0.1, e2v))[1:20]) < 1e-14)  # falsifiable
 println("LIFT CORRECTNESS OK: nvar $(mS.meta.nvar)->$(mL.meta.nvar), ncon $(mS.meta.ncon)->$(mL.meta.ncon); pattern rows match spliced to 1e-14, defining rows zero")
+
+# Discriminator for the merge-soundness bug: at a point where v2 (e2's lifted
+# variable) is perturbed but everything else is consistent, e2's defining rows
+# must move. Under an unsound merge they read e1's equation and stay zero.
+cL3 = NLPModels.cons(mL, vcat(x0, e1v, e2v .+ 0.5))
+@assert all(abs.(cL3[11:20] .- 0.5) .< 1e-14) "e2 defining rows must track v2"
+@assert maximum(abs, cL3[1:10]) < 1e-14
+println("LIFT DEFINING-ROW ATTRIBUTION OK: each lifted layer pinned by its own equation")
