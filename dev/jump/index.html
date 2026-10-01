@@ -61,7 +61,7 @@ Number of inequality constraint evaluations          = 0
 Number of equality constraint Jacobian evaluations   = 7
 Number of inequality constraint Jacobian evaluations = 0
 Number of Lagrangian Hessian evaluations             = 6
-Total seconds in IPOPT                               = 2.305
+Total seconds in IPOPT                               = 2.517
 
 EXIT: Optimal Solution Found.
 </code></pre><p>Behind the scenes, <code>ExaModels.Optimizer</code> converts the JuMP model into an equivalent <code>ExaModels.ExaModel</code> before passing it to NLPModelsIpopt.</p><p>For large structured nonlinear models, using <code>ExaModels.Optimizer</code> can be significantly faster than using <code>Ipopt.Optimizer</code> directly because <code>ExaModels.Optimizer</code> uses ExaModel&#39;s automatic differentiation routines instead using JuMP&#39;s default automatic differentiation library.</p><h2 id="Accessing-the-ExaModel"><a class="docs-heading-anchor" href="#Accessing-the-ExaModel">Accessing the ExaModel</a><a id="Accessing-the-ExaModel-1"></a><a class="docs-heading-anchor-permalink" href="#Accessing-the-ExaModel" title="Permalink"></a></h2><p>You can also construct the ExaModel directly:</p><pre><code class="language-julia hljs">exa_model = ExaModels.ExaModel(model)</code></pre><pre><code class="nohighlight hljs">An ExaModel{Float64, Vector{Float64}, ...}
@@ -128,7 +128,7 @@ Number of inequality constraint evaluations          = 0
 Number of equality constraint Jacobian evaluations   = 7
 Number of inequality constraint Jacobian evaluations = 0
 Number of Lagrangian Hessian evaluations             = 6
-Total seconds in IPOPT                               = 12.829
+Total seconds in IPOPT                               = 13.860
 
 EXIT: Optimal Solution Found.
 </code></pre><h2 id="GPUs"><a class="docs-heading-anchor" href="#GPUs">GPUs</a><a id="GPUs-1"></a><a class="docs-heading-anchor-permalink" href="#GPUs" title="Permalink"></a></h2><p>To use MadNLP&#39;s GPU support, do:</p><pre><code class="language-julia hljs">import CUDA
@@ -182,11 +182,11 @@ Number of Lagrangian Hessian evaluations              = 7
 Number of KKT factorizations                          = 7
 Number of KKT backsolves                              = 7
 
-Total wall secs in initialization                     = 83.289 s
+Total wall secs in initialization                     = 82.002 s
 Total wall secs in linear solver                      =  unavailable
-Total wall secs in NLP function evaluations           =  4.201 s
+Total wall secs in NLP function evaluations           =  3.755 s
 Total wall secs in solver (w/o init./fun./lin. alg.)  =  unavailable
-Total wall secs                                       = 277.444 s
+Total wall secs                                       = 277.383 s
 
 [32mEXIT: Optimal Solution Found (tol = 1.0e-04).[0m
-</code></pre><hr/><p><em>This page was generated using <a href="https://github.com/fredrikekre/Literate.jl">Literate.jl</a>.</em></p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../oracle/">« Oracle Constraints</a><a class="docs-footer-nextpage" href="../core/">API Manual »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.19.0 on <span class="colophon-date" title="Wednesday 30 September 2026 22:54">Wednesday 30 September 2026</span>. Using Julia version 1.13.1.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
+</code></pre><hr/><p><em>This page was generated using <a href="https://github.com/fredrikekre/Literate.jl">Literate.jl</a>.</em></p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../oracle/">« Oracle Constraints</a><a class="docs-footer-nextpage" href="../core/">API Manual »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.19.0 on <span class="colophon-date" title="Wednesday 30 September 2026 23:27">Wednesday 30 September 2026</span>. Using Julia version 1.13.1.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
