@@ -1916,13 +1916,18 @@ function cons_nln!(m::AbstractExaModel, x::AbstractVector, g::AbstractVector)
 end
 
 @inline function _cons_nln!(cons::Tuple, x, θ, g)
-    con = first(cons)
     _cons_nln!(Base.tail(cons), x, θ, g)
+    _cons_rows!(g, first(cons), x, θ)
+end
+_cons_nln!(cons::Tuple{}, x, θ, g) = nothing
+
+# per-block row loop; merged segmented blocks override this (merge.jl)
+@inline function _cons_rows!(g, con, x, θ)
     @simd for i in eachindex(con.itr)
         g[offset0(con, i)] += con.f(con.itr[i], x, θ)
     end
+    return nothing
 end
-_cons_nln!(cons::Tuple{}, x, θ, g) = nothing
 
 
 

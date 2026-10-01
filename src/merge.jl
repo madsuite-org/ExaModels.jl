@@ -166,8 +166,41 @@ function _merge_group(::Type{T}, blocks::Vector{Any}, backend, θext::Vector{T},
     K = length(acc.i)
     S = length(acc.f)
     nrows = sum(b -> length(b.itr), blocks)
-    rows = Vector{MergedRow}(undef, 0)
     θadd = T[]
+
+    # Plain families (no Pair row targets) get the LAZY segmented iterator:
+    # O(#blocks) memory, original iterators kept alive (a UnitRange stays a
+    # UnitRange), rows materialized on the fly by the specialized loops.
+    # Pair/augmentation families need per-row data-driven row targets, so
+    # they keep the materialized array.
+    lazy = !(blocks[1].f.f isa Pair) &&
+        all(b -> typeof(b.itr) == typeof(blocks[1].itr), blocks)
+    if lazy
+        segs = MergedSeg{K, typeof(blocks[1].itr)}[]
+        offs = Int[]
+        tot = 0
+        for (j, b) in enumerate(blocks)
+            iv = ntuple(k -> Int(acc.i[k][j]), K)
+            pbase = θlen0 + length(θext) + length(θadd)
+            for v in (acc.f[s][j] for s in 1:S)
+                push!(θadd, T(v))
+            end
+            f = b.f
+            # plain blocks: offset0(b, r) == f.o0 + r, so the o0 base is f.o0
+            push!(segs, MergedSeg(b.itr, f.o0, f.o1, f.o2, iv, pbase))
+            tot += length(b.itr)
+            push!(offs, tot)
+        end
+        uniform = all(sg -> length(sg.itr) == length(segs[1].itr), segs)
+        itr = SegmentedItr{K, eltype(blocks[1].itr), typeof(blocks[1].itr)}(
+            segs, offs, uniform ? length(segs[1].itr) : 0,
+            blocks[1].f.o1step, blocks[1].f.o2step)
+        con = Constraint(mf, itr, 0, (nrows,), blocks[1].tag)
+        Base.append!(θext, θadd)
+        return con
+    end
+
+    rows = Vector{MergedRow}(undef, 0)
     for (j, b) in enumerate(blocks)
         iv = ntuple(k -> Int(acc.i[k][j]), K)
         pbase = θlen0 + length(θext) + length(θadd)
@@ -257,4 +290,108 @@ function _merge_families(c::ExaCore{T}) where {T}
         Pair{Symbol, Any}[k => v for (k, v) in pairs(refs)] : refs
     return ExaCore(c; cons = Tuple(out), θ = θnew, npar = length(θnew),
                    var = Any[c.var...], par = Any[c.par...], refs = erased_refs)
+end
+
+# ── lazy segmented iterator (no per-row arrays) ──────────────────────────────
+#
+# Everything MergedRow stores per ROW is constant or affine per SEGMENT (one
+# segment = one original block): o0/o1/o2 are affine in the local row, iv and
+# pbase are per-block constants, and d is the original iterator's element.
+# So for plain (non-Pair) families the merged iterator stores one descriptor
+# per segment, keeps the original iterators (UnitRange stays a UnitRange),
+# and materializes MergedRow on the fly: O(#blocks) memory, and the
+# specialized loops below run one affine @simd inner loop per segment,
+# which is the same loop shape the unmerged blocks had.
+
+struct MergedSeg{K, I}
+    itr::I
+    o0::Int
+    o1::Int
+    o2::Int
+    iv::NTuple{K, Int}
+    pbase::Int
+end
+
+struct SegmentedItr{K, D, I} <: AbstractVector{MergedRow{K, D}}
+    segs::Vector{MergedSeg{K, I}}
+    offs::Vector{Int}    # cumulative row counts; offs[end] == length
+    seglen::Int          # > 0 when all segments have equal length (O(1) lookup)
+    o1step::Int
+    o2step::Int
+end
+Base.size(s::SegmentedItr) = (isempty(s.offs) ? 0 : s.offs[end],)
+@inline _segof(s::SegmentedItr, i::Int) =
+    s.seglen > 0 ? div(i - 1, s.seglen) + 1 : searchsortedfirst(s.offs, i)
+@inline function Base.getindex(s::SegmentedItr{K, D}, i::Int) where {K, D}
+    j = _segof(s, i)
+    seg = @inbounds s.segs[j]
+    base = j == 1 ? 0 : @inbounds s.offs[j-1]
+    r = i - base
+    return MergedRow{K, D}(
+        seg.o0 + r,
+        seg.o1 + s.o1step * (r - 1),
+        seg.o2 + s.o2step * (r - 1),
+        seg.iv, seg.pbase, (@inbounds seg.itr[r]),
+    )
+end
+
+# offset1/offset2 for segmented blocks go through getindex (lazy), same as
+# the array form: the MergedRow methods above already cover both, since both
+# containers are AbstractVector{<:MergedRow}.
+
+# ── specialized hot loops: one affine @simd inner loop per segment ───────────
+
+function sjacobian!(y1, y2, f::Constraint{F, I}, x, θ, adj) where {F, I <: SegmentedItr}
+    s = f.itr
+    for j in eachindex(s.segs)
+        seg = @inbounds s.segs[j]
+        @simd for r in 1:length(seg.itr)
+            el = MergedRow(seg.o0 + r, seg.o1 + s.o1step * (r - 1),
+                           seg.o2 + s.o2step * (r - 1), seg.iv, seg.pbase,
+                           @inbounds seg.itr[r])
+            @inbounds sjacobian!(y1, y2, f.f.f, el, x, θ, f.f.comp1,
+                                 seg.o0 + r, seg.o1 + s.o1step * (r - 1), adj)
+        end
+    end
+end
+
+function shessian!(y1, y2, f::Constraint{F, I}, x, θ, adj1, adj2) where {F, I <: SegmentedItr}
+    s = f.itr
+    for j in eachindex(s.segs)
+        seg = @inbounds s.segs[j]
+        @simd for r in 1:length(seg.itr)
+            el = MergedRow(seg.o0 + r, seg.o1 + s.o1step * (r - 1),
+                           seg.o2 + s.o2step * (r - 1), seg.iv, seg.pbase,
+                           @inbounds seg.itr[r])
+            @inbounds shessian!(y1, y2, f.f.f, el, x, θ, f.f.comp2,
+                                seg.o2 + s.o2step * (r - 1), adj1, adj2)
+        end
+    end
+end
+
+function shessian!(y1, y2, f::Constraint{F, I}, x, θ, adj1s::V, adj2) where {F, I <: SegmentedItr, V <: AbstractVector}
+    s = f.itr
+    for j in eachindex(s.segs)
+        seg = @inbounds s.segs[j]
+        @simd for r in 1:length(seg.itr)
+            el = MergedRow(seg.o0 + r, seg.o1 + s.o1step * (r - 1),
+                           seg.o2 + s.o2step * (r - 1), seg.iv, seg.pbase,
+                           @inbounds seg.itr[r])
+            @inbounds shessian!(y1, y2, f.f.f, el, x, θ, f.f.comp2,
+                                seg.o2 + s.o2step * (r - 1), adj1s[seg.o0 + r], adj2)
+        end
+    end
+end
+
+function _cons_rows!(g, con::Constraint{F, I}, x, θ) where {F, I <: SegmentedItr}
+    s = con.itr
+    for j in eachindex(s.segs)
+        seg = @inbounds s.segs[j]
+        @simd for r in 1:length(seg.itr)
+            el = MergedRow(seg.o0 + r, seg.o1 + s.o1step * (r - 1),
+                           seg.o2 + s.o2step * (r - 1), seg.iv, seg.pbase,
+                           @inbounds seg.itr[r])
+            @inbounds g[seg.o0 + r] += con.f(el, x, θ)
+        end
+    end
 end
