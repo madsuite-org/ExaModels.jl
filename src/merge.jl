@@ -33,16 +33,20 @@ The merged tree reads `v` and `d` through `DataIndexed` accessors built by
 `_hoist` (fields 4 and 5 by position); the evaluation kernels read `o0`/`o1`/
 `o2` through the `offset0/1/2` methods below.
 """
-struct MergedRow{V, D}
+struct MergedRow{K, D}
     o0::Int
     o1::Int
     o2::Int
-    v::V
-    d::D
+    iv::NTuple{K, Int}   # hoisted Integer leaves (feed variable indices, so
+                         # they must be readable in structure passes, where
+                         # θ is a NaNSource)
+    pbase::Int           # this row's block's base into θ for hoisted Floats
+    d::D                 # the original iterator element
 end
 
-const _MROW_V = 4  # field position of `v` in MergedRow
-const _MROW_D = 5  # field position of `d` in MergedRow
+const _MROW_IV = 4  # field position of `iv` in MergedRow
+const _MROW_PB = 5  # field position of `pbase` in MergedRow
+const _MROW_D  = 6  # field position of `d` in MergedRow
 
 # ── per-row offsets for merged blocks ────────────────────────────────────────
 # `offset0` flows through the (f, itr, i, dims) form; `offset1`/`offset2` are
@@ -114,10 +118,19 @@ function _hoist(n1::Null{T}, ns, acc, memo) where {T}
     all(n -> getfield(n, :value) === getfield(n1, :value), ns) || throw(_MergeRefuse("Null values differ"))
     return n1
 end
+# EVERY Real leaf is hoisted, equal-valued or not: which slots exist is then
+# read off the tree structure alone, so the merged block's TYPE is a pure
+# function of the family's type and the compiled merge output is reused for
+# any number of blocks and any data (Sungho, msg 173240/173248).  Integers
+# become element-tuple slots (structure passes need them with θ = NaNSource);
+# Floats become θ reads, stored once per BLOCK, addressed as θ[pbase + s].
+function _hoist(n1::T, ns, acc, memo) where {T <: Integer}
+    push!(acc.i, Any[ns...])
+    return DataIndexed(DataIndexed(DataSource(), _MROW_IV), length(acc.i))
+end
 function _hoist(n1::T, ns, acc, memo) where {T <: Real}
-    all(n -> n === n1, ns) && return n1
-    push!(acc, Any[ns...])
-    return DataIndexed(DataIndexed(DataSource(), _MROW_V), length(acc))
+    push!(acc.f, Any[ns...])
+    return ParameterNode(Node2(+, DataIndexed(DataSource(), _MROW_PB), length(acc.f)))
 end
 # SumNode/ProdNode/Pair/ArgLeaf/anything else: refuse, stay unmerged.
 _hoist(n1, ns, acc, memo) = throw(_MergeRefuse("node kind $(typeof(n1))"))
@@ -140,8 +153,8 @@ _hoist_root(ts::Vector{Any}, acc) = _hoist_root(ts[1], ts, acc, IdDict{Any, Any}
 _hoist_root(t1::Pair, ts, acc, memo) = _hoist_nodes(Any[p.second for p in ts], acc, memo)
 _hoist_root(t1, ts, acc, memo) = _hoist_nodes(ts, acc, memo)
 
-function _merge_group(::Type{T}, blocks::Vector{Any}, backend) where {T}
-    acc = Vector{Any}[]
+function _merge_group(::Type{T}, blocks::Vector{Any}, backend, θext::Vector{T}, θlen0::Int) where {T}
+    acc = (i = Vector{Any}[], f = Vector{Any}[])
     tree = _hoist_root(Any[b.f.f for b in blocks], acc)
     mf = _simdfunction(T, tree, 0, 0, 0)
     # per-row o1/o2 bases below assume the merged tree has the same per-row
@@ -150,10 +163,17 @@ function _merge_group(::Type{T}, blocks::Vector{Any}, backend) where {T}
         throw(_MergeRefuse("o1step/o2step mismatch: merged $(mf.o1step)/$(mf.o2step) vs $(blocks[1].f.o1step)/$(blocks[1].f.o2step)"))
     all(b -> b.tag === blocks[1].tag, blocks) || throw(_MergeRefuse("tags differ"))
 
+    K = length(acc.i)
+    S = length(acc.f)
     nrows = sum(b -> length(b.itr), blocks)
     rows = Vector{MergedRow}(undef, 0)
+    θadd = T[]
     for (j, b) in enumerate(blocks)
-        v = Tuple(acc[s][j] for s in eachindex(acc))
+        iv = ntuple(k -> Int(acc.i[k][j]), K)
+        pbase = θlen0 + length(θext) + length(θadd)
+        for v in (acc.f[s][j] for s in 1:S)
+            push!(θadd, T(v))
+        end
         f = b.f
         itr = collect(b.itr)
         for r in eachindex(itr)
@@ -161,7 +181,8 @@ function _merge_group(::Type{T}, blocks::Vector{Any}, backend) where {T}
                 offset0(b, r),   # block-level: folds in Pair row targets + dims
                 f.o1 + f.o1step * (r - 1),
                 f.o2 + f.o2step * (r - 1),
-                v,
+                iv,
+                pbase,
                 itr[r],
             ))
         end
@@ -170,7 +191,9 @@ function _merge_group(::Type{T}, blocks::Vector{Any}, backend) where {T}
     rows_c = [r for r in rows]
     rows_t = convert(Vector{typeof(rows_c[1])}, rows_c)
     length(rows_t) == nrows || throw(_MergeRefuse("row count"))
-    return Constraint(mf, convert_array(rows_t, backend), 0, (nrows,), blocks[1].tag)
+    con = Constraint(mf, convert_array(rows_t, backend), 0, (nrows,), blocks[1].tag)
+    Base.append!(θext, θadd)   # committed only on success
+    return con
 end
 
 """
@@ -197,12 +220,14 @@ function _merge_families(c::ExaCore{T}) where {T}
     end
     merged = Dict{Int, Any}()   # first-member index => merged block
     drop = Set{Int}()
+    θlen0 = length(c.θ)
+    θext = T[]
     for idx in members
         length(idx) > 1 || continue
         try
             # cons is pushfirst-ordered (most recent first); merge in ADD order
             blocks = Any[cons[i] for i in reverse(idx)]
-            m = _merge_group(T, blocks, c.backend)
+            m = _merge_group(T, blocks, c.backend, θext, θlen0)
             merged[idx[end]] = m          # idx[end] = earliest-added member
             for i in idx[1:(end-1)]
                 push!(drop, i)
@@ -219,5 +244,17 @@ function _merge_families(c::ExaCore{T}) where {T}
         i in drop && continue
         push!(out, get(merged, i, b))
     end
-    return ExaCore(c; cons = Tuple(out))
+    θnew = isempty(θext) ? c.θ : convert_array(vcat(Vector(c.θ), θext), c.backend)
+    # var/par blocks are offset metadata, not kernels: keeping them
+    # type-erased keeps the MODEL type independent of how many variable
+    # blocks (units) the flowsheet has, so the whole merged model's type is a
+    # function of its constraint families alone.
+    # refs likewise: the materialized NamedTuple puts every named block's
+    # type (one set per unit) into the model's type.  The Vector form is
+    # already served by the _refs_* accessors on models, so keep it erased.
+    refs = getfield(c, :refs)
+    erased_refs = refs isa NamedTuple ?
+        Pair{Symbol, Any}[k => v for (k, v) in pairs(refs)] : refs
+    return ExaCore(c; cons = Tuple(out), θ = θnew, npar = length(θnew),
+                   var = Any[c.var...], par = Any[c.par...], refs = erased_refs)
 end
