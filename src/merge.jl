@@ -53,6 +53,8 @@ const _MROW_D  = 6  # field position of `d` in MergedRow
 # normally f-only (affine in i), so merged blocks override at Constraint level.
 @inbounds @inline offset0(f::F, itr::AbstractVector{<:MergedRow}, i, dims) where {F <: SIMDFunction} =
     getfield(itr[i], :o0)
+@inbounds @inline offset0(f::F, itr::AbstractVector{<:MergedRow}, i) where {F <: SIMDFunction} =
+    getfield(itr[i], :o0)
 @inbounds @inline offset1(a::Constraint{F, I}, i) where {F, I <: AbstractVector{<:MergedRow}} =
     getfield(a.itr[i], :o1)
 @inbounds @inline offset2(a::Constraint{F, I}, i) where {F, I <: AbstractVector{<:MergedRow}} =
@@ -173,7 +175,14 @@ function _merge_group(::Type{T}, blocks::Vector{Any}, backend, θext::Vector{T},
     # UnitRange), rows materialized on the fly by the specialized loops.
     # Pair/augmentation families need per-row data-driven row targets, so
     # they keep the materialized array.
-    lazy = !(blocks[1].f.f isa Pair) &&
+    # Device backends: augmentation (Pair) families stay unmerged — their
+    # merged form writes data-driven row targets, which bypasses the
+    # extension's collision-handling buffer pipeline — and the iterator must
+    # be a device array, so the lazy form stays host-only.
+    if backend !== nothing && blocks[1].f.f isa Pair
+        throw(_MergeRefuse("aug family on device backend"))
+    end
+    lazy = backend === nothing && !(blocks[1].f.f isa Pair) &&
         all(b -> typeof(b.itr) == typeof(blocks[1].itr), blocks)
     if lazy
         segs = MergedSeg{K, typeof(blocks[1].itr)}[]

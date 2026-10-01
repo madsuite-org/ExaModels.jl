@@ -1321,3 +1321,63 @@ end
 end # module ExaModelsKernelAbstractions
 
 
+
+# ── merged (family-merged) constraint blocks ─────────────────────────────────
+# A merged block's row/nonzero offsets live in its MergedRow elements, not in
+# the SIMDFunction's affine fields, so the generic kernels' offset1/offset2
+# calls would be wrong for them.  These variants read the element.  (The cons
+# path needs no variant: kerf resolves the row through the 3-argument
+# offset0, which dispatches on the MergedRow iterator.)
+
+@kernel function kerj_m(y1, y2, @Const(f), @Const(itr), @Const(x), @Const(θ), @Const(adj))
+    I = @index(Global)
+    @inbounds begin
+        el = itr[I]
+        ExaModels.jrpass(
+            f(el, ExaModels.AdjointNodeSource(x), θ),
+            f.comp1, el.o0, y1, y2, el.o1, 0, adj,
+        )
+    end
+end
+
+@kernel function kerh_m(y1, y2, @Const(f), @Const(itr), @Const(x), @Const(θ), @Const(adj1), @Const(adj2))
+    I = @index(Global)
+    @inbounds begin
+        el = itr[I]
+        ExaModels.hrpass0(
+            f(el, ExaModels.SecondAdjointNodeSource(x), θ),
+            f.comp2, y1, y2, el.o2, 0, adj1, adj2,
+        )
+    end
+end
+
+@kernel function kerh2_m(y1, y2, @Const(f), @Const(itr), @Const(x), @Const(θ), @Const(adjs1), @Const(adj2))
+    I = @index(Global)
+    @inbounds begin
+        el = itr[I]
+        ExaModels.hrpass0(
+            f(el, ExaModels.SecondAdjointNodeSource(x), θ),
+            f.comp2, y1, y2, el.o2, 0, adjs1[el.o0], adj2,
+        )
+    end
+end
+
+const _MergedCon = ExaModels.Constraint{F, I} where {F, I <: AbstractVector{<:ExaModels.MergedRow}}
+
+function ExaModels.sjacobian!(backend::B, y1, y2, f::_MergedCon, x, θ, adj) where {B <: KernelAbstractions.Backend}
+    if !isempty(f.itr)
+        kerj_m(backend)(y1, y2, f.f, f.itr, x, θ, adj; ndrange = length(f.itr))
+    end
+end
+
+function ExaModels.shessian!(backend::B, y1, y2, f::_MergedCon, x, θ, adj, adj2) where {B <: KernelAbstractions.Backend}
+    if !isempty(f.itr)
+        kerh_m(backend)(y1, y2, f.f, f.itr, x, θ, adj, adj2; ndrange = length(f.itr))
+    end
+end
+
+function ExaModels.shessian!(backend::B, y1, y2, f::_MergedCon, x, θ, adj::V, adj2) where {B <: KernelAbstractions.Backend, V <: AbstractVector}
+    if !isempty(f.itr)
+        kerh2_m(backend)(y1, y2, f.f, f.itr, x, θ, adj, adj2; ndrange = length(f.itr))
+    end
+end
