@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Parameters · ExaModels.jl</title><meta name="title" content="Parameters · ExaModels.jl"/><meta property="og:title" content="Parameters · ExaModels.jl"/><meta property="twitter:title" content="Parameters · ExaModels.jl"/><meta name="description" content="Documentation for ExaModels.jl."/><meta property="og:description" content="Documentation for ExaModels.jl."/><meta property="twitter:description" content="Documentation for ExaModels.jl."/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.63.2/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script><link href="../assets/documentercitations/citations-hover.css" rel="stylesheet" type="text/css"/><link href="../assets/documentercitations/citations.css" rel="stylesheet" type="text/css"/><link href="../assets/favicon.ico" rel="icon" type="image/x-icon"/><link href="../assets/citations.css" rel="stylesheet" type="text/css"/><script src="../assets/documentercitations/citations-data.js"></script><script src="../assets/documentercitations/citations-hover.js"></script><script src="../assets/documentercitations/citations-backlinks.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><a class="docs-logo" href="../"><img src="../assets/logo.svg" alt="ExaModels.jl logo"/></a><div class="docs-package-name"><span class="docs-autofit"><a href="../">ExaModels.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">Introduction</a></li><li><a class="tocitem" href="../simd/">Mathematical Abstraction</a></li><li><input class="collapse-toggle" id="menuitem-3" type="checkbox" checked/><label class="tocitem" for="menuitem-3"><span class="docs-label">Tutorial</span><i class="docs-chevron"></i></label><ul class="collapsed"><li><a class="tocitem" href="../guide/">Getting Started</a></li><li><a class="tocitem" href="../patterns/">Macro Behavior: Returning <code>core</code> from Functions</a></li><li><a class="tocitem" href="../recipe/">Model recipes: building once, instantiating with data</a></li><li><a class="tocitem" href="../constraint_augmentation/">Constraint Augmentation with <code>add_con!</code></a></li><li><a class="tocitem" href="../performance/">Performance Tips</a></li><li><a class="tocitem" href="../gpu/">CPU and GPU acceleration</a></li><li class="is-active"><a class="tocitem" href>Parameters</a></li><li><a class="tocitem" href="../develop/">Developing Extensions</a></li><li><a class="tocitem" href="../quad/">Example: Quadrotor</a></li><li><a class="tocitem" href="../distillation/">Example: Distillation Column</a></li><li><a class="tocitem" href="../opf/">Example: Optimal Power Flow</a></li><li><a class="tocitem" href="../upgrade/">Upgrading from v0.9 to v0.10</a></li></ul></li><li><a class="tocitem" href="../oracle/">Oracle Constraints</a></li><li><a class="tocitem" href="../jump/">JuMP Interface (experimental)</a></li><li><a class="tocitem" href="../core/">API Manual</a></li><li><a class="tocitem" href="../ref/">References</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Tutorial</a></li><li class="is-active"><a href>Parameters</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Parameters</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/madsuite-org/ExaModels.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/madsuite-org/ExaModels.jl/blob/main/docs/src/parameters.jl" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="parameters"><a class="docs-heading-anchor" href="#parameters">Parameters</a><a id="parameters-1"></a><a class="docs-heading-anchor-permalink" href="#parameters" title="Permalink"></a></h1><p>Parameters act like fixed variables. Internally, ExaModels keeps track of where parameters appear in the model, making it possible to efficiently modify their value without rebuilding the entire model.</p><h3 id="Creating-Parametric-Models"><a class="docs-heading-anchor" href="#Creating-Parametric-Models">Creating Parametric Models</a><a id="Creating-Parametric-Models-1"></a><a class="docs-heading-anchor-permalink" href="#Creating-Parametric-Models" title="Permalink"></a></h3><p>Let&#39;s modify the example in <a href="../guide/#guide">Getting Started</a> to use parameters. Suppose we want to make the penalty coefficient in the objective function adjustable:</p><p>First, let&#39;s create a core:</p><pre><code class="language-julia hljs">using ExaModels, NLPModelsIpopt
+c_param = ExaCore(concrete = Val(true))</code></pre><pre><code class="nohighlight hljs">An ExaCore
+
+  Float type: ...................... Float64
+  Array type: ...................... Vector{Float64}
+  Backend: ......................... Nothing
+
+  number of objective patterns: .... 0
+  number of constraint patterns: ... 0
+</code></pre><p>Adding parameters is very similar to adding variables – just pass a vector of values denoting the initial values.</p><pre><code class="language-julia hljs">@add_par(c_param, θ, [100.0, 1.0])  # [penalty_coeff, offset]</code></pre><pre><code class="nohighlight hljs">Parameter
+
+  θ ∈ R^{2}
+</code></pre><p>Define the variables as before:</p><pre><code class="language-julia hljs">N = 10
+@add_var(c_param, x_p, N; start = (mod(i, 2) == 1 ? -1.2 : 1.0 for i = 1:N))</code></pre><pre><code class="nohighlight hljs">Variable
+
+  x_p ∈ R^{10}
+</code></pre><p>Now we can use the parameters in our objective function just like variables:</p><pre><code class="language-julia hljs">@add_obj(c_param, θ[1] * (x_p[i-1]^2 - x_p[i])^2 + (x_p[i-1] - θ[2])^2 for i = 2:N)</code></pre><pre><code class="nohighlight hljs">Objective
+
+  ∑_{i ∈ I} f(x,i)
+
+  f(x,i) = θ[1] * x[i - 1]^2 - x[i]^2 + x[i - 1] - θ[2]^2
+
+  where |I| = 9
+</code></pre><p>Add the same constraints as before:</p><pre><code class="language-julia hljs">@add_con(
+    c_param,
+    3x_p[i+1]^3 + 2 * x_p[i+2] - 5 +
+    sin(x_p[i+1] - x_p[i+2])sin(x_p[i+1] + x_p[i+2]) +
+    4x_p[i+1] - x_p[i]exp(x_p[i] - x_p[i+1]) - 3 for i = 1:(N-2)
+)</code></pre><pre><code class="nohighlight hljs">Constraint
+
+  g♭ ≤ [g(x,i)]_{i ∈ I} ≤ g♯
+
+  g(x,i) = 3 * x[i + 1]^3 + 2 * x[i + 2] - 5 + sin(x[i + 1] - x[i + 2]) * sin(x[i + 1] + x[i + 2]) + 4 * x[i + 1] - x[i] * exp(x[i] - x[i + 1]) - 3
+
+  where |I| = 8
+</code></pre><p>Create the model as before:</p><pre><code class="language-julia hljs">m_param = ExaModel(c_param)</code></pre><pre><code class="nohighlight hljs">An ExaModel{Float64, Vector{Float64}, ...}
+
+  Problem name: Generic
+   All variables: ████████████████████ 10     All constraints: ████████████████████ 8     
+            free: ████████████████████ 10                free: ⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅ 0     
+           lower: ⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅ 0                lower: ⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅ 0     
+           upper: ⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅ 0                upper: ⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅ 0     
+         low/upp: ⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅ 0              low/upp: ⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅ 0     
+           fixed: ⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅ 0                fixed: ████████████████████ 8     
+          infeas: ⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅ 0               infeas: ⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅ 0     
+            nnzh: (-36.36% sparsity)   75              linear: ⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅⋅ 0     
+                                                    nonlinear: ████████████████████ 8     
+                                                         nnzj: ( 70.00% sparsity)   24    
+                                                     lin_nnzj: (------% sparsity)         
+                                                     nln_nnzj: ( 70.00% sparsity)   24    
+
+</code></pre><p>Solve with original parameters:</p><pre><code class="language-julia hljs">result1 = ipopt(m_param)
+println(&quot;Original objective: $(result1.objective)&quot;)</code></pre><pre><code class="nohighlight hljs">This is Ipopt version 3.14.19, running with linear solver MUMPS 5.9.0.
+
+Number of nonzeros in equality constraint Jacobian...:       24
+Number of nonzeros in inequality constraint Jacobian.:        0
+Number of nonzeros in Lagrangian Hessian.............:       75
+
+Total number of variables............................:       10
+                     variables with only lower bounds:        0
+                variables with lower and upper bounds:        0
+                     variables with only upper bounds:        0
+Total number of equality constraints.................:        8
+Total number of inequality constraints...............:        0
+        inequality constraints with only lower bounds:        0
+   inequality constraints with lower and upper bounds:        0
+        inequality constraints with only upper bounds:        0
+
+iter    objective    inf_pr   inf_du lg(mu)  ||d||  lg(rg) alpha_du alpha_pr  ls
+   0  2.0570000e+03 2.48e+01 2.73e+01  -1.0 0.00e+00    -  0.00e+00 0.00e+00   0
+   1  1.0953147e+03 1.49e+01 8.27e+01  -1.0 2.20e+00    -  1.00e+00 1.00e+00f  1
+   2  3.2865521e+02 4.28e+00 1.36e+02  -1.0 1.43e+00    -  1.00e+00 1.00e+00f  1
+   3  1.3995370e+01 3.09e-01 2.18e+01  -1.0 5.63e-01    -  1.00e+00 1.00e+00f  1
+   4  6.2325715e+00 1.73e-02 8.47e-01  -1.0 2.10e-01    -  1.00e+00 1.00e+00f  1
+   5  6.2324586e+00 1.15e-05 8.16e-04  -1.7 3.35e-03    -  1.00e+00 1.00e+00h  1
+   6  6.2324586e+00 8.35e-12 7.97e-10  -5.7 2.00e-06    -  1.00e+00 1.00e+00h  1
+
+Number of Iterations....: 6
+
+                                   (scaled)                 (unscaled)
+Objective...............:   7.8692659500473017e-01    6.2324586324374636e+00
+Dual infeasibility......:   7.9746955363607132e-10    6.3159588647976857e-09
+Constraint violation....:   8.3546503049092280e-12    8.3546503049092280e-12
+Variable bound violation:   0.0000000000000000e+00    0.0000000000000000e+00
+Complementarity.........:   0.0000000000000000e+00    0.0000000000000000e+00
+Overall NLP error.......:   7.9746955363607132e-10    6.3159588647976857e-09
+
+
+Number of objective function evaluations             = 7
+Number of objective gradient evaluations             = 7
+Number of equality constraint evaluations            = 7
+Number of inequality constraint evaluations          = 0
+Number of equality constraint Jacobian evaluations   = 7
+Number of inequality constraint Jacobian evaluations = 0
+Number of Lagrangian Hessian evaluations             = 6
+Total seconds in IPOPT                               = 0.869
+
+EXIT: Optimal Solution Found.
+Original objective: 6.232458632437464
+</code></pre><p>Now change the penalty coefficient and solve again. A model owns its parameter values from the moment it is built, so the update goes to the model — the core stays the blueprint it was:</p><pre><code class="language-julia hljs">set_value!(m_param, θ, [200.0, 1.0])  # Double the penalty coefficient
+result2 = ipopt(m_param)
+println(&quot;Modified penalty objective: $(result2.objective)&quot;)</code></pre><pre><code class="nohighlight hljs">This is Ipopt version 3.14.19, running with linear solver MUMPS 5.9.0.
+
+Number of nonzeros in equality constraint Jacobian...:       24
+Number of nonzeros in inequality constraint Jacobian.:        0
+Number of nonzeros in Lagrangian Hessian.............:       75
+
+Total number of variables............................:       10
+                     variables with only lower bounds:        0
+                variables with lower and upper bounds:        0
+                     variables with only upper bounds:        0
+Total number of equality constraints.................:        8
+Total number of inequality constraints...............:        0
+        inequality constraints with only lower bounds:        0
+   inequality constraints with lower and upper bounds:        0
+        inequality constraints with only upper bounds:        0
+
+iter    objective    inf_pr   inf_du lg(mu)  ||d||  lg(rg) alpha_du alpha_pr  ls
+   0  4.0898000e+03 2.48e+01 2.70e+01  -1.0 0.00e+00    -  0.00e+00 0.00e+00   0
+   1  2.1810502e+03 1.49e+01 8.27e+01  -1.0 2.20e+00    -  1.00e+00 1.00e+00f  1
+   2  6.5137192e+02 4.27e+00 1.36e+02  -1.0 1.43e+00    -  1.00e+00 1.00e+00f  1
+   3  2.4064340e+01 3.08e-01 2.18e+01  -1.0 5.62e-01    -  1.00e+00 1.00e+00f  1
+   4  8.6476680e+00 1.72e-02 8.45e-01  -1.0 2.10e-01    -  1.00e+00 1.00e+00f  1
+   5  8.6474398e+00 1.15e-05 8.07e-04  -1.7 3.39e-03    -  1.00e+00 1.00e+00h  1
+   6  8.6474398e+00 8.42e-12 7.91e-10  -5.7 2.03e-06    -  1.00e+00 1.00e+00h  1
+
+Number of Iterations....: 6
+
+                                   (scaled)                 (unscaled)
+Objective...............:   5.4592422674820063e-01    8.6474397516914987e+00
+Dual infeasibility......:   7.9051456536755353e-10    1.2521750715422049e-08
+Constraint violation....:   8.4190432403374871e-12    8.4190432403374871e-12
+Variable bound violation:   0.0000000000000000e+00    0.0000000000000000e+00
+Complementarity.........:   0.0000000000000000e+00    0.0000000000000000e+00
+Overall NLP error.......:   7.9051456536755353e-10    1.2521750715422049e-08
+
+
+Number of objective function evaluations             = 7
+Number of objective gradient evaluations             = 7
+Number of equality constraint evaluations            = 7
+Number of inequality constraint evaluations          = 0
+Number of equality constraint Jacobian evaluations   = 7
+Number of inequality constraint Jacobian evaluations = 0
+Number of Lagrangian Hessian evaluations             = 6
+Total seconds in IPOPT                               = 0.005
+
+EXIT: Optimal Solution Found.
+Modified penalty objective: 8.647439751691499
+</code></pre><p>Try a different offset parameter:</p><pre><code class="language-julia hljs">set_value!(m_param, θ, [200.0, 0.5])  # Change the offset in the objective
+result3 = ipopt(m_param)
+println(&quot;Modified offset objective: $(result3.objective)&quot;)</code></pre><pre><code class="nohighlight hljs">This is Ipopt version 3.14.19, running with linear solver MUMPS 5.9.0.
+
+Number of nonzeros in equality constraint Jacobian...:       24
+Number of nonzeros in inequality constraint Jacobian.:        0
+Number of nonzeros in Lagrangian Hessian.............:       75
+
+Total number of variables............................:       10
+                     variables with only lower bounds:        0
+                variables with lower and upper bounds:        0
+                     variables with only upper bounds:        0
+Total number of equality constraints.................:        8
+Total number of inequality constraints...............:        0
+        inequality constraints with only lower bounds:        0
+   inequality constraints with lower and upper bounds:        0
+        inequality constraints with only upper bounds:        0
+
+iter    objective    inf_pr   inf_du lg(mu)  ||d||  lg(rg) alpha_du alpha_pr  ls
+   0  4.0810500e+03 2.48e+01 2.69e+01  -1.0 0.00e+00    -  0.00e+00 0.00e+00   0
+   1  2.1767809e+03 1.49e+01 8.26e+01  -1.0 2.20e+00    -  1.00e+00 1.00e+00f  1
+   2  6.5050886e+02 4.27e+00 1.36e+02  -1.0 1.43e+00    -  1.00e+00 1.00e+00f  1
+   3  2.4276149e+01 3.07e-01 2.18e+01  -1.0 5.61e-01    -  1.00e+00 1.00e+00f  1
+   4  8.8465512e+00 1.72e-02 8.43e-01  -1.0 2.09e-01    -  1.00e+00 1.00e+00f  1
+   5  8.8451636e+00 1.15e-05 8.04e-04  -1.7 3.40e-03    -  1.00e+00 1.00e+00h  1
+   6  8.8451630e+00 8.47e-12 7.88e-10  -5.7 2.05e-06    -  1.00e+00 1.00e+00h  1
+
+Number of Iterations....: 6
+
+                                   (scaled)                 (unscaled)
+Objective...............:   5.5805444714793528e-01    8.8451629872947741e+00
+Dual infeasibility......:   7.8812124187921384e-10    1.2491721683785540e-08
+Constraint violation....:   8.4678930534209940e-12    8.4678930534209940e-12
+Variable bound violation:   0.0000000000000000e+00    0.0000000000000000e+00
+Complementarity.........:   0.0000000000000000e+00    0.0000000000000000e+00
+Overall NLP error.......:   7.8812124187921384e-10    1.2491721683785540e-08
+
+
+Number of objective function evaluations             = 7
+Number of objective gradient evaluations             = 7
+Number of equality constraint evaluations            = 7
+Number of inequality constraint evaluations          = 0
+Number of equality constraint Jacobian evaluations   = 7
+Number of inequality constraint Jacobian evaluations = 0
+Number of Lagrangian Hessian evaluations             = 6
+Total seconds in IPOPT                               = 0.004
+
+EXIT: Optimal Solution Found.
+Modified offset objective: 8.845162987294774
+</code></pre><hr/><p><em>This page was generated using <a href="https://github.com/fredrikekre/Literate.jl">Literate.jl</a>.</em></p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../gpu/">« CPU and GPU acceleration</a><a class="docs-footer-nextpage" href="../develop/">Developing Extensions »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.19.0 on <span class="colophon-date" title="Wednesday 30 September 2026 22:56">Wednesday 30 September 2026</span>. Using Julia version 1.13.1.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
