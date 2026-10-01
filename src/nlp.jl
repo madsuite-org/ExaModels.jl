@@ -1489,11 +1489,6 @@ end
 @inline _subexprs(m::ExaModel) = m.subexprs
 @inline _subexprs(m::AbstractExaModel) = ()
 
-@inline _check_no_subexprs(m, what) =
-    isempty(_subexprs(m)) || error(
-        "$what is not yet supported with buffered subexpressions (add_expr(...; buffered = true))",
-    )
-
 function obj(m::AbstractExaModel, x::AbstractVector)
     _sync_subexprs!(_subexprs(m), x, m.θ)
     return _obj(m.objs, x, m.θ)
@@ -1572,9 +1567,21 @@ _jac_coord!(cons::Tuple{}, x, θ, jac) = nothing
 end
 
 function jprod_nln!(m::AbstractExaModel, x::AbstractVector, v::AbstractVector, Jv::AbstractVector)
-    _check_no_subexprs(m, "jprod_nln!")
+    _jprod_impl!(m, _subexprs(m), x, v, Jv)
+    return Jv
+end
+@inline function _jprod_impl!(m, ::Tuple{}, x, v, Jv)
     fill!(Jv, zero(eltype(Jv)))
     _jprod_nln!(m.cons, x, m.θ, v, Jv)
+    return Jv
+end
+@inline function _jprod_impl!(m, stages::Tuple, x, v, Jv)
+    sj = m.sjac
+    jac_coord!(m, x, sj.vals)
+    fill!(Jv, zero(eltype(Jv)))
+    @inbounds for k in eachindex(sj.rows)
+        Jv[sj.rows[k]] += sj.vals[k] * v[sj.cols[k]]
+    end
     return Jv
 end
 
@@ -1585,9 +1592,21 @@ _jprod_nln!(cons::Tuple{}, x, θ, v, Jv) = nothing
 end
 
 function jtprod_nln!(m::AbstractExaModel, x::AbstractVector, v::AbstractVector, Jtv::AbstractVector)
-    _check_no_subexprs(m, "jtprod_nln!")
+    _jtprod_impl!(m, _subexprs(m), x, v, Jtv)
+    return Jtv
+end
+@inline function _jtprod_impl!(m, ::Tuple{}, x, v, Jtv)
     fill!(Jtv, zero(eltype(Jtv)))
     _jtprod_nln!(m.cons, x, m.θ, v, Jtv)
+    return Jtv
+end
+@inline function _jtprod_impl!(m, stages::Tuple, x, v, Jtv)
+    sj = m.sjac
+    jac_coord!(m, x, sj.vals)
+    fill!(Jtv, zero(eltype(Jtv)))
+    @inbounds for k in eachindex(sj.rows)
+        Jtv[sj.cols[k]] += sj.vals[k] * v[sj.rows[k]]
+    end
     return Jtv
 end
 
@@ -1660,9 +1679,7 @@ function hprod!(
     Hv::AbstractVector;
     obj_weight = one(eltype(x)),
 )
-    _check_no_subexprs(m, "hprod!")
-    fill!(Hv, zero(eltype(Hv)))
-    _obj_hprod!(m.objs, x, m.θ, v, Hv, obj_weight)
+    _hprod_impl!(m, _subexprs(m), x, nothing, v, Hv, obj_weight)
     return Hv
 end
 
@@ -1674,10 +1691,32 @@ function hprod!(
     Hv::AbstractVector;
     obj_weight = one(eltype(x)),
 )
-    _check_no_subexprs(m, "hprod!")
+    _hprod_impl!(m, _subexprs(m), x, y, v, Hv, obj_weight)
+    return Hv
+end
+
+@inline function _hprod_impl!(m, ::Tuple{}, x, y, v, Hv, obj_weight)
     fill!(Hv, zero(eltype(Hv)))
     _obj_hprod!(m.objs, x, m.θ, v, Hv, obj_weight)
-    _con_hprod!(m.cons, x, m.θ, y, v, Hv, obj_weight)
+    y === nothing || _con_hprod!(m.cons, x, m.θ, y, v, Hv, obj_weight)
+    return Hv
+end
+# Buffered models: symmetric COO product off the composed Hessian values.
+@inline function _hprod_impl!(m, stages::Tuple, x, y, v, Hv, obj_weight)
+    sh = m.shess
+    if y === nothing
+        hess_coord!(m, x, sh.vals; obj_weight = obj_weight)
+    else
+        hess_coord!(m, x, y, sh.vals; obj_weight = obj_weight)
+    end
+    fill!(Hv, zero(eltype(Hv)))
+    @inbounds for k in eachindex(sh.rows)
+        r = sh.rows[k]
+        c = sh.cols[k]
+        val = sh.vals[k]
+        Hv[r] += val * v[c]
+        r != c && (Hv[c] += val * v[r])
+    end
     return Hv
 end
 

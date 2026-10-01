@@ -123,6 +123,25 @@ function runtests()
             gm = _lag_grad(m1, [xv[j] - (j == k ? h : 0.0) for j in 1:10], yv)
             @test H1[:, k] ≈ (gp .- gm) ./ 2h rtol = 1e-5
         end
+
+        # matrix-vector products against the inlined model
+        vv = [cos(5i) for i in 1:10]
+        vc = [sin(7i) for i in 1:8]
+        Jv0 = zeros(8); Jv1 = zeros(8)
+        NLPModels.jprod_nln!(m0, xv, vv, Jv0)
+        NLPModels.jprod_nln!(m1, xv, vv, Jv1)
+        @test Jv1 ≈ Jv0 rtol = 1e-14
+        Jtv0 = zeros(10); Jtv1 = zeros(10)
+        NLPModels.jtprod_nln!(m0, xv, vc, Jtv0)
+        NLPModels.jtprod_nln!(m1, xv, vc, Jtv1)
+        @test Jtv1 ≈ Jtv0 rtol = 1e-14
+        Hv0 = zeros(10); Hv1 = zeros(10)
+        NLPModels.hprod!(m0, xv, yv, vv, Hv0; obj_weight = 0.7)
+        NLPModels.hprod!(m1, xv, yv, vv, Hv1; obj_weight = 0.7)
+        @test Hv1 ≈ Hv0 rtol = 1e-14
+        NLPModels.hprod!(m0, xv, vv, Hv0)
+        NLPModels.hprod!(m1, xv, vv, Hv1)
+        @test Hv1 ≈ Hv0 rtol = 1e-14
     end
 
     # Adversarial sharing: duplicate columns inside one stage element's

@@ -6,9 +6,10 @@
 # into their own.  Consumer tree types stay shallow, so compilation cost is
 # additive (one kernel per stage) rather than multiplicative in nesting depth.
 #
-# First-order only for now: objective gradients flow through an adjoint buffer
-# (`GradTarget`); Jacobian/Hessian support is guarded with errors at the
-# NLPModels entry points (see nlp.jl).
+# Derivatives: gradients flow through an adjoint buffer (`GradTarget`);
+# Jacobians and Hessians run in the extended (x, s) coordinate space and are
+# resolved to x-coordinates by build-time elimination (see the sections below);
+# Hessian stage curvature is seeded through the (λ, μ) buffers (`HessTarget`).
 
 """
     SubexprNode{I} <: AbstractNode
@@ -522,6 +523,7 @@ struct SubexprJac{T}
     jac_prod_b::Vector{Int}
     rows::Vector{Int}
     cols::Vector{Int}
+    vals::Vector{T}            # scratch for COO-based jprod/jtprod
 end
 
 _build_subexpr_jac(::Type{T}, stages::Tuple{}, cons, nnzj_ext) where {T} = (nothing, nothing)
@@ -624,6 +626,7 @@ function _build_subexpr_jac(::Type{T}, stages::Tuple, cons, nnzj_ext) where {T}
             jac_prod_b,
             rows,
             cols,
+            zeros(T, length(rows)),
         ),
         resolved,
     )
@@ -714,6 +717,7 @@ struct SubexprHess{T}
     p2_c::Vector{T}
     rows::Vector{Int}
     cols::Vector{Int}
+    vals::Vector{T}            # scratch for COO-based hprod
 end
 
 _build_subexpr_hess(::Type{T}, stages::Tuple{}, objs, cons, nnzh_ext, resolved, nθ) where {T} =
@@ -810,6 +814,7 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, res
         p2_c,
         rows,
         cols,
+        zeros(T, length(rows)),
     )
 end
 
