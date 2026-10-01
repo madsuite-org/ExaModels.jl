@@ -151,6 +151,28 @@ end
     end
 end
 
+# Value mode (sparse gradient slots, used by the KA gradient path): write the
+# local adjoint into the compressed slot, like a Var.
+@inline function grpass(d::D, comp, y, o1, cnt, adj) where {D<:AdjointNodeSubexpr}
+    @inbounds y[o1+comp(cnt+=1)] += adj
+    return cnt
+end
+# Gradient-scatter structure collection: the dense target of a subexpression
+# leaf is the adjoint buffer, not the gradient; mark it with the negated slot
+# (the extension shifts it to nvar + slot when assembling the extended target).
+@inline function grpass(
+    d::D,
+    comp,
+    y::V,
+    o1,
+    cnt,
+    adj,
+) where {D<:AdjointNodeSubexpr,V<:AbstractVector{Tuple{Int,Int}}}
+    ind = o1 + comp(cnt += 1)
+    @inbounds y[ind] = (-d.i, ind)
+    return cnt
+end
+
 # Value mode: write the local adjoint into the extended slot (like a Var).
 @inline function jrpass(d::D, comp, i, y1, y2, o1, cnt, adj) where {D<:AdjointNodeSubexpr}
     @inbounds y1[o1+comp(cnt+=1)] += adj
@@ -527,11 +549,21 @@ struct SubexprJac{T}
     vals::Vector{T}            # scratch for COO-based jprod/jtprod
 end
 
+# Build-time structure passes iterate block iterators on the host; for device
+# models, reconstruct the blocks with host copies of their iterators.
+_host_array(x::Array) = x
+_host_array(x) = Array(x)
+_host_block(s::SubexprStage) = SubexprStage(s.f, _host_array(s.itr), s.offset)
+_host_blocks(t::Tuple) = map(_host_block, t)
+# _host_block methods for Objective/Constraint/ConstraintAugmentation are in
+# nlp.jl (those types are defined after this file is included).
+
 _build_subexpr_jac(::Type{T}, stages::Tuple{}, cons, nnzj_ext) where {T} =
     (nothing, nothing, nothing)
 
 function _build_subexpr_jac(::Type{T}, stages::Tuple, cons, nnzj_ext) where {T}
-    ordered = reverse(collect(Any, stages))   # oldest first
+    cons = _host_blocks(cons)
+    ordered = reverse(collect(Any, _host_blocks(stages)))   # oldest first
     # θ-slot → [(xcol, res index)] : stage Jacobians fully resolved to x-columns
     resolved = Dict{Int,Vector{Tuple{Int,Int}}}()
     # θ-slot → [(signed col, stage_ext index)] : ONE-level (local) rows, used by
@@ -761,7 +793,9 @@ _build_subexpr_hess(::Type{T}, stages::Tuple{}, objs, cons, nnzh_ext, localrows,
     nothing
 
 function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, localrows, nθ) where {T}
-    ordered = reverse(collect(Any, stages))   # oldest first: levels 1..nlv
+    objs = _host_blocks(objs)
+    cons = _host_blocks(cons)
+    ordered = reverse(collect(Any, _host_blocks(stages)))   # oldest first: levels 1..nlv
     nlv = length(ordered)
     stage_o2 = Int[]
     total = nnzh_ext
@@ -1006,3 +1040,7 @@ _reverse_subexprs!(stages::Tuple{}, x, θ, t::GradTarget) = nothing
     _reverse_subexprs!(Base.tail(stages), x, θ, t)
     return nothing
 end
+
+# Device (KernelAbstractions) support artifact: the extension provides a method
+# for KA backends; the base fallback means CPU models carry nothing extra.
+build_subexpr_ka(c, sjac, shess, nvar) = nothing

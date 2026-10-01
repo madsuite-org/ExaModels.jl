@@ -241,6 +241,11 @@ struct ConstraintSlot{C, I}
     idx::I
 end
 
+_host_block(b::Objective) = Objective(b.f, _host_array(b.itr))
+_host_block(b::Constraint) = Constraint(b.f, _host_array(b.itr), b.offset, b.size, b.tag)
+_host_block(b::ConstraintAugmentation) =
+    ConstraintAugmentation(b.f, _host_array(b.itr), b.oa, b.dims, b.tag)
+
 
 """
     ConAugPair{C, P}
@@ -475,7 +480,7 @@ An abstract type for ExaModel, which is a subtype of `NLPModels.AbstractNLPModel
 """
 abstract type AbstractExaModel{T,VT,E} <: NLPModels.AbstractNLPModel{T,VT} end
 
-struct ExaModel{T,VT,E,V,P,O,C,S,R,SE,SJ,SH} <: AbstractExaModel{T,VT,E}
+struct ExaModel{T,VT,E,V,P,O,C,S,R,SE,SJ,SH,SK} <: AbstractExaModel{T,VT,E}
     name::Symbol
     vars::V
     pars::P
@@ -485,6 +490,7 @@ struct ExaModel{T,VT,E,V,P,O,C,S,R,SE,SJ,SH} <: AbstractExaModel{T,VT,E}
     abuf::VT                   # adjoint buffer for buffered subexpressions (θ-length)
     sjac::SJ                   # SubexprJac (Jacobian elimination maps) or nothing
     shess::SH                  # SubexprHess (Hessian elimination maps) or nothing
+    ska::SK                    # device (KA) buffered-evaluation artifact or nothing
     θ::VT
     meta::NLPModels.NLPModelMeta{T,VT}
     counters::NLPModels.Counters
@@ -543,6 +549,7 @@ julia> result = ipopt(m; print_level=0)    # solve the problem
 function ExaModel(c::ExaCore{T, VT, B, S, V, P, O, C, R, Tuple{}, Tuple{}, Tuple{}, SE}; prod = false, kwargs...) where {T, VT, B, S, V, P, O, C, R, SE}
     sjac, resolved, localrows = _build_subexpr_jac(T, c.subexprs, c.cons, c.nnzj)
     shess = _build_subexpr_hess(T, c.subexprs, c.obj, c.cons, c.nnzh, localrows, length(c.θ))
+    ska = build_subexpr_ka(c, sjac, shess, c.nvar)
     return ExaModel(
         c.name,
         c.var,
@@ -553,6 +560,7 @@ function ExaModel(c::ExaCore{T, VT, B, S, V, P, O, C, R, Tuple{}, Tuple{}, Tuple
         _make_abuf(c.subexprs, c.θ),
         sjac,
         shess,
+        ska,
         c.θ,
         NLPModels.NLPModelMeta(
             c.nvar,
