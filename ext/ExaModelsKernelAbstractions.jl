@@ -1318,7 +1318,6 @@ end
     @inbounds sparsity[i] = ((J[i], I[i]), i)
 end
 
-end # module ExaModelsKernelAbstractions
 
 
 
@@ -1381,3 +1380,5 @@ function ExaModels.shessian!(backend::B, y1, y2, f::_MergedCon, x, θ, adj::V, a
         kerh2_m(backend)(y1, y2, f.f, f.itr, x, θ, adj, adj2; ndrange = length(f.itr))
     end
 end
+
+end # module ExaModelsKernelAbstractions
