@@ -69,6 +69,43 @@ Subexpression (reduced)
 end
 
 """
+    BufferedExpression
+
+A subexpression created by [`add_expr`](@ref) / [`@add_expr`](@ref) with
+`buffered = true`.  Unlike [`Expression`](@ref), indexing does NOT splice the
+subexpression tree into the enclosing objective or constraint: each element is
+evaluated once per model evaluation into a dedicated θ slot, and consumers
+reference the slot through a shallow [`SubexprNode`](@ref) leaf.  This keeps
+compilation cost additive in the nesting depth of expression trees.
+
+Currently supports objective/constraint values and dense gradients; Jacobian
+and Hessian evaluation with buffered expressions is not yet implemented.
+"""
+struct BufferedExpression{S,F,T}
+    size::S
+    length::Int
+    offset::Int    # θ offset: element k's value lives at θ[offset + k]
+    f::F           # the generator function (kept for display)
+    tag::T
+end
+function Base.show(io::IO, s::BufferedExpression)
+    expr = try
+        _expr_string(s.f(DataSource()))
+    catch
+        "(?)"
+    end
+    print(
+        io,
+        """
+Subexpression (buffered)
+
+  s ∈ R^{$(join(size(s.size), " × "))}
+  s(x,i) = $expr
+""",
+    )
+end
+
+"""
     Parameter
 
 A handle to a block of model parameters added to an [`ExaCore`](@ref) via
@@ -302,13 +339,14 @@ An ExaCore
   number of constraint patterns: ... 0
 ```
 """
-struct ExaCore{T, VT <: AbstractVector{T}, B, S, V, P, O, C, R, OR, SOR, EV} <: AbstractExaCore{T, VT, B, S}
+struct ExaCore{T, VT <: AbstractVector{T}, B, S, V, P, O, C, R, OR, SOR, EV, SE} <: AbstractExaCore{T, VT, B, S}
     name::Symbol
     backend::B
     var::V
     par::P
     obj::O
     cons::C
+    subexprs::SE               # Tuple of SubexprStage (buffered subexpressions), newest first
     nvar::Int
     npar::Int
     ncon::Int
@@ -341,6 +379,7 @@ end
     par = (),
     obj = (),
     cons = (),
+    subexprs = (),
     nvar = 0,
     npar = 0,
     ncon = 0,
@@ -372,6 +411,7 @@ end
         par,
         obj,
         cons,
+        subexprs,
         nvar,
         npar,
         ncon,
@@ -435,12 +475,16 @@ An abstract type for ExaModel, which is a subtype of `NLPModels.AbstractNLPModel
 """
 abstract type AbstractExaModel{T,VT,E} <: NLPModels.AbstractNLPModel{T,VT} end
 
-struct ExaModel{T,VT,E,V,P,O,C,S,R} <: AbstractExaModel{T,VT,E}
+struct ExaModel{T,VT,E,V,P,O,C,S,R,SE,SJ,SH} <: AbstractExaModel{T,VT,E}
     name::Symbol
     vars::V
     pars::P
     objs::O
     cons::C
+    subexprs::SE               # Tuple of SubexprStage (buffered subexpressions), newest first
+    abuf::VT                   # adjoint buffer for buffered subexpressions (θ-length)
+    sjac::SJ                   # SubexprJac (Jacobian elimination maps) or nothing
+    shess::SH                  # SubexprHess (Hessian elimination maps) or nothing
     θ::VT
     meta::NLPModels.NLPModelMeta{T,VT}
     counters::NLPModels.Counters
@@ -496,19 +540,25 @@ julia> result = ipopt(m; print_level=0)    # solve the problem
 ```
 """
 # No-oracle path: always returns ExaModel (type-stable for juliac --trim=safe).
-function ExaModel(c::ExaCore{T, VT, B, S, V, P, O, C, R, Tuple{}, Tuple{}, Tuple{}}; prod = false, kwargs...) where {T, VT, B, S, V, P, O, C, R}
+function ExaModel(c::ExaCore{T, VT, B, S, V, P, O, C, R, Tuple{}, Tuple{}, Tuple{}, SE}; prod = false, kwargs...) where {T, VT, B, S, V, P, O, C, R, SE}
+    sjac, resolved = _build_subexpr_jac(T, c.subexprs, c.cons, c.nnzj)
+    shess = _build_subexpr_hess(T, c.subexprs, c.obj, c.cons, c.nnzh, resolved)
     return ExaModel(
         c.name,
         c.var,
         c.par,
         c.obj,
         c.cons,
+        c.subexprs,
+        _make_abuf(c.subexprs, c.θ),
+        sjac,
+        shess,
         c.θ,
         NLPModels.NLPModelMeta(
             c.nvar,
             ncon = c.ncon,
-            nnzj = c.nnzj,
-            nnzh = c.nnzh,
+            nnzj = sjac === nothing ? c.nnzj : length(sjac.rows),
+            nnzh = shess === nothing ? c.nnzh : length(shess.rows),
             x0 = (c.x0),
             lvar = (c.lvar),
             uvar = (c.uvar),
@@ -526,6 +576,8 @@ end
 
 # Oracle path: always returns ExaModelWithOracle (type-stable for juliac --trim=safe).
 function ExaModel(c::ExaCore; prod = false, kwargs...)
+    isempty(c.subexprs) ||
+        error("buffered subexpressions are not supported together with oracles yet")
     return _build_with_oracle(c; prod, kwargs...)
 end
 
@@ -571,6 +623,31 @@ end
     # No adjustment needed; the indices are used directly in expression building
     @assert(length(is) == length(s.size), "Expression index dimension error")
     return s.f(is)
+end
+
+# BufferedExpression indexing - resolves to the θ slot holding the element's
+# buffered value instead of splicing the subexpression tree into the use site.
+# Like Var indexing (see _indexed_var), a symbolic index keeps the runtime
+# offset as a plain Int child of Node2 for type stability under juliac.
+@inline _subexpr_slot(i::I, o::Int) where {I<:AbstractNode} = SubexprNode(Node2(+, i, o))
+@inline _subexpr_slot(i, o) = SubexprNode(i + o)
+
+@inline function Base.getindex(s::BufferedExpression, i::I) where {I<:Integer}
+    _bound_check(s.size, i)
+    return SubexprNode(s.offset + i - _start(s.size[1]) + 1)
+end
+@inline function Base.getindex(s::BufferedExpression, i)
+    # Symbolic index case - slot = offset + (i - start + 1)
+    return _subexpr_slot(i, s.offset - _start(s.size[1]) + 1)
+end
+@inline function Base.getindex(s::BufferedExpression, is::Vararg{I,N}) where {I<:Integer,N}
+    @assert(length(is) == length(s.size), "Expression index dimension error")
+    _bound_check(s.size, is)
+    return SubexprNode(s.offset + idxx(is .- (_start.(s.size) .- 1), _length.(s.size)))
+end
+@inline function Base.getindex(s::BufferedExpression, is...)
+    @assert(length(is) == length(s.size), "Expression index dimension error")
+    return _subexpr_slot(idxx(is .- (_start.(s.size) .- 1), _length.(s.size)), s.offset)
 end
 
 @inline function Base.getindex(p::P, i) where {P<:Parameter}
@@ -1278,6 +1355,13 @@ variables or constraints are added to the problem.
 ## Keyword Arguments
 - `name`: When given as `Val(:name)`, registers the subexpression in `core` for later retrieval as `core.name` or `model.name`. See [`@add_expr`](@ref) for the idiomatic named interface.
 - `tag` : User-defined metadata attached to the expression.
+- `buffered`: When `true` (or `Val(true)`), returns a [`BufferedExpression`](@ref):
+  each element is evaluated once per model evaluation into a dedicated buffer
+  slot, and indexing produces a shallow leaf node referencing the slot instead
+  of splicing the subexpression tree into the use site. This keeps compilation
+  cost additive in the nesting depth of expression trees. Currently supports
+  objective/constraint values and dense gradients; Jacobian and Hessian
+  evaluation is not yet implemented for buffered expressions.
 
 ## Example
 ```julia
@@ -1308,7 +1392,19 @@ c, s = add_expr(c, x[i, k]^2 for (i, k) in itr)
 # s[i, k] substitutes x[i,k]^2 directly
 ```
 """
-@inline function add_expr(c::C, gen::Base.Generator; name = nothing, tag = nothing) where {T, C <: ExaCore{T}}
+@inline function add_expr(
+    c::C,
+    gen::Base.Generator;
+    name = nothing,
+    tag = nothing,
+    buffered = Val(false),
+) where {T,C<:ExaCore{T}}
+    return _add_expr(c, gen, _buffered_val(buffered), name, tag)
+end
+@inline _buffered_val(b::Bool) = Val(b)
+@inline _buffered_val(b::Val) = b
+
+@inline function _add_expr(c::C, gen, ::Val{false}, name, tag) where {T,C<:ExaCore{T}}
     ns = _infer_subexpr_dims(gen.iter)
 
     gen = _adapt_gen(gen)
@@ -1318,8 +1414,39 @@ c, s = add_expr(c, x[i, k]^2 for (i, k) in itr)
     return (ExaCore(c; refs = add_refs(c.refs, name, ex)), ex)
 end
 
+@inline function _add_expr(c::C, gen, ::Val{true}, name, tag) where {T,C<:ExaCore{T}}
+    ns = _infer_subexpr_dims(gen.iter)
+
+    gen = _adapt_gen(gen)
+    n = length(gen.iter)
+
+    o = c.npar
+    f = SIMDFunction(T, gen)
+    stage = SubexprStage(f, convert_array(collect(gen.iter), c.backend), o)
+    θ = append!(c.backend, c.θ, zero(T), n)
+    ex = BufferedExpression(ns, n, o, gen.f, tag)
+    return (
+        ExaCore(
+            c;
+            subexprs = (stage, c.subexprs...),
+            θ = θ,
+            npar = c.npar + n,
+            refs = add_refs(c.refs, name, ex),
+        ),
+        ex,
+    )
+end
+
 function jac_structure!(m::AbstractExaModel{T}, rows::AbstractVector, cols::AbstractVector) where T
+    _jac_structure_impl!(m, _subexprs(m), rows, cols)
+    return rows, cols
+end
+
+@inline _jac_structure_impl!(m::AbstractExaModel{T}, ::Tuple{}, rows, cols) where {T} =
     _jac_structure!(T, m.cons, rows, cols)
+@inline function _jac_structure_impl!(m::AbstractExaModel, ::Tuple, rows, cols)
+    copyto!(rows, m.sjac.rows)
+    copyto!(cols, m.sjac.cols)
     return rows, cols
 end
 
@@ -1330,8 +1457,18 @@ _jac_structure!(T, cons::Tuple{}, rows, cols) = nothing
 end
 
 function hess_structure!(m::AbstractExaModel{T}, rows::AbstractVector, cols::AbstractVector) where T
+    _hess_structure_impl!(m, _subexprs(m), rows, cols)
+    return rows, cols
+end
+
+@inline function _hess_structure_impl!(m::AbstractExaModel{T}, ::Tuple{}, rows, cols) where {T}
     _obj_hess_structure!(T, m.objs, rows, cols)
     _con_hess_structure!(T, m.cons, rows, cols)
+    return rows, cols
+end
+@inline function _hess_structure_impl!(m::AbstractExaModel, ::Tuple, rows, cols)
+    copyto!(rows, m.shess.rows)
+    copyto!(cols, m.shess.cols)
     return rows, cols
 end
 
@@ -1347,7 +1484,18 @@ _con_hess_structure!(T, cons::Tuple{}, rows, cols) = nothing
     shessian!(rows, cols, first(cons), NaNSource{T}(), NaNSource{T}(), T(NaN), T(NaN))
 end
 
+# Buffered-subexpression access: only ExaModel carries stages (oracle models
+# are guarded at build time), so other AbstractExaModels fall back to ().
+@inline _subexprs(m::ExaModel) = m.subexprs
+@inline _subexprs(m::AbstractExaModel) = ()
+
+@inline _check_no_subexprs(m, what) =
+    isempty(_subexprs(m)) || error(
+        "$what is not yet supported with buffered subexpressions (add_expr(...; buffered = true))",
+    )
+
 function obj(m::AbstractExaModel, x::AbstractVector)
+    _sync_subexprs!(_subexprs(m), x, m.θ)
     return _obj(m.objs, x, m.θ)
 end
 
@@ -1363,6 +1511,7 @@ end
 
 function cons_nln!(m::AbstractExaModel, x::AbstractVector, g::AbstractVector)
     fill!(g, zero(eltype(g)))
+    _sync_subexprs!(_subexprs(m), x, m.θ)
     _cons_nln!(m.cons, x, m.θ, g)
     return g
 end
@@ -1380,8 +1529,18 @@ _cons_nln!(cons::Tuple{}, x, θ, g) = nothing
 
 function grad!(m::AbstractExaModel, x::AbstractVector, f::AbstractVector)
     fill!(f, zero(eltype(f)))
-    _grad!(m.objs, x, m.θ, f)
+    _grad_impl!(m, _subexprs(m), x, f)
     return f
+end
+
+@inline _grad_impl!(m, ::Tuple{}, x, f) = _grad!(m.objs, x, m.θ, f)
+@inline function _grad_impl!(m, stages::Tuple, x, f)
+    _sync_subexprs!(stages, x, m.θ)
+    fill!(m.abuf, zero(eltype(m.abuf)))
+    t = GradTarget(f, m.abuf)
+    _grad!(m.objs, x, m.θ, t)
+    _reverse_subexprs!(stages, x, m.θ, t)
+    return nothing
 end
 
 @inline function _grad!(objs::Tuple, x, θ, f)
@@ -1391,8 +1550,18 @@ end
 _grad!(objs::Tuple{}, x, θ, f) = nothing
 
 function jac_coord!(m::AbstractExaModel, x::AbstractVector, jac::AbstractVector)
+    _jac_coord_impl!(m, _subexprs(m), x, jac)
+    return jac
+end
+
+@inline function _jac_coord_impl!(m, ::Tuple{}, x, jac)
     fill!(jac, zero(eltype(jac)))
     _jac_coord!(m.cons, x, m.θ, jac)
+    return jac
+end
+@inline function _jac_coord_impl!(m, stages::Tuple, x, jac)
+    _sync_subexprs!(stages, x, m.θ)
+    _jac_coord_subexpr!(m.sjac, stages, m.cons, x, m.θ, jac)
     return jac
 end
 
@@ -1403,6 +1572,7 @@ _jac_coord!(cons::Tuple{}, x, θ, jac) = nothing
 end
 
 function jprod_nln!(m::AbstractExaModel, x::AbstractVector, v::AbstractVector, Jv::AbstractVector)
+    _check_no_subexprs(m, "jprod_nln!")
     fill!(Jv, zero(eltype(Jv)))
     _jprod_nln!(m.cons, x, m.θ, v, Jv)
     return Jv
@@ -1415,6 +1585,7 @@ _jprod_nln!(cons::Tuple{}, x, θ, v, Jv) = nothing
 end
 
 function jtprod_nln!(m::AbstractExaModel, x::AbstractVector, v::AbstractVector, Jtv::AbstractVector)
+    _check_no_subexprs(m, "jtprod_nln!")
     fill!(Jtv, zero(eltype(Jtv)))
     _jtprod_nln!(m.cons, x, m.θ, v, Jtv)
     return Jtv
@@ -1432,8 +1603,7 @@ function hess_coord!(
     hess::AbstractVector;
     obj_weight = one(eltype(x)),
 )
-    fill!(hess, zero(eltype(hess)))
-    _obj_hess_coord!(m.objs, x, m.θ, hess, obj_weight)
+    _hess_coord_impl!(m, _subexprs(m), x, nothing, hess, obj_weight)
     return hess
 end
 
@@ -1444,9 +1614,30 @@ function hess_coord!(
     hess::AbstractVector;
     obj_weight = one(eltype(x)),
 )
+    _hess_coord_impl!(m, _subexprs(m), x, y, hess, obj_weight)
+    return hess
+end
+
+@inline function _hess_coord_impl!(m, ::Tuple{}, x, y, hess, obj_weight)
     fill!(hess, zero(eltype(hess)))
     _obj_hess_coord!(m.objs, x, m.θ, hess, obj_weight)
-    _con_hess_coord!(m.cons, x, m.θ, y, hess, obj_weight)
+    y === nothing || _con_hess_coord!(m.cons, x, m.θ, y, hess, obj_weight)
+    return hess
+end
+@inline function _hess_coord_impl!(m, stages::Tuple, x, y, hess, obj_weight)
+    _hess_coord_subexpr!(
+        m.shess,
+        m.sjac,
+        stages,
+        m.objs,
+        m.cons,
+        x,
+        m.θ,
+        m.abuf,
+        hess,
+        obj_weight,
+        y,
+    )
     return hess
 end
 
@@ -1469,6 +1660,7 @@ function hprod!(
     Hv::AbstractVector;
     obj_weight = one(eltype(x)),
 )
+    _check_no_subexprs(m, "hprod!")
     fill!(Hv, zero(eltype(Hv)))
     _obj_hprod!(m.objs, x, m.θ, v, Hv, obj_weight)
     return Hv
@@ -1482,6 +1674,7 @@ function hprod!(
     Hv::AbstractVector;
     obj_weight = one(eltype(x)),
 )
+    _check_no_subexprs(m, "hprod!")
     fill!(Hv, zero(eltype(Hv)))
     _obj_hprod!(m.objs, x, m.θ, v, Hv, obj_weight)
     _con_hprod!(m.cons, x, m.θ, y, v, Hv, obj_weight)

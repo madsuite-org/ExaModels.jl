@@ -136,6 +136,7 @@ _hrpass_val(::Type{SecondAdjointNode2{F,T,I1,I2}}) where {F,T,I1,I2} =
 
 _hdrpass_val(::Type{<:SecondAdjointNull}, ::Type) = Val(0)
 _hdrpass_val(::Type, ::Type{<:SecondAdjointNull}) = Val(0)
+_hdrpass_val(::Type{<:SecondAdjointNull}, ::Type{<:SecondAdjointNull}) = Val(0)
 _hdrpass_val(::Type{<:SecondAdjointNodeVar}, ::Type{<:SecondAdjointNodeVar}) = Val(1)
 _hdrpass_val(::Type{<:SecondAdjointNodeVar}, ::Type{SecondAdjointNode1{F,T,I}}) where {F,T,I} =
     _hdrpass_fixedvar_val(I)
