@@ -541,8 +541,8 @@ julia> result = ipopt(m; print_level=0)    # solve the problem
 """
 # No-oracle path: always returns ExaModel (type-stable for juliac --trim=safe).
 function ExaModel(c::ExaCore{T, VT, B, S, V, P, O, C, R, Tuple{}, Tuple{}, Tuple{}, SE}; prod = false, kwargs...) where {T, VT, B, S, V, P, O, C, R, SE}
-    sjac, resolved = _build_subexpr_jac(T, c.subexprs, c.cons, c.nnzj)
-    shess = _build_subexpr_hess(T, c.subexprs, c.obj, c.cons, c.nnzh, resolved, length(c.θ))
+    sjac, resolved, localrows = _build_subexpr_jac(T, c.subexprs, c.cons, c.nnzj)
+    shess = _build_subexpr_hess(T, c.subexprs, c.obj, c.cons, c.nnzh, localrows, length(c.θ))
     return ExaModel(
         c.name,
         c.var,

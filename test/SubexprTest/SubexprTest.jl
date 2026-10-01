@@ -198,6 +198,53 @@ function runtests()
         @test _dense_hess(m1, xv, nothing) ≈ _dense_hess(m0, xv, nothing) rtol = 1e-14
     end
 
+    # Deep chain (4 stage levels): exercises multi-level sequential
+    # elimination, including same-level pairs and chained μ seeds.
+    @testset "Buffered subexpressions (deep chain)" begin
+        function _chain_model(; buffered = false, n = 8, K = 4)
+            c = ExaCore(concrete = Val(true))
+            c, x = add_var(c, n)
+            c, s = add_expr(c, (x[i]^2 + sin(x[i+1]) for i in 1:(n-1)); buffered)
+            for _ in 2:K
+                sp = s
+                m = length(sp.size[1])
+                c, s = add_expr(c, (sp[i] * sp[i+1] + 0.5sp[i] for i in 1:(m-1)); buffered)
+            end
+            m = length(s.size[1])
+            c, _ = add_obj(c, (s[i] / (1 + s[i]^2) for i in 1:m))
+            c, _ = add_con(c, (s[i] * x[i] + x[i+1]^2 for i in 1:m))
+            return ExaModel(c)
+        end
+        # The inlined reference is unusable here by construction (its compile
+        # explodes at this depth), so check against finite differences of the
+        # buffered model itself.
+        m1 = _chain_model(buffered = true)
+        xv = [0.2 + 0.05i for i in 1:8]
+        yv = [1.0, -2.0, 0.5, 1.5]
+        h = 1e-6
+        pert(k, d) = [xv[j] + (j == k ? d : 0.0) for j in 1:8]
+
+        d1 = zeros(8)
+        NLPModels.grad!(m1, xv, d1)
+        fd = [(NLPModels.obj(m1, pert(k, h)) - NLPModels.obj(m1, pert(k, -h))) / 2h for k in 1:8]
+        @test d1 ≈ fd rtol = 1e-5
+
+        J1 = _dense_jac(m1, xv)
+        for k in 1:8
+            gp = zeros(4); gm = zeros(4)
+            NLPModels.cons_nln!(m1, pert(k, h), gp)
+            NLPModels.cons_nln!(m1, pert(k, -h), gm)
+            @test J1[:, k] ≈ (gp .- gm) ./ 2h rtol = 1e-4
+        end
+
+        H1 = _dense_hess(m1, xv, yv)
+        for k in 1:8
+            gp = _lag_grad(m1, pert(k, h), yv)
+            gm = _lag_grad(m1, pert(k, -h), yv)
+            @test H1[:, k] ≈ (gp .- gm) ./ 2h rtol = 1e-4
+        end
+    end
+
     @testset "Buffered subexpressions (multi-dimensional)" begin
         m0 = _twodim_model(buffered = false)
         m1 = _twodim_model(buffered = true)

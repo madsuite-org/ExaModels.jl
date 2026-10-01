@@ -526,12 +526,16 @@ struct SubexprJac{T}
     vals::Vector{T}            # scratch for COO-based jprod/jtprod
 end
 
-_build_subexpr_jac(::Type{T}, stages::Tuple{}, cons, nnzj_ext) where {T} = (nothing, nothing)
+_build_subexpr_jac(::Type{T}, stages::Tuple{}, cons, nnzj_ext) where {T} =
+    (nothing, nothing, nothing)
 
 function _build_subexpr_jac(::Type{T}, stages::Tuple, cons, nnzj_ext) where {T}
     ordered = reverse(collect(Any, stages))   # oldest first
-    # θ-slot → [(xcol, res index)]
+    # θ-slot → [(xcol, res index)] : stage Jacobians fully resolved to x-columns
     resolved = Dict{Int,Vector{Tuple{Int,Int}}}()
+    # θ-slot → [(signed col, stage_ext index)] : ONE-level (local) rows, used by
+    # the sequential Hessian elimination
+    localrows = Dict{Int,Vector{Tuple{Int,Int}}}()
     res_copy_dst = Int[]; res_copy_src = Int[]
     res_prod_dst = Int[]; res_prod_a = Int[]; res_prod_b = Int[]
     res_n = 0
@@ -560,6 +564,8 @@ function _build_subexpr_jac(::Type{T}, stages::Tuple, cons, nnzj_ext) where {T}
         for ind in 1:(n*step)
             row = erows[ind]
             col = ecols[ind]
+            col == 0 && continue
+            push!(get!(() -> Tuple{Int,Int}[], localrows, row), (col, off + ind))
             lst = get!(() -> Tuple{Int,Int}[], resolved, row)
             if col > 0
                 res_n += 1
@@ -629,6 +635,7 @@ function _build_subexpr_jac(::Type{T}, stages::Tuple, cons, nnzj_ext) where {T}
             zeros(T, length(rows)),
         ),
         resolved,
+        localrows,
     )
 end
 
@@ -683,48 +690,63 @@ function _jac_coord_subexpr!(sj::SubexprJac, stages::Tuple, cons, x, θ, jac)
     return jac
 end
 
-# ── Hessian via build-time elimination ────────────────────────────────────────
+# ── Hessian via sequential (stage-by-stage) elimination ──────────────────────
 #
 # Extended-space Hessian entries (consumer blocks weighted by σ/y, stage blocks
-# weighted by the accumulated adjoint seeds) are expanded to x-coordinates with
-# the resolved stage Jacobians:
-#   (x,x):   copy;
-#   (x,s):   H[a,c]  += coef · h · J[j,c]          (coef 2 on the diagonal);
-#   (s,s):   H[c1,c2] += coef · h · J[j1,c1] · J[j2,c2].
-# All coordinates, products, and coefficients are enumerated at model build.
+# weighted by the (λ, μ) seeds) are eliminated one stage at a time, newest
+# first.  Cross pairs live in a merged intermediate buffer C, one slot per
+# distinct coordinate pair per level; eliminating a stage multiplies each pair
+# involving one of its elements by that element's ONE-LEVEL (local) Jacobian
+# entries, producing pairs over strictly older coordinates:
+#   (x, x)      → final COO slot          (coef 2 when the pair collapses);
+#   (s, s) same → μ seed of that element  (handled by its later replay);
+#   otherwise   → merged C slot one level down.
+# Merging per level is what keeps the work at the fill size: the flat
+# alternative (expanding every entry straight to x-coordinates) enumerates
+# PATHS and scales as O(K³) on a depth-K chain, versus O(K²) here.
 
 """
     SubexprHess{T}
 
 Build-time artifact for Hessian evaluation with buffered subexpressions.
-`hess_ext` holds the extended-space entries: the consumer segment first
-(offsets baked at `add_obj`/`add_con` time), then one segment per stage.
+`hess_ext` holds the extended-space entries (consumer segment first, then one
+segment per stage); `C` holds the merged intermediate cross values.  All
+program slices are per-stage, newest-first, aligned with the stage tuple.
 """
 struct SubexprHess{T}
     hess_ext::Vector{T}
     abuf2::Vector{T}           # second-order (μ) seed buffer, θ-length
-    stage_o2::Vector{Int}      # per-stage offsets into hess_ext, newest-first (tuple order)
-    hess_copy_dst::Vector{Int}
+    C::Vector{T}               # merged intermediate cross values
+    stage_o2::Vector{Int}      # per-stage offsets into hess_ext, newest-first
+    lvl_ccopy::Vector{UnitRange{Int}}
+    lvl_cmul::Vector{UnitRange{Int}}
+    lvl_amul::Vector{UnitRange{Int}}
+    lvl_hmul::Vector{UnitRange{Int}}
+    ccopy_dst::Vector{Int}     # C[dst] += hess_ext[src]
+    ccopy_src::Vector{Int}
+    cmul_dst::Vector{Int}      # C[dst] += C[src] * stage_ext[a]
+    cmul_src::Vector{Int}
+    cmul_a::Vector{Int}
+    amul_dst::Vector{Int}      # abuf2[dst] += 2 * C[src] * stage_ext[a]
+    amul_src::Vector{Int}
+    amul_a::Vector{Int}
+    hmul_dst::Vector{Int}      # hess[dst] += coef * C[src] * stage_ext[a]
+    hmul_src::Vector{Int}
+    hmul_a::Vector{Int}
+    hmul_c::Vector{T}
+    hess_copy_dst::Vector{Int} # hess[dst] += hess_ext[src]  (direct xx)
     hess_copy_src::Vector{Int}
-    p1_dst::Vector{Int}
-    p1_a::Vector{Int}
-    p1_b::Vector{Int}
-    p1_c::Vector{T}
-    p2_dst::Vector{Int}
-    p2_a::Vector{Int}
-    p2_b1::Vector{Int}
-    p2_b2::Vector{Int}
-    p2_c::Vector{T}
     rows::Vector{Int}
     cols::Vector{Int}
     vals::Vector{T}            # scratch for COO-based hprod
 end
 
-_build_subexpr_hess(::Type{T}, stages::Tuple{}, objs, cons, nnzh_ext, resolved, nθ) where {T} =
+_build_subexpr_hess(::Type{T}, stages::Tuple{}, objs, cons, nnzh_ext, localrows, nθ) where {T} =
     nothing
 
-function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, resolved, nθ) where {T}
-    ordered = reverse(collect(Any, stages))   # oldest first
+function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, localrows, nθ) where {T}
+    ordered = reverse(collect(Any, stages))   # oldest first: levels 1..nlv
+    nlv = length(ordered)
     stage_o2 = Int[]
     total = nnzh_ext
     for s in ordered
@@ -752,19 +774,33 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, res
             )
         end
     end
-    reverse!(stage_o2)   # match the newest-first stage tuple order
+
+    slotlvl = zeros(Int, nθ)
+    for (i, s) in enumerate(ordered)
+        slotlvl[(s.offset+1):(s.offset+length(s.itr))] .= i
+    end
+    lvlof(ξ) = ξ > 0 ? 0 : slotlvl[-ξ]
+    normp(a, b) = a >= b ? (a, b) : (b, a)
 
     rows = Int[]; cols = Int[]
-    hess_copy_dst = Int[]; hess_copy_src = Int[]
-    p1_dst = Int[]; p1_a = Int[]; p1_b = Int[]; p1_c = T[]
-    p2_dst = Int[]; p2_a = Int[]; p2_b1 = Int[]; p2_b2 = Int[]; p2_c = T[]
-    nores = Tuple{Int,Int}[]
-    # Deduplicate normalized (max, min) pairs; value programs accumulate (+=).
-    slot = Dict{Tuple{Int,Int},Int}()
-    emit(i, j) = get!(slot, (max(i, j), min(i, j))) do
+    final = Dict{Tuple{Int,Int},Int}()
+    emit(i, j) = get!(final, (max(i, j), min(i, j))) do
         push!(rows, max(i, j)); push!(cols, min(i, j))
         length(rows)
     end
+
+    # pair → C index, per level; programs collected per level, flattened in
+    # iteration (newest-first) order at the end.
+    entries = [Dict{Tuple{Int,Int},Int}() for _ in 1:nlv]
+    Cn = Ref(0)
+    getC!(p, l) = get!(() -> (Cn[] += 1), entries[l], p)
+    ccopyL = [Tuple{Int,Int}[] for _ in 1:nlv]
+    cmulL = [NTuple{3,Int}[] for _ in 1:nlv]
+    amulL = [NTuple{3,Int}[] for _ in 1:nlv]
+    hmulL = [Tuple{Int,Int,Int,T}[] for _ in 1:nlv]
+    hess_copy_dst = Int[]; hess_copy_src = Int[]
+
+    # Seed: classify every extended entry.
     for ind in 1:total
         r = erows[ind]
         c = ecols[ind]
@@ -772,59 +808,113 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, res
         if r > 0 && c > 0
             push!(hess_copy_dst, emit(r, c))
             push!(hess_copy_src, ind)
-        elseif r > 0 && c < 0 || r < 0 && c > 0
-            a = r > 0 ? r : c
-            j = r > 0 ? -c : -r
-            for (xc, b) in get(resolved, j, nores)
-                push!(p1_dst, emit(a, xc))
-                push!(p1_a, ind)
-                push!(p1_b, b)
-                push!(p1_c, a == xc ? T(2) : T(1))
-            end
+        elseif r < 0 && r == c
+            # slot diagonal: redirected to the μ buffer at runtime; dead slot
+            continue
         else
-            j1 = -r
-            j2 = -c
-            # Diagonal (-j,-j) entries are handled at evaluation time through
-            # the μ seed buffer (the stage replay produces μ·∇s∇sᵀ itself);
-            # their runtime slots stay zero and no programs are emitted.
-            j1 == j2 && continue
-            for (c1, b1) in get(resolved, j1, nores), (c2, b2) in get(resolved, j2, nores)
-                push!(p2_dst, emit(c1, c2))
-                push!(p2_a, ind)
-                push!(p2_b1, b1)
-                push!(p2_b2, b2)
-                push!(p2_c, c1 == c2 ? T(2) : T(1))
-            end
+            p = normp(r, c)
+            l = max(lvlof(p[1]), lvlof(p[2]))
+            cidx = getC!(p, l)
+            push!(ccopyL[l], (cidx, ind))
         end
     end
+
+    nores = Tuple{Int,Int}[]
+    # Eliminate levels newest → oldest.  Within a level: rank-2 pairs (both
+    # coordinates at this level) first — they produce rank-1 pairs at the same
+    # level — then rank-1 pairs, which only produce strictly older pairs.
+    for l in nlv:-1:1
+        d = entries[l]
+        expand(p, cp) = begin
+            ξexp, oth = lvlof(p[1]) == l ? (p[1], p[2]) : (p[2], p[1])
+            for (ccol, aidx) in get(localrows, -ξexp, nores)
+                if ccol > 0 && oth > 0
+                    push!(hmulL[l], (emit(ccol, oth), cp, aidx, ccol == oth ? T(2) : T(1)))
+                elseif ccol < 0 && ccol == oth
+                    push!(amulL[l], (-ccol, cp, aidx))
+                else
+                    np = normp(ccol, oth)
+                    l2 = max(lvlof(np[1]), lvlof(np[2]))
+                    push!(cmulL[l], (getC!(np, l2), cp, aidx))
+                end
+            end
+        end
+        r2 = [p for p in keys(d) if lvlof(p[1]) == l && lvlof(p[2]) == l]
+        for p in r2
+            expand(p, d[p])
+        end
+        r1 = [p for p in keys(d) if xor(lvlof(p[1]) == l, lvlof(p[2]) == l)]
+        for p in r1
+            expand(p, d[p])
+        end
+    end
+
+    # Flatten per-level programs in iteration order (newest first).
+    lvl_ccopy = UnitRange{Int}[]; ccopy_dst = Int[]; ccopy_src = Int[]
+    lvl_cmul = UnitRange{Int}[]; cmul_dst = Int[]; cmul_src = Int[]; cmul_a = Int[]
+    lvl_amul = UnitRange{Int}[]; amul_dst = Int[]; amul_src = Int[]; amul_a = Int[]
+    lvl_hmul = UnitRange{Int}[]; hmul_dst = Int[]; hmul_src = Int[]; hmul_a = Int[]; hmul_c = T[]
+    for l in nlv:-1:1
+        n0 = length(ccopy_dst)
+        for (dst, s) in ccopyL[l]
+            push!(ccopy_dst, dst); push!(ccopy_src, s)
+        end
+        push!(lvl_ccopy, (n0+1):length(ccopy_dst))
+        n0 = length(cmul_dst)
+        for (dst, s, a) in cmulL[l]
+            push!(cmul_dst, dst); push!(cmul_src, s); push!(cmul_a, a)
+        end
+        push!(lvl_cmul, (n0+1):length(cmul_dst))
+        n0 = length(amul_dst)
+        for (dst, s, a) in amulL[l]
+            push!(amul_dst, dst); push!(amul_src, s); push!(amul_a, a)
+        end
+        push!(lvl_amul, (n0+1):length(amul_dst))
+        n0 = length(hmul_dst)
+        for (dst, s, a, cf) in hmulL[l]
+            push!(hmul_dst, dst); push!(hmul_src, s); push!(hmul_a, a); push!(hmul_c, cf)
+        end
+        push!(lvl_hmul, (n0+1):length(hmul_dst))
+    end
+    reverse!(stage_o2)   # match the newest-first stage tuple order
+
     return SubexprHess{T}(
         zeros(T, total),
         zeros(T, nθ),
+        zeros(T, Cn[]),
         stage_o2,
+        lvl_ccopy,
+        lvl_cmul,
+        lvl_amul,
+        lvl_hmul,
+        ccopy_dst,
+        ccopy_src,
+        cmul_dst,
+        cmul_src,
+        cmul_a,
+        amul_dst,
+        amul_src,
+        amul_a,
+        hmul_dst,
+        hmul_src,
+        hmul_a,
+        hmul_c,
         hess_copy_dst,
         hess_copy_src,
-        p1_dst,
-        p1_a,
-        p1_b,
-        p1_c,
-        p2_dst,
-        p2_a,
-        p2_b1,
-        p2_b2,
-        p2_c,
         rows,
         cols,
         zeros(T, length(rows)),
     )
 end
 
-# Stage replays, newest-first (tuple order): seeds (λ, μ) are complete for a
-# stage once all consumers and all shallower stages have run; the replay's own
-# buffered leaves accumulate into deeper stages' seeds through the HessTarget.
-_stage_hess_fill!(stages::Tuple{}, o2s, i, t::HessTarget, x, θ) = nothing
-@inline function _stage_hess_fill!(stages::Tuple, o2s, i, t::HessTarget, x, θ)
+# Interleaved sweep, newest-first: replay stage i (its (λ, μ) seeds are
+# complete: consumers, newer replays, and newer levels' amul programs have all
+# run), then execute level-i programs, which eliminate this stage's
+# coordinates from the cross buffer.
+_hess_seq!(stages::Tuple{}, i, sh, sj, t::HessTarget, hess, x, θ) = nothing
+@inline function _hess_seq!(stages::Tuple, i, sh, sj, t::HessTarget, hess, x, θ)
     s = first(stages)
-    off = o2s[i]
+    off = sh.stage_o2[i]
     step = s.f.o2step
     for k in eachindex(s.itr)
         _stage_shessian!(
@@ -840,7 +930,22 @@ _stage_hess_fill!(stages::Tuple{}, o2s, i, t::HessTarget, x, θ) = nothing
             @inbounds(t.abuf2[s.offset+k]),
         )
     end
-    _stage_hess_fill!(Base.tail(stages), o2s, i + 1, t, x, θ)
+    C = sh.C
+    ext = sh.hess_ext
+    sx = sj.stage_ext
+    @inbounds for m in sh.lvl_ccopy[i]
+        C[sh.ccopy_dst[m]] += ext[sh.ccopy_src[m]]
+    end
+    @inbounds for m in sh.lvl_cmul[i]
+        C[sh.cmul_dst[m]] += C[sh.cmul_src[m]] * sx[sh.cmul_a[m]]
+    end
+    @inbounds for m in sh.lvl_amul[i]
+        t.abuf2[sh.amul_dst[m]] += 2 * C[sh.amul_src[m]] * sx[sh.amul_a[m]]
+    end
+    @inbounds for m in sh.lvl_hmul[i]
+        hess[sh.hmul_dst[m]] += sh.hmul_c[m] * C[sh.hmul_src[m]] * sx[sh.hmul_a[m]]
+    end
+    _hess_seq!(Base.tail(stages), i + 1, sh, sj, t, hess, x, θ)
     return nothing
 end
 
@@ -859,27 +964,17 @@ function _hess_coord_subexpr!(
 )
     _sync_subexprs!(stages, x, θ)
     _resolve_stage_jac!(sj, stages, x, θ)
-    # One second-order sweep: consumer passes write extended-space slots AND
-    # accumulate the stage seeds (λ, μ) at buffered leaves; stage replays then
-    # run newest-first, each seeded from the buffers and chaining deeper.
     fill!(abuf, zero(eltype(abuf)))
     fill!(sh.abuf2, zero(eltype(sh.abuf2)))
     fill!(sh.hess_ext, zero(eltype(sh.hess_ext)))
+    fill!(sh.C, zero(eltype(sh.C)))
+    fill!(hess, zero(eltype(hess)))
     t = HessTarget(sh.hess_ext, abuf, sh.abuf2)
     _obj_hess_coord!(objs, x, θ, t, obj_weight)
     y === nothing || _con_hess_coord!(cons, x, θ, y, t, obj_weight)
-    _stage_hess_fill!(stages, sh.stage_o2, 1, t, x, θ)
-    # compose
-    fill!(hess, zero(eltype(hess)))
+    _hess_seq!(stages, 1, sh, sj, t, hess, x, θ)
     @inbounds for m in eachindex(sh.hess_copy_dst)
         hess[sh.hess_copy_dst[m]] += sh.hess_ext[sh.hess_copy_src[m]]
-    end
-    @inbounds for m in eachindex(sh.p1_dst)
-        hess[sh.p1_dst[m]] += sh.p1_c[m] * sh.hess_ext[sh.p1_a[m]] * sj.res[sh.p1_b[m]]
-    end
-    @inbounds for m in eachindex(sh.p2_dst)
-        hess[sh.p2_dst[m]] +=
-            sh.p2_c[m] * sh.hess_ext[sh.p2_a[m]] * sj.res[sh.p2_b1[m]] * sj.res[sh.p2_b2[m]]
     end
     return hess
 end
