@@ -152,6 +152,33 @@ function runtests()
         @test _dense_hess(m1, xv, yv) ≈ _dense_hess(m0, xv, yv) rtol = 1e-14
     end
 
+    # A LINEAR stage used nonlinearly: its curvature contribution is entirely
+    # μ·∇s∇sᵀ.  This fails if stage replays go through hrpass0, which skips
+    # leaves on purely linear paths (valid only for a zero second-order seed).
+    @testset "Buffered subexpressions (linear stage)" begin
+        function _lin_model(; buffered = false)
+            c = ExaCore(concrete = Val(true))
+            c, x = add_var(c, 5)
+            c, s = add_expr(c, (2.0x[i] + x[i+1] for i in 1:4); buffered)
+            c, t = add_expr(c, (s[i] + s[i+1] for i in 1:3); buffered)  # linear in s
+            c, _ = add_obj(c, (t[i]^2 + exp(s[i]) for i in 1:3))
+            c, _ = add_con(c, (t[i] * s[i+1] for i in 1:3))
+            return ExaModel(c)
+        end
+        m0 = _lin_model(buffered = false)
+        m1 = _lin_model(buffered = true)
+        xv = [0.1i - 0.2 for i in 1:5]
+        yv = [1.0, -1.5, 2.0]
+
+        d0 = zeros(5); d1 = zeros(5)
+        NLPModels.grad!(m0, xv, d0)
+        NLPModels.grad!(m1, xv, d1)
+        @test d1 ≈ d0 rtol = 1e-14
+        @test _dense_jac(m1, xv) ≈ _dense_jac(m0, xv) rtol = 1e-14
+        @test _dense_hess(m1, xv, yv) ≈ _dense_hess(m0, xv, yv) rtol = 1e-14
+        @test _dense_hess(m1, xv, nothing) ≈ _dense_hess(m0, xv, nothing) rtol = 1e-14
+    end
+
     @testset "Buffered subexpressions (multi-dimensional)" begin
         m0 = _twodim_model(buffered = false)
         m1 = _twodim_model(buffered = true)

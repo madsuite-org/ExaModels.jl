@@ -111,8 +111,6 @@ Base.eltype(::Type{GradTarget{Y,A}}) where {Y,A} = eltype(Y)
     @inbounds t.y[d.i] += adj
     nothing
 end
-# Seed-only sweeps (Hessian stage seeds) discard variable-leaf contributions.
-@inline drpass(d::D, t::GradTarget{Nothing,A}, adj) where {D<:AdjointNodeVar,A} = nothing
 @inline function drpass(d::D, t::GradTarget, adj) where {D<:AdjointNodeSubexpr}
     @inbounds t.abuf[d.i] += adj
     nothing
@@ -375,6 +373,113 @@ _hdrpass_val(::Type{SecondAdjointNode2{F,T,I1,I2}}, ::Type{<:SecondAdjointNodeSu
     _add_vals(_hdrpass_fixedvar_val(I1), _hdrpass_fixedvar_val(I2))
 _hdrpass_fixedvar_val(::Type{<:SecondAdjointNodeSubexpr}) = Val(1)
 
+# ── Hessian target: one second-order sweep carries everything ────────────────
+#
+# For buffered models the second-order passes are driven with a HessTarget in
+# place of the plain Hessian-slot vector.  Ordinary slot writes pass through to
+# `ext`; buffered-leaf methods additionally accumulate the stage seeds:
+#   abuf[j]  += adj    (λⱼ = ∂L/∂sⱼ, first-order adjoint arriving at the leaf)
+#   abuf2[j] += adj2   (μⱼ, coefficient of ∇sⱼ∇sⱼᵀ, the DIAGONAL coupling)
+# Each stage is then replayed ONCE with seeds (λⱼ, μⱼ), which produces
+# λⱼ·∇²sⱼ + μⱼ·∇sⱼ∇sⱼᵀ natively and chains through nested stages.  Only the
+# CROSS couplings (pairs of different coordinates) remain for the build-time
+# composition maps.
+struct HessTarget{Y,A}
+    ext::Y
+    abuf::A
+    abuf2::A
+end
+Base.@propagate_inbounds Base.getindex(t::HessTarget, i) = t.ext[i]
+Base.@propagate_inbounds Base.setindex!(t::HessTarget, v, i) = (t.ext[i] = v; v)
+Base.eltype(::Type{HessTarget{Y,A}}) where {Y,A} = eltype(Y)
+
+# Buffered leaf under a HessTarget: accumulate seeds instead of writing slots.
+# The slot counter still advances where the probe allocated one, keeping the
+# compressor aligned; the corresponding ext slots stay zero and the build emits
+# no programs for (-j,-j) entries.
+@inline function hrpass(
+    t::T,
+    comp,
+    y1::HessTarget,
+    y2,
+    o2,
+    cnt,
+    adj,
+    adj2,
+) where {T<:SecondAdjointNodeSubexpr}
+    @inbounds y1.abuf[t.i] += adj
+    @inbounds y1.abuf2[t.i] += adj2
+    return cnt + 1
+end
+@inline function hrpass0(
+    t::T,
+    comp,
+    y1::HessTarget,
+    y2,
+    o2,
+    cnt,
+    adj,
+    adj2,
+) where {T<:SecondAdjointNodeSubexpr}
+    @inbounds y1.abuf[t.i] += adj
+    return cnt
+end
+@inline function hdrpass(
+    t1::T1,
+    t2::T2,
+    comp,
+    y1::HessTarget,
+    y2,
+    o2,
+    cnt,
+    adj,
+) where {T1<:SecondAdjointNodeSubexpr,T2<:SecondAdjointNodeSubexpr}
+    i, j = t1.i, t2.i
+    @inbounds if i == j
+        y1.abuf2[i] += 2 * adj
+        cnt += 1
+    else
+        y1[o2+comp(cnt+=1)] += adj
+    end
+    return cnt
+end
+
+# Stage SIMDFunction: the second-order compressor must be built with FULL
+# hrpass counting, not hrpass0.  hrpass0 skips leaves reached through purely
+# linear paths, which is valid only when the top-level second-order seed is
+# zero; a stage replay is seeded with μ ≠ 0, so a linear stage tree still
+# produces μ·∇s∇sᵀ and needs those slots.
+@inline function _stage_simdfunction(T, gen::Base.Generator)
+    f = replace_T(T, gen.f(DataSource()))
+
+    d = f(Identity(), AdjointNodeSource(NaNSource{T}()), NaNSource{T}())
+    raw1 = Any[]
+    grpass(d, nothing, nothing, nothing, raw1, T(NaN))
+
+    t = f(Identity(), SecondAdjointNodeSource(NaNSource{T}()), NaNSource{T}())
+    raw2 = Any[]
+    hrpass(t, nothing, nothing, nothing, nothing, raw2, T(NaN), T(NaN))
+
+    unique1 = _ident_unique(raw1)
+    o1step = length(unique1)
+    mapping1 = Int[findfirst(y -> y === x, unique1) for x in raw1]
+    c1 = Compressor(ntuple(i -> mapping1[i], _gr_val(typeof(d))))
+
+    unique2 = _ident_unique(raw2)
+    o2step = length(unique2)
+    mapping2 = Int[findfirst(y -> y === x, unique2) for x in raw2]
+    c2 = Compressor(ntuple(i -> mapping2[i], _hrpass_val(typeof(t))))
+
+    return SIMDFunction(f, c1, c2, 0, 0, 0, o1step, o2step)
+end
+
+# Stage second-order inner driver: hrpass directly (see _stage_simdfunction).
+@inline function _stage_shessian!(y1, y2, f, p, x, θ, comp, o2, adj1, adj2)
+    graph = f(p, SecondAdjointNodeSource(x), θ)
+    hrpass(graph, comp, y1, y2, o2, 0, adj1, adj2)
+    return nothing
+end
+
 # ── Jacobian via build-time elimination ──────────────────────────────────────
 #
 # Structure passes run in the extended coordinate space (x-columns positive,
@@ -594,6 +699,7 @@ Build-time artifact for Hessian evaluation with buffered subexpressions.
 """
 struct SubexprHess{T}
     hess_ext::Vector{T}
+    abuf2::Vector{T}           # second-order (μ) seed buffer, θ-length
     stage_o2::Vector{Int}      # per-stage offsets into hess_ext, newest-first (tuple order)
     hess_copy_dst::Vector{Int}
     hess_copy_src::Vector{Int}
@@ -610,10 +716,10 @@ struct SubexprHess{T}
     cols::Vector{Int}
 end
 
-_build_subexpr_hess(::Type{T}, stages::Tuple{}, objs, cons, nnzh_ext, resolved) where {T} =
+_build_subexpr_hess(::Type{T}, stages::Tuple{}, objs, cons, nnzh_ext, resolved, nθ) where {T} =
     nothing
 
-function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, resolved) where {T}
+function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, resolved, nθ) where {T}
     ordered = reverse(collect(Any, stages))   # oldest first
     stage_o2 = Int[]
     total = nnzh_ext
@@ -628,7 +734,7 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, res
     for (si, s) in enumerate(ordered)
         step = s.f.o2step
         for k in eachindex(s.itr)
-            shessian!(
+            _stage_shessian!(
                 erows,
                 ecols,
                 s.f,
@@ -674,30 +780,22 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, res
         else
             j1 = -r
             j2 = -c
-            if j1 == j2
-                R = get(resolved, j1, nores)
-                for p in eachindex(R), q in p:length(R)
-                    (c1, b1) = R[p]
-                    (c2, b2) = R[q]
-                    push!(p2_dst, emit(c1, c2))
-                    push!(p2_a, ind)
-                    push!(p2_b1, b1)
-                    push!(p2_b2, b2)
-                    push!(p2_c, (p != q && c1 == c2) ? T(2) : T(1))
-                end
-            else
-                for (c1, b1) in get(resolved, j1, nores), (c2, b2) in get(resolved, j2, nores)
-                    push!(p2_dst, emit(c1, c2))
-                    push!(p2_a, ind)
-                    push!(p2_b1, b1)
-                    push!(p2_b2, b2)
-                    push!(p2_c, c1 == c2 ? T(2) : T(1))
-                end
+            # Diagonal (-j,-j) entries are handled at evaluation time through
+            # the μ seed buffer (the stage replay produces μ·∇s∇sᵀ itself);
+            # their runtime slots stay zero and no programs are emitted.
+            j1 == j2 && continue
+            for (c1, b1) in get(resolved, j1, nores), (c2, b2) in get(resolved, j2, nores)
+                push!(p2_dst, emit(c1, c2))
+                push!(p2_a, ind)
+                push!(p2_b1, b1)
+                push!(p2_b2, b2)
+                push!(p2_c, c1 == c2 ? T(2) : T(1))
             end
         end
     end
     return SubexprHess{T}(
         zeros(T, total),
+        zeros(T, nθ),
         stage_o2,
         hess_copy_dst,
         hess_copy_src,
@@ -715,35 +813,17 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, res
     )
 end
 
-# Weighted first-order reverse sweep accumulating the stage Hessian seeds
-# ∂L/∂s_j = σ ∂f/∂s_j + Σᵢ yᵢ ∂cᵢ/∂s_j into the adjoint buffer, chained
-# through nested stages.  Variable-leaf contributions are discarded
-# (GradTarget with y = nothing).
-_seed_objs!(objs::Tuple{}, x, θ, t, w) = nothing
-@inline function _seed_objs!(objs::Tuple, x, θ, t, w)
-    _seed_objs!(Base.tail(objs), x, θ, t, w)
-    gradient!(t, first(objs), x, θ, w)
-    return nothing
-end
-
-_seed_cons!(cons::Tuple{}, x, θ, t, y) = nothing
-@inline function _seed_cons!(cons::Tuple, x, θ, t, y)
-    _seed_cons!(Base.tail(cons), x, θ, t, y)
-    con = first(cons)
-    for i in eachindex(con.itr)
-        gradient!(t, con.f, x, θ, @inbounds(con.itr[i]), @inbounds(y[offset0(con, i)]))
-    end
-    return nothing
-end
-
-_stage_hess_fill!(stages::Tuple{}, o2s, i, sh, abuf, x, θ) = nothing
-@inline function _stage_hess_fill!(stages::Tuple, o2s, i, sh, abuf, x, θ)
+# Stage replays, newest-first (tuple order): seeds (λ, μ) are complete for a
+# stage once all consumers and all shallower stages have run; the replay's own
+# buffered leaves accumulate into deeper stages' seeds through the HessTarget.
+_stage_hess_fill!(stages::Tuple{}, o2s, i, t::HessTarget, x, θ) = nothing
+@inline function _stage_hess_fill!(stages::Tuple, o2s, i, t::HessTarget, x, θ)
     s = first(stages)
     off = o2s[i]
     step = s.f.o2step
     for k in eachindex(s.itr)
-        shessian!(
-            sh.hess_ext,
+        _stage_shessian!(
+            t,
             nothing,
             s.f,
             @inbounds(s.itr[k]),
@@ -751,11 +831,11 @@ _stage_hess_fill!(stages::Tuple{}, o2s, i, sh, abuf, x, θ) = nothing
             θ,
             s.f.comp2,
             off + (k - 1) * step,
-            @inbounds(abuf[s.offset+k]),
-            zero(eltype(x)),
+            @inbounds(t.abuf[s.offset+k]),
+            @inbounds(t.abuf2[s.offset+k]),
         )
     end
-    _stage_hess_fill!(Base.tail(stages), o2s, i + 1, sh, abuf, x, θ)
+    _stage_hess_fill!(Base.tail(stages), o2s, i + 1, t, x, θ)
     return nothing
 end
 
@@ -774,17 +854,16 @@ function _hess_coord_subexpr!(
 )
     _sync_subexprs!(stages, x, θ)
     _resolve_stage_jac!(sj, stages, x, θ)
-    # stage seeds
+    # One second-order sweep: consumer passes write extended-space slots AND
+    # accumulate the stage seeds (λ, μ) at buffered leaves; stage replays then
+    # run newest-first, each seeded from the buffers and chaining deeper.
     fill!(abuf, zero(eltype(abuf)))
-    t = GradTarget(nothing, abuf)
-    _seed_objs!(objs, x, θ, t, obj_weight)
-    y === nothing || _seed_cons!(cons, x, θ, t, y)
-    _reverse_subexprs!(stages, x, θ, t)
-    # extended-space entries
+    fill!(sh.abuf2, zero(eltype(sh.abuf2)))
     fill!(sh.hess_ext, zero(eltype(sh.hess_ext)))
-    _obj_hess_coord!(objs, x, θ, sh.hess_ext, obj_weight)
-    y === nothing || _con_hess_coord!(cons, x, θ, y, sh.hess_ext, obj_weight)
-    _stage_hess_fill!(stages, sh.stage_o2, 1, sh, abuf, x, θ)
+    t = HessTarget(sh.hess_ext, abuf, sh.abuf2)
+    _obj_hess_coord!(objs, x, θ, t, obj_weight)
+    y === nothing || _con_hess_coord!(cons, x, θ, y, t, obj_weight)
+    _stage_hess_fill!(stages, sh.stage_o2, 1, t, x, θ)
     # compose
     fill!(hess, zero(eltype(hess)))
     @inbounds for m in eachindex(sh.hess_copy_dst)
