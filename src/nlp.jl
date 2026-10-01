@@ -781,7 +781,7 @@ julia> result = ipopt(m; print_level=0)    # solve the problem
 # No-oracle path: always returns ExaModel (type-stable for juliac --trim=safe).
 function ExaModel(c::ExaCore{T, VT, B, S, V, P, O, C, R, Tuple{}, Tuple{}, Tuple{}}; prod = false, kwargs...) where {T, VT, B, S, V, P, O, C, R}
     _recipe_check(c)
-    c = _concretize(c)
+    c = _maybe_merge_families(_concretize(c), c.cons)
     return ExaModel(
         c.name,
         c.var,
@@ -815,10 +815,14 @@ function ExaModel(c::ExaCore{T, VT, B, S, V, P, O, C, R, Tuple{}, Tuple{}, Tuple
 end
 
 # Oracle path: always returns ExaModelWithOracle (type-stable for juliac --trim=safe).
+# Family merging (merge.jl) runs only for non-concrete cores, so the
+# `concrete = Val(true)` / juliac path never sees its dynamic group pass.
 function ExaModel(c::ExaCore; prod = false, kwargs...)
     _recipe_check(c)
-    return _build_with_oracle(_concretize(c); prod, kwargs...)
+    return _build_with_oracle(_maybe_merge_families(_concretize(c), c.cons); prod, kwargs...)
 end
+@inline _maybe_merge_families(cc, ::Tuple) = cc
+_maybe_merge_families(cc, ::Vector{Any}) = _merge_families(cc)
 
 """
     ExaModel(core, argvals; kwargs...)
@@ -1653,42 +1657,9 @@ function _add_con(c, f, pars, dims, start, lcon, ucon, name, tag)
     lcon = _append_slot(c.backend, c.lcon, lcon, nitr)
     ucon = _append_slot(c.backend, c.ucon, ucon, nitr)
 
-    # PROTOTYPE (#229): merge into the most recent block when the algebraic
-    # structure is identical.  The whole expression tree lives in typeof(f),
-    # so structural equality is a type check; the most recent block's rows and
-    # nonzeros end where this block's begin, so its affine offsets extend to
-    # the concatenated iterator unchanged.  Restricted to anonymous, untagged,
-    # 1-D blocks.
-    prev = _merge_candidate(c.cons, f, dims, name, tag)
-    if prev !== nothing
-        itr = vcat(collect(prev.itr), collect(pars))
-        con = Constraint(prev.f, convert_array(itr, c.backend), prev.offset, (length(itr),), prev.tag)
-        cons = copy(c.cons)
-        cons[1] = con
-        return (ExaCore(c; ncon=ncon, nnzj=nnzj, nnzh=nnzh, y0=y0, lcon=lcon, ucon=ucon, cons=cons), con)
-    end
-
     con = Constraint(f, convert_array(pars, c.backend), o, dims, tag)
 
     (ExaCore(c; ncon=ncon, nnzj=nnzj, nnzh=nnzh, y0=y0, lcon=lcon, ucon=ucon, cons=_prep(c.cons, con), refs = add_refs(c.refs, name, con)), con)
-end
-
-_merge_candidate(cons, f, dims, name, tag) = nothing
-function _merge_candidate(cons::Vector{Any}, f, dims, name, tag)
-    (name === nothing && tag === nothing && length(dims) == 1) || return nothing
-    isempty(cons) && return nothing
-    prev = cons[1]
-    prev isa Constraint || return nothing
-    (prev.tag === nothing && length(prev.size) == 1) || return nothing
-    # The merged block evaluates every row with PREV's tree, so merging is
-    # sound only when the trees are equal BY VALUE, not merely by type: two
-    # structurally identical expressions over different variable blocks (or
-    # with different baked-in scalars) share a type but differ in the offset
-    # and coefficient FIELDS.  `===` compares immutable trees recursively and
-    # falls back to identity on anything heap-allocated, which refuses the
-    # merge — the safe direction.
-    prev.f.f === f.f || return nothing
-    return prev
 end
 
 
