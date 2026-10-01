@@ -705,7 +705,8 @@ function MOI.optimize!(model::Optimizer)
         multipliers = Array(result.multipliers),
         multipliers_L = Array(result.multipliers_L),
         multipliers_U = Array(result.multipliers_U),
-        status = result.status,
+        # See the note below in MOI.TerminationStatus
+        status = Symbol(result.status),
     )
     model.solve_time = time() - start_time
     return
@@ -713,12 +714,16 @@ end
 
 # MOI.TerminationStatus
 
-# SolverCore returns a `Symbol` in `result.status` for any solver implementing
-# the NLPModels callable interface (e.g. `madnlp(::AbstractNLPModel)`,
-# `ipopt(::AbstractNLPModel)`). The vocabulary is defined by SolverCore.jl
-# (see SolverCore/src/stats.jl). Solvers that emit something else can be
-# supported by extending these dicts or overriding the two `MOI.get` methods.
+# SolverCore (should) return a `Symbol` in `result.status` for any solver
+# implementing the NLPModels callable interface (for example,
+# `ipopt(::AbstractNLPModel)`).
+#
+# The vocabulary is defined by SolverCore.jl (see SolverCore/src/stats.jl).
+#
+# MadNLP instead returns an Enum. We "fix" this by converting the result status
+# to a symbol, and adding extra codes here to deal specifically with it.
 const _TERMINATION_STATUS_CODES = Dict{Symbol, MOI.TerminationStatusCode}(
+    # SolverCore
     :first_order => MOI.LOCALLY_SOLVED,
     :acceptable => MOI.ALMOST_LOCALLY_SOLVED,
     :small_step => MOI.SLOW_PROGRESS,
@@ -727,6 +732,13 @@ const _TERMINATION_STATUS_CODES = Dict{Symbol, MOI.TerminationStatusCode}(
     :max_time => MOI.TIME_LIMIT,
     :user => MOI.INTERRUPTED,
     :exception => MOI.OTHER_ERROR,
+    # MadNLP
+    :SOLVE_SUCCEEDED => MOI.LOCALLY_SOLVED,
+    :SOLVED_TO_ACCEPTABLE_LEVEL => MOI.ALMOST_LOCALLY_SOLVED,
+    :INFEASIBLE_PROBLEM_DETECTED => MOI.INFEASIBLE
+    :MAXIMUM_ITERATIONS_EXCEEDED => MOI.ITERATION_LIMIT,
+    :MAXIMUM_WALLTIME_EXCEEDED => MOI.TIME_LIMIT,
+    :USER_REQUESTED_STOP => MOI.INTERRUPTED,
 )
 
 MOI.get(model::Optimizer, ::MOI.RawStatusString) = string(model.result.status)
@@ -741,9 +753,13 @@ end
 # MOI.PrimalStatus, MOI.DualStatus
 
 const _RESULT_STATUS_CODES = Dict{Symbol, MOI.ResultStatusCode}(
+    # SolverCore
     :first_order => MOI.FEASIBLE_POINT,
     :acceptable => MOI.NEARLY_FEASIBLE_POINT,
     :infeasible => MOI.INFEASIBLE_POINT,
+    # MadNLP
+    :SOLVE_SUCCEEDED => MOI.FEASIBLE_POINT,
+    :SOLVED_TO_ACCEPTABLE_LEVEL => MOI.NEARLY_FEASIBLE_POINT,
 )
 
 function MOI.get(model::Optimizer, attr::Union{MOI.PrimalStatus,MOI.DualStatus})
