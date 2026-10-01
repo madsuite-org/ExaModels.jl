@@ -74,6 +74,44 @@ Subexpression (reduced)
 end
 
 """
+    BufferedExpression
+
+A subexpression created by [`add_expr`](@ref) / [`@add_expr`](@ref) with
+`buffered = true`.  Unlike [`Expression`](@ref), indexing does NOT splice the
+subexpression tree into the enclosing objective or constraint: each element is
+evaluated once per model evaluation into a dedicated θ slot, and consumers
+reference the slot through a shallow [`SubexprNode`](@ref) leaf.  This keeps
+compilation cost additive in the nesting depth of expression trees.
+
+Supports the full NLPModels evaluation API through second order, on the host
+and on KernelAbstractions backends.  Not compatible with oracles or
+`ExaModel(c; prod = true)`.
+"""
+struct BufferedExpression{S,F,T}
+    size::S
+    length::Int
+    offset::Int    # θ offset: element k's value lives at θ[offset + k]
+    f::F           # the generator function (kept for display)
+    tag::T
+end
+function Base.show(io::IO, s::BufferedExpression)
+    expr = try
+        _expr_string(s.f(DataSource()))
+    catch
+        "(?)"
+    end
+    print(
+        io,
+        """
+Subexpression (buffered)
+
+  s ∈ R^{$(join(size(s.size), " × "))}
+  s(x,i) = $expr
+""",
+    )
+end
+
+"""
     Parameter
 
 A handle to a block of model parameters added to an [`ExaCore`](@ref) via
@@ -209,6 +247,11 @@ struct ConstraintSlot{C, I}
     idx::I
 end
 
+_host_block(b::Objective) = Objective(b.f, _host_array(b.itr))
+_host_block(b::Constraint) = Constraint(b.f, _host_array(b.itr), b.offset, b.size, b.tag)
+_host_block(b::ConstraintAugmentation) =
+    ConstraintAugmentation(b.f, _host_array(b.itr), b.oa, b.dims, b.tag)
+
 
 """
     ConAugPair{C, P}
@@ -325,7 +368,7 @@ An ExaCore
 # (`ExaCore{T}`, `ExaCore{T,VT,B}`, the no-oracle signature below) still match.
 # `T` is now passed explicitly at construction: it used to be recovered from the
 # `VT <: AbstractVector{T}` bound, and no field carries it on its own.
-struct ExaCore{T, VT, B, S, V, P, O, C, R, OR, SOR, EV, DM,
+struct ExaCore{T, VT, B, S, V, P, O, C, R, OR, SOR, EV, SE, DM,
                NV, NP, NC, NCA, NO, NZC, NZG, NZJ, NZH,
                TH, LV, UV, Y0, LC, UC, NARGS} <: AbstractExaCore{T, VT, B, S}
     name::Symbol
@@ -334,6 +377,7 @@ struct ExaCore{T, VT, B, S, V, P, O, C, R, OR, SOR, EV, DM,
     par::P
     obj::O
     cons::C
+    subexprs::SE               # Tuple of SubexprStage (buffered subexpressions), newest first
     nvar::NV
     npar::NP
     ncon::NC
@@ -379,6 +423,7 @@ end
     par::P,
     obj::O,
     cons::C,
+    subexprs::SE,
     nvar::NV,
     npar::NP,
     ncon::NC,
@@ -403,11 +448,11 @@ end
     evals::EV,
     domerge::DM,
     nargs::NARGS,
-) where {T, VT, B, S, V, P, O, C, R, OR, SOR, EV, DM,
+) where {T, VT, B, S, V, P, O, C, R, OR, SOR, EV, SE, DM,
          NV, NP, NC, NCA, NO, NZC, NZG, NZJ, NZH, TH, LV, UV, Y0, LC, UC, NARGS} =
-    ExaCore{T, VT, B, S, V, P, O, C, R, OR, SOR, EV, DM,
+    ExaCore{T, VT, B, S, V, P, O, C, R, OR, SOR, EV, SE, DM,
             NV, NP, NC, NCA, NO, NZC, NZG, NZJ, NZH, TH, LV, UV, Y0, LC, UC, NARGS}(
-        name, backend, var, par, obj, cons,
+        name, backend, var, par, obj, cons, subexprs,
         nvar, npar, ncon, nconaug, nobj, nnzc, nnzg, nnzj, nnzh,
         x0, θ, lvar, uvar, y0, lcon, ucon,
         minimize, tag, refs, oracles, scalar_oracles, evals, domerge, nargs,
@@ -422,6 +467,7 @@ end
     par = (),
     obj = (),
     cons = (),
+    subexprs = (),
     nvar = 0,
     npar = 0,
     ncon = 0,
@@ -455,6 +501,7 @@ end
         par,
         obj,
         cons,
+        subexprs,
         nvar,
         npar,
         ncon,
@@ -618,6 +665,7 @@ function instantiate(c::ExaCore{T}, a::Vararg{Any,N}) where {T, N}
         instantiate(c.par, a...),
         instantiate(c.obj, a...),
         instantiate(c.cons, a...),
+        instantiate(c.subexprs, a...),
         instantiate(c.nvar, a...),
         instantiate(c.npar, a...),
         instantiate(c.ncon, a...),
@@ -731,12 +779,17 @@ An abstract type for ExaModel, which is a subtype of `NLPModels.AbstractNLPModel
 """
 abstract type AbstractExaModel{T,VT,E} <: NLPModels.AbstractNLPModel{T,VT} end
 
-struct ExaModel{T,VT,E,V,P,O,C,S,R} <: AbstractExaModel{T,VT,E}
+struct ExaModel{T,VT,E,V,P,O,C,S,R,SE,SJ,SH,SK} <: AbstractExaModel{T,VT,E}
     name::Symbol
     vars::V
     pars::P
     objs::O
     cons::C
+    subexprs::SE               # Tuple of SubexprStage (buffered subexpressions), newest first
+    abuf::VT                   # adjoint buffer for buffered subexpressions (θ-length)
+    sjac::SJ                   # SubexprJac (Jacobian elimination maps) or nothing
+    shess::SH                  # SubexprHess (Hessian elimination maps) or nothing
+    ska::SK                    # device (KA) buffered-evaluation artifact or nothing
     θ::VT
     meta::NLPModels.NLPModelMeta{T,VT}
     counters::NLPModels.Counters
@@ -792,17 +845,26 @@ julia> result = ipopt(m; print_level=0)    # solve the problem
 ```
 """
 # No-oracle path: always returns ExaModel (type-stable for juliac --trim=safe).
-# `merge = false` skips the automatic family merge (see merge.jl); it only
-# has an effect on non-concrete cores, since concrete ones never merge.
 function ExaModel(c::ExaCore{T, VT, B, S, V, P, O, C, R, Tuple{}, Tuple{}, Tuple{}}; prod = false, kwargs...) where {T, VT, B, S, V, P, O, C, R}
     _recipe_check(c)
     c = _finalize_merged(_concretize(c))
+    prod && !isempty(c.subexprs) && error(
+        "ExaModel(c; prod = true) is not yet supported with buffered subexpressions",
+    )
+    sjac, resolved, localrows = _build_subexpr_jac(T, c.subexprs, c.cons, c.nnzj)
+    shess = _build_subexpr_hess(T, c.subexprs, c.obj, c.cons, c.nnzh, localrows, length(c.θ))
+    ska = build_subexpr_ka(c, sjac, shess, c.nvar)
     return ExaModel(
         c.name,
         c.var,
         c.par,
         c.obj,
         c.cons,
+        c.subexprs,
+        _make_abuf(c.subexprs, c.θ),
+        sjac,
+        shess,
+        ska,
         # A model owns its parameter storage: `instantiate` passes a container
         # with no placeholder in it through by identity, so without this copy
         # every model built from one core — including every instance of a
@@ -812,8 +874,8 @@ function ExaModel(c::ExaCore{T, VT, B, S, V, P, O, C, R, Tuple{}, Tuple{}, Tuple
         NLPModels.NLPModelMeta(
             c.nvar,
             ncon = c.ncon,
-            nnzj = c.nnzj,
-            nnzh = c.nnzh,
+            nnzj = sjac === nothing ? c.nnzj : length(sjac.rows),
+            nnzh = shess === nothing ? c.nnzh : length(shess.rows),
             x0 = (c.x0),
             lvar = (c.lvar),
             uvar = (c.uvar),
@@ -834,7 +896,10 @@ end
 # `concrete = Val(true)` / juliac path never sees its dynamic group pass.
 function ExaModel(c::ExaCore; prod = false, kwargs...)
     _recipe_check(c)
-    return _build_with_oracle(_finalize_merged(_concretize(c)); prod, kwargs...)
+    cc = _finalize_merged(_concretize(c))
+    isempty(cc.subexprs) ||
+        error("buffered subexpressions are not supported together with oracles yet")
+    return _build_with_oracle(cc; prod, kwargs...)
 end
 
 """
@@ -983,6 +1048,31 @@ end
     # No adjustment needed; the indices are used directly in expression building
     @assert(length(is) == length(s.size), "Expression index dimension error")
     return _reindex(s.f, is)
+end
+
+# BufferedExpression indexing - resolves to the θ slot holding the element's
+# buffered value instead of splicing the subexpression tree into the use site.
+# Like Var indexing (see _indexed_var), a symbolic index keeps the runtime
+# offset as a plain Int child of Node2 for type stability under juliac.
+@inline _subexpr_slot(i::I, o::Int) where {I<:AbstractNode} = SubexprNode(Node2(+, i, o))
+@inline _subexpr_slot(i, o) = SubexprNode(i + o)
+
+@inline function Base.getindex(s::BufferedExpression, i::I) where {I<:Integer}
+    _bound_check(s.size, i)
+    return SubexprNode(s.offset + i - _start(s.size[1]) + 1)
+end
+@inline function Base.getindex(s::BufferedExpression, i)
+    # Symbolic index case - slot = offset + (i - start + 1)
+    return _subexpr_slot(i, s.offset - _start(s.size[1]) + 1)
+end
+@inline function Base.getindex(s::BufferedExpression, is::Vararg{I,N}) where {I<:Integer,N}
+    @assert(length(is) == length(s.size), "Expression index dimension error")
+    _bound_check(s.size, is)
+    return SubexprNode(s.offset + idxx(is .- (_start.(s.size) .- 1), _length.(s.size)))
+end
+@inline function Base.getindex(s::BufferedExpression, is...)
+    @assert(length(is) == length(s.size), "Expression index dimension error")
+    return _subexpr_slot(idxx(is .- (_start.(s.size) .- 1), _length.(s.size)), s.offset)
 end
 
 @inline function Base.getindex(p::P, i) where {P<:Parameter}
@@ -1840,6 +1930,14 @@ variables or constraints are added to the problem.
 ## Keyword Arguments
 - `name`: When given as `Val(:name)`, registers the subexpression in `core` for later retrieval as `core.name` or `model.name`. See [`@add_expr`](@ref) for the idiomatic named interface.
 - `tag` : User-defined metadata attached to the expression.
+- `buffered`: When `true` (or `Val(true)`), returns a [`BufferedExpression`](@ref):
+  each element is evaluated once per model evaluation into a dedicated buffer
+  slot, and indexing produces a shallow leaf node referencing the slot instead
+  of splicing the subexpression tree into the use site. This keeps compilation
+  cost additive in the nesting depth of expression trees. Prefer the default
+  (inlining) for subexpressions used once or twice at shallow depth, and
+  `buffered = true` for subexpressions that are shared across many use sites
+  or nested in other subexpressions.
 
 ## Example
 ```julia
@@ -1870,16 +1968,21 @@ c, s = add_expr(c, x[i, k]^2 for (i, k) in itr)
 # s[i, k] substitutes x[i,k]^2 directly
 ```
 """
-@inline function add_expr(c::C, gen::Base.Generator; name = nothing, tag = nothing, lift = false, start = zero(T)) where {T, C <: ExaCore{T}}
-    # PROTOTYPE: `lift = true` introduces the subexpression as a VARIABLE pinned
-    # by a defining equality constraint, instead of splicing its node tree at
-    # every reference site.  Splicing duplicates the tree (and its type) per
-    # site, so chained layers grow the type exponentially with depth; a lifted
-    # layer keeps every tree one layer deep at the cost of extra rows/columns.
-    # 1-D iterators only in this prototype.
+@inline function add_expr(c::C, gen::Base.Generator; name = nothing, tag = nothing,
+                          lift = false, buffered = Val(false), start = zero(T)) where {T, C <: ExaCore{T}}
+    # `lift = true` introduces the subexpression as a VARIABLE pinned by a
+    # defining equality constraint; `buffered = true` evaluates it once per
+    # row into a θ-backed buffer (subexpr.jl); the default splices the node
+    # tree at every reference site.
     if lift === true || lift === Val(true)
         return _add_expr_lifted(c, gen, name, tag, start)
     end
+    return _add_expr(c, gen, _buffered_val(buffered), name, tag)
+end
+@inline _buffered_val(b::Bool) = Val(b)
+@inline _buffered_val(b::Val) = b
+
+@inline function _add_expr(c::C, gen, ::Val{false}, name, tag) where {T,C<:ExaCore{T}}
     ns = _infer_subexpr_dims(gen.iter)
 
     gen = _adapt_gen(gen)
@@ -1901,8 +2004,39 @@ function _add_expr_lifted(c::ExaCore{T}, gen::Base.Generator, name, tag, start) 
     return c, v
 end
 
+@inline function _add_expr(c::C, gen, ::Val{true}, name, tag) where {T,C<:ExaCore{T}}
+    ns = _infer_subexpr_dims(gen.iter)
+
+    gen = _adapt_gen(gen)
+    n = length(gen.iter)
+
+    o = c.npar
+    f = _stage_simdfunction(T, gen)
+    stage = SubexprStage(f, convert_array(collect(gen.iter), c.backend), o)
+    θ = append!(c.backend, c.θ, zero(T), n)
+    ex = BufferedExpression(ns, n, o, gen.f, tag)
+    return (
+        ExaCore(
+            c;
+            subexprs = (stage, c.subexprs...),
+            θ = θ,
+            npar = c.npar + n,
+            refs = add_refs(c.refs, name, ex),
+        ),
+        ex,
+    )
+end
+
 function jac_structure!(m::AbstractExaModel{T}, rows::AbstractVector, cols::AbstractVector) where T
+    _jac_structure_impl!(m, _subexprs(m), rows, cols)
+    return rows, cols
+end
+
+@inline _jac_structure_impl!(m::AbstractExaModel{T}, ::Tuple{}, rows, cols) where {T} =
     _jac_structure!(T, m.cons, rows, cols)
+@inline function _jac_structure_impl!(m::AbstractExaModel, ::Tuple, rows, cols)
+    copyto!(rows, m.sjac.rows)
+    copyto!(cols, m.sjac.cols)
     return rows, cols
 end
 
@@ -1913,8 +2047,18 @@ _jac_structure!(T, cons::Tuple{}, rows, cols) = nothing
 end
 
 function hess_structure!(m::AbstractExaModel{T}, rows::AbstractVector, cols::AbstractVector) where T
+    _hess_structure_impl!(m, _subexprs(m), rows, cols)
+    return rows, cols
+end
+
+@inline function _hess_structure_impl!(m::AbstractExaModel{T}, ::Tuple{}, rows, cols) where {T}
     _obj_hess_structure!(T, m.objs, rows, cols)
     _con_hess_structure!(T, m.cons, rows, cols)
+    return rows, cols
+end
+@inline function _hess_structure_impl!(m::AbstractExaModel, ::Tuple, rows, cols)
+    copyto!(rows, m.shess.rows)
+    copyto!(cols, m.shess.cols)
     return rows, cols
 end
 
@@ -1930,7 +2074,13 @@ _con_hess_structure!(T, cons::Tuple{}, rows, cols) = nothing
     shessian!(rows, cols, first(cons), NaNSource{T}(), NaNSource{T}(), T(NaN), T(NaN))
 end
 
+# Buffered-subexpression access: only ExaModel carries stages (oracle models
+# are guarded at build time), so other AbstractExaModels fall back to ().
+@inline _subexprs(m::ExaModel) = m.subexprs
+@inline _subexprs(m::AbstractExaModel) = ()
+
 function obj(m::AbstractExaModel, x::AbstractVector)
+    _sync_subexprs!(_subexprs(m), x, m.θ)
     return _obj(m.objs, x, m.θ)
 end
 
@@ -1946,6 +2096,7 @@ end
 
 function cons_nln!(m::AbstractExaModel, x::AbstractVector, g::AbstractVector)
     fill!(g, zero(eltype(g)))
+    _sync_subexprs!(_subexprs(m), x, m.θ)
     _cons_nln!(m.cons, x, m.θ, g)
     return g
 end
@@ -1968,8 +2119,18 @@ end
 
 function grad!(m::AbstractExaModel, x::AbstractVector, f::AbstractVector)
     fill!(f, zero(eltype(f)))
-    _grad!(m.objs, x, m.θ, f)
+    _grad_impl!(m, _subexprs(m), x, f)
     return f
+end
+
+@inline _grad_impl!(m, ::Tuple{}, x, f) = _grad!(m.objs, x, m.θ, f)
+@inline function _grad_impl!(m, stages::Tuple, x, f)
+    _sync_subexprs!(stages, x, m.θ)
+    fill!(m.abuf, zero(eltype(m.abuf)))
+    t = GradTarget(f, m.abuf)
+    _grad!(m.objs, x, m.θ, t)
+    _reverse_subexprs!(stages, x, m.θ, t)
+    return nothing
 end
 
 @inline function _grad!(objs::Tuple, x, θ, f)
@@ -1979,8 +2140,18 @@ end
 _grad!(objs::Tuple{}, x, θ, f) = nothing
 
 function jac_coord!(m::AbstractExaModel, x::AbstractVector, jac::AbstractVector)
+    _jac_coord_impl!(m, _subexprs(m), x, jac)
+    return jac
+end
+
+@inline function _jac_coord_impl!(m, ::Tuple{}, x, jac)
     fill!(jac, zero(eltype(jac)))
     _jac_coord!(m.cons, x, m.θ, jac)
+    return jac
+end
+@inline function _jac_coord_impl!(m, stages::Tuple, x, jac)
+    _sync_subexprs!(stages, x, m.θ)
+    _jac_coord_subexpr!(m.sjac, stages, m.cons, x, m.θ, jac)
     return jac
 end
 
@@ -1991,8 +2162,21 @@ _jac_coord!(cons::Tuple{}, x, θ, jac) = nothing
 end
 
 function jprod_nln!(m::AbstractExaModel, x::AbstractVector, v::AbstractVector, Jv::AbstractVector)
+    _jprod_impl!(m, _subexprs(m), x, v, Jv)
+    return Jv
+end
+@inline function _jprod_impl!(m, ::Tuple{}, x, v, Jv)
     fill!(Jv, zero(eltype(Jv)))
     _jprod_nln!(m.cons, x, m.θ, v, Jv)
+    return Jv
+end
+@inline function _jprod_impl!(m, stages::Tuple, x, v, Jv)
+    sj = m.sjac
+    jac_coord!(m, x, sj.vals)
+    fill!(Jv, zero(eltype(Jv)))
+    @inbounds for k in eachindex(sj.rows)
+        Jv[sj.rows[k]] += sj.vals[k] * v[sj.cols[k]]
+    end
     return Jv
 end
 
@@ -2003,8 +2187,21 @@ _jprod_nln!(cons::Tuple{}, x, θ, v, Jv) = nothing
 end
 
 function jtprod_nln!(m::AbstractExaModel, x::AbstractVector, v::AbstractVector, Jtv::AbstractVector)
+    _jtprod_impl!(m, _subexprs(m), x, v, Jtv)
+    return Jtv
+end
+@inline function _jtprod_impl!(m, ::Tuple{}, x, v, Jtv)
     fill!(Jtv, zero(eltype(Jtv)))
     _jtprod_nln!(m.cons, x, m.θ, v, Jtv)
+    return Jtv
+end
+@inline function _jtprod_impl!(m, stages::Tuple, x, v, Jtv)
+    sj = m.sjac
+    jac_coord!(m, x, sj.vals)
+    fill!(Jtv, zero(eltype(Jtv)))
+    @inbounds for k in eachindex(sj.rows)
+        Jtv[sj.cols[k]] += sj.vals[k] * v[sj.rows[k]]
+    end
     return Jtv
 end
 
@@ -2020,8 +2217,7 @@ function hess_coord!(
     hess::AbstractVector;
     obj_weight = one(eltype(x)),
 )
-    fill!(hess, zero(eltype(hess)))
-    _obj_hess_coord!(m.objs, x, m.θ, hess, obj_weight)
+    _hess_coord_impl!(m, _subexprs(m), x, nothing, hess, obj_weight)
     return hess
 end
 
@@ -2032,9 +2228,30 @@ function hess_coord!(
     hess::AbstractVector;
     obj_weight = one(eltype(x)),
 )
+    _hess_coord_impl!(m, _subexprs(m), x, y, hess, obj_weight)
+    return hess
+end
+
+@inline function _hess_coord_impl!(m, ::Tuple{}, x, y, hess, obj_weight)
     fill!(hess, zero(eltype(hess)))
     _obj_hess_coord!(m.objs, x, m.θ, hess, obj_weight)
-    _con_hess_coord!(m.cons, x, m.θ, y, hess, obj_weight)
+    y === nothing || _con_hess_coord!(m.cons, x, m.θ, y, hess, obj_weight)
+    return hess
+end
+@inline function _hess_coord_impl!(m, stages::Tuple, x, y, hess, obj_weight)
+    _hess_coord_subexpr!(
+        m.shess,
+        m.sjac,
+        stages,
+        m.objs,
+        m.cons,
+        x,
+        m.θ,
+        m.abuf,
+        hess,
+        obj_weight,
+        y,
+    )
     return hess
 end
 
@@ -2057,8 +2274,7 @@ function hprod!(
     Hv::AbstractVector;
     obj_weight = one(eltype(x)),
 )
-    fill!(Hv, zero(eltype(Hv)))
-    _obj_hprod!(m.objs, x, m.θ, v, Hv, obj_weight)
+    _hprod_impl!(m, _subexprs(m), x, nothing, v, Hv, obj_weight)
     return Hv
 end
 
@@ -2070,9 +2286,32 @@ function hprod!(
     Hv::AbstractVector;
     obj_weight = one(eltype(x)),
 )
+    _hprod_impl!(m, _subexprs(m), x, y, v, Hv, obj_weight)
+    return Hv
+end
+
+@inline function _hprod_impl!(m, ::Tuple{}, x, y, v, Hv, obj_weight)
     fill!(Hv, zero(eltype(Hv)))
     _obj_hprod!(m.objs, x, m.θ, v, Hv, obj_weight)
-    _con_hprod!(m.cons, x, m.θ, y, v, Hv, obj_weight)
+    y === nothing || _con_hprod!(m.cons, x, m.θ, y, v, Hv, obj_weight)
+    return Hv
+end
+# Buffered models: symmetric COO product off the composed Hessian values.
+@inline function _hprod_impl!(m, stages::Tuple, x, y, v, Hv, obj_weight)
+    sh = m.shess
+    if y === nothing
+        hess_coord!(m, x, sh.vals; obj_weight = obj_weight)
+    else
+        hess_coord!(m, x, y, sh.vals; obj_weight = obj_weight)
+    end
+    fill!(Hv, zero(eltype(Hv)))
+    @inbounds for k in eachindex(sh.rows)
+        r = sh.rows[k]
+        c = sh.cols[k]
+        val = sh.vals[k]
+        Hv[r] += val * v[c]
+        r != c && (Hv[c] += val * v[r])
+    end
     return Hv
 end
 

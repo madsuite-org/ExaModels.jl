@@ -214,6 +214,8 @@ function ExaModels.jac_structure!(
     rows::V,
     cols::V,
 ) where {T,VT,E<:KAExtension,V<:AbstractVector}
+    _ska(m) === nothing ||
+        return ExaModels._jac_structure_impl!(m, ExaModels._subexprs(m), rows, cols)
     if !isempty(rows)
         _jac_structure!(T, m.ext.backend, m.cons, rows, cols)
     end
@@ -231,6 +233,8 @@ function ExaModels.hess_structure!(
     rows::V,
     cols::V,
 ) where {T,VT,E<:KAExtension,V<:AbstractVector}
+    _ska(m) === nothing ||
+        return ExaModels._hess_structure_impl!(m, ExaModels._subexprs(m), rows, cols)
     if !isempty(rows)
         _obj_hess_structure!(T, m.ext.backend, m.objs, rows, cols)
         _con_hess_structure!(T, m.ext.backend, m.cons, rows, cols)
@@ -250,10 +254,14 @@ function _con_hess_structure!(T, backend, (con, cons...), rows, cols)
 end
 
 
+_ska(m::ExaModels.ExaModel) = m.ska
+_ska(m) = nothing
+
 function ExaModels.obj(
     m::ExaModels.AbstractExaModel{T,VT,E},
     x::AbstractVector,
 ) where {T,VT,E<:KAExtension}
+    _ska(m) === nothing || return _obj_buffered(m, x)
     if !isempty(m.ext.objbuffer)
         _obj(m.ext.backend, m.ext.objbuffer, m.objs, x, m.θ)
             result = ExaModels.sum(m.ext.objbuffer)
@@ -275,6 +283,7 @@ function ExaModels.cons_nln!(
     x::AbstractVector,
     y::AbstractVector,
 ) where {T,VT,E<:KAExtension}
+    _ska(m) === nothing || return _cons_buffered!(m, x, y)
     _cons_nln!(m.ext.backend, y, m.cons, x, m.θ)
     _conaugs!(m.ext.backend, m.ext.conbuffer, m.cons, x, m.θ)
 
@@ -312,6 +321,7 @@ function ExaModels.grad!(
     x::V,
     y::V,
 ) where {T,VT,E<:KAExtension,V<:AbstractVector}
+    _ska(m) === nothing || return _grad_buffered!(m, x, y)
     gradbuffer = m.ext.gradbuffer
 
     fill!(y, zero(eltype(y)))
@@ -340,6 +350,7 @@ function ExaModels.jac_coord!(
     x::V,
     y::V,
 ) where {T,VT,E<:KAExtension,V<:AbstractVector}
+    _ska(m) === nothing || return _jac_buffered!(m, x, y)
     fill!(y, zero(eltype(y)))
     _jac_coord!(m.ext.backend, y, m.cons, x, m.θ)
     return y
@@ -372,6 +383,9 @@ function ExaModels.jprod_nln!(
     v::AbstractVector,
     Jv::AbstractVector,
 ) where {T,VT,N<:NamedTuple,E<:KAExtension{T,VT,N}}
+    _ska(m) === nothing || error(
+        "jprod/jtprod/hprod with buffered subexpressions are not yet supported on device backends",
+    )
 
     fill!(Jv, zero(eltype(Jv)))
     fill!(m.ext.prodhelper.jacbuffer, zero(eltype(Jv)))
@@ -392,6 +406,9 @@ function ExaModels.jtprod_nln!(
     v::AbstractVector,
     Jtv::AbstractVector,
 ) where {T,VT,N<:NamedTuple,E<:KAExtension{T,VT,N}}
+    _ska(m) === nothing || error(
+        "jprod/jtprod/hprod with buffered subexpressions are not yet supported on device backends",
+    )
 
     fill!(Jtv, zero(eltype(Jtv)))
     fill!(m.ext.prodhelper.jacbuffer, zero(eltype(Jtv)))
@@ -414,6 +431,9 @@ function ExaModels.hprod!(
     Hv::AbstractVector;
     obj_weight = one(eltype(x)),
 ) where {T,VT,N<:NamedTuple,E<:KAExtension{T,VT,N}}
+    _ska(m) === nothing || error(
+        "jprod/jtprod/hprod with buffered subexpressions are not yet supported on device backends",
+    )
 
     if isnothing(m.ext.prodhelper)
         error("Prodhelper is not defined. Use ExaModels(c; prod=true) to use hprod!")
@@ -450,6 +470,9 @@ function ExaModels.hprod!(
     Hv::AbstractVector;
     obj_weight = one(eltype(x)),
 ) where {T,VT,N<:NamedTuple,E<:KAExtension{T,VT,N}}
+    _ska(m) === nothing || error(
+        "jprod/jtprod/hprod with buffered subexpressions are not yet supported on device backends",
+    )
 
     if isnothing(m.ext.prodhelper)
         error("Prodhelper is not defined. Use ExaModels(c; prod=true) to use hprod!")
@@ -518,6 +541,7 @@ function ExaModels.hess_coord!(
         hess::AbstractVector;
         obj_weight = one(T),
     ) where {T, VT, E <: KAExtension}
+    _ska(m) === nothing || return _hess_buffered!(m, x, nothing, hess, T(obj_weight))
     fill!(hess, zero(eltype(hess)))
     _obj_hess_coord!(m.ext.backend, hess, m.objs, x, m.θ, T(obj_weight))
     return hess
@@ -530,6 +554,7 @@ function ExaModels.hess_coord!(
         hess::AbstractVector;
         obj_weight = one(T),
     ) where {T, VT, E <: KAExtension}
+    _ska(m) === nothing || return _hess_buffered!(m, x, y, hess, T(obj_weight))
     fill!(hess, zero(eltype(hess)))
     _obj_hess_coord!(m.ext.backend, hess, m.objs, x, m.θ, T(obj_weight))
     _con_hess_coord!(m.ext.backend, hess, m.cons, x, m.θ, y)
@@ -1321,6 +1346,7 @@ end
 
 
 
+
 # ── merged (family-merged) constraint blocks ─────────────────────────────────
 # A merged block's row/nonzero offsets live in its MergedRow elements, not in
 # the SIMDFunction's affine fields, so the generic kernels' offset1/offset2
@@ -1380,5 +1406,8 @@ function ExaModels.shessian!(backend::B, y1, y2, f::_MergedCon, x, θ, adj::V, a
         kerh2_m(backend)(y1, y2, f.f, f.itr, x, θ, adj, adj2; ndrange = length(f.itr))
     end
 end
+
+include("ExaModelsKABuffered.jl")
+
 
 end # module ExaModelsKernelAbstractions
