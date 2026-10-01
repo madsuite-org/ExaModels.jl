@@ -18,7 +18,7 @@ end
 # expression graph's own sparsity and are always concrete.  The offset
 # parameters are appended, leaving `SIMDFunction{P}`-style dispatch (nlp.jl,
 # `offset0`) matching as before.
-struct SIMDFunction{F,C1,C2,O0,O1,O2}
+struct SIMDFunction{F,C1,C2,O0,O1,O2,C1P,C2P}
     f::F
     comp1::C1
     comp2::C2
@@ -27,6 +27,11 @@ struct SIMDFunction{F,C1,C2,O0,O1,O2}
     o2::O2
     o1step::Int
     o2step::Int
+    # Sparse index over the `sensitivity = true` parameters, see `_sparsity_par`.
+    comp1p::C1P
+    comp2p::C2P
+    o1pstep::Int
+    o2pstep::Int
 end
 
 @inline (sf::SIMDFunction{F})(i, x, θ) where {F} = sf.f(i, x, θ)
@@ -58,6 +63,10 @@ end
         o2,
         0,
         0,
+        Compressor{Tuple{}}(()),
+        Compressor{Tuple{}}(()),
+        0,
+        0,
     )
 end
 
@@ -86,18 +95,54 @@ end
     raw2 = Any[]
     ExaModels.hrpass0(t, nothing, nothing, nothing, nothing, raw2, T(NaN), T(NaN))
 
-    unique1 = _ident_unique(raw1)
-    o1step = length(unique1)
-    mapping1 = Int[findfirst(y -> y === x, unique1) for x in raw1]
-    c1 = Compressor(ntuple(i -> mapping1[i], _gr_val(typeof(d))))
+    c1, o1step = _compressor(raw1, _gr_val(typeof(d)))
+    c2, o2step = _compressor(raw2, _hr0_val(typeof(t)))
+    c1p, c2p, o1pstep, o2pstep = _sparsity_par(T, f, _has_par(typeof(f)))
 
-    unique2 = _ident_unique(raw2)
-    o2step = length(unique2)
-    mapping2 = Int[findfirst(y -> y === x, unique2) for x in raw2]
-    c2 = Compressor(ntuple(i -> mapping2[i], _hr0_val(typeof(t))))
-
-    SIMDFunction(f, c1, c2, o0, o1, o2, o1step, o2step)
+    SIMDFunction(f, c1, c2, o0, o1, o2, o1step, o2step, c1p, c2p, o1pstep, o2pstep)
 end
+
+# Compressor index of the entries with no output, see `ParameterAdjointResult`.
+const _EMPTY = typemax(Int) >> 1
+
+# Sparse index of `raw`, sending the entries `keep` rejects to `_EMPTY`.
+function _compressor(raw, n, keep = Returns(true))
+    unique = _ident_unique(filter(keep, raw))
+    mapping = Int[keep(x) ? findfirst(y -> y === x, unique) : _EMPTY for x in raw]
+    return Compressor(ntuple(i -> mapping[i], n)), length(unique)
+end
+
+# Sparse index of ∂c/∂θ and ∂²L/∂x∂θ over the `sensitivity = true` parameters.
+_sparsity_par(T, f, ::Val{false}) = (Compressor{Tuple{}}(()), Compressor{Tuple{}}(()), 0, 0)
+function _sparsity_par(T, f, ::Val{true})
+    θ = ParameterAdjointSource(NaNSource{T}(), 0)
+    d = f(Identity(), AdjointNodeSource(NaNSource{T}()), θ)
+    raw1 = Any[]
+    grpass(d, nothing, nothing, nothing, raw1, T(NaN))
+
+    t = f(Identity(), SecondAdjointNodeSource(NaNSource{T}()), θ)
+    raw2 = Any[]
+    hrpass0(t, nothing, nothing, nothing, nothing, raw2, T(NaN), T(NaN))
+
+    c1p, o1pstep = _compressor(raw1, _gr_val(typeof(d)), _is_parameter)
+    c2p, o2pstep = _compressor(raw2, _hr0_val(typeof(t)), _is_mixed)
+    return c1p, c2p, o1pstep, o2pstep
+end
+_is_parameter(k) = k isa ParameterNode
+_is_mixed((a, b)) = xor(a isa ParameterNode, b isa ParameterNode)
+
+# Whether the graph has a `sensitivity = true` parameter.
+_has_par(::Type) = Val(false)
+_has_par(::Type{ParameterNode{I,S}}) where {I,S} = Val(S)
+_has_par(::Type{Node1{F,I}}) where {F,I} = _has_par(I)
+_has_par(::Type{Node2{F,I1,I2}}) where {F,I1,I2} = _or_vals(_has_par(I1), _has_par(I2))
+_has_par(::Type{SumNode{I}}) where {I} = _has_par(I)
+_has_par(::Type{ProdNode{I}}) where {I} = _has_par(I)
+_has_par(::Type{Pair{P,S}}) where {P,S} = _has_par(S)
+_has_par(::Type{Tuple{}}) = Val(false)
+_has_par(::Type{T}) where {T<:Tuple} =
+    _or_vals(_has_par(Base.tuple_type_head(T)), _has_par(Base.tuple_type_tail(T)))
+_or_vals(::Val{A}, ::Val{B}) where {A,B} = Val(A || B)
 
 # === Val-based compile-time NTuple size computation (juliac-compatible, no @generated) ===
 # Each function returns Val{N}() where N is encoded in the return type via dispatch.

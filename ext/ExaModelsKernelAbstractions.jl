@@ -510,6 +510,28 @@ end
     end
 end
 
+@kernel function kerscatter(A, @Const(coord), @Const(vals), @Const(ptr))
+    idx = @index(Global)
+    @inbounds begin
+        (i, j), _ = coord[ptr[idx]]
+        if j > 0
+            for l = ptr[idx]:(ptr[idx+1]-1)
+                A[i, j] += vals[coord[l][2]]
+            end
+        end
+    end
+end
+function ExaModels._scatter_par!(ext::KAExtension, A, rows, cols, vals, colmap)
+    isempty(vals) && return A
+    coord = tuple.(tuple.(rows, colmap[cols]), eachindex(vals))
+    ExaModels.sort!(coord; lt = (a, b) -> a[1] < b[1])
+    ptr = ExaModels.getptr(ext.backend, coord; cmp = (a, b) -> a[1] != b[1])
+    kerscatter(ext.backend)(A, coord, vals, ptr; ndrange = length(ptr) - 1)
+    synchronize(ext.backend)
+    return A
+end
+Adapt.@adapt_structure ExaModels.ParameterAdjointSource
+Adapt.@adapt_structure ExaModels.ParameterAdjointResult
 
 
 function ExaModels.hess_coord!(

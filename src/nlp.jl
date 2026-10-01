@@ -82,12 +82,14 @@ time with [`set_value!`](@ref) without rebuilding the model. Use indexing
 (e.g. `θ[i]`) to embed parameter values in expressions. An optional `tag` field
 carries user-defined metadata.
 """
-struct Parameter{S,O,T,L} <: AbstractParameter
+struct Parameter{S,O,T,L,B} <: AbstractParameter
     size::S
     length::L
     offset::O
     tag::T
 end
+@inline Parameter(size::S, length::L, offset::O, tag::T, ::Val{B}) where {S,O,T,L,B} =
+    Parameter{S,O,T,L,B}(size, length, offset, tag)
 Base.show(io::IO, v::Parameter) = print(
     io,
     """
@@ -620,7 +622,7 @@ instantiate(v::Variable, a::Vararg{Any,N}) where {N} =
              v.name, instantiate(v.tag, a...))
 instantiate(p::Parameter, a::Vararg{Any,N}) where {N} =
     Parameter(instantiate(p.size, a...), instantiate(p.length, a...), instantiate(p.offset, a...),
-              instantiate(p.tag, a...))
+              instantiate(p.tag, a...), _sensitivity(p))
 instantiate(e::Expression, a::Vararg{Any,N}) where {N} =
     Expression(instantiate(e.size, a...), instantiate(e.length, a...), instantiate(e.f, a...),
                instantiate(e.iter, a...), instantiate(e.tag, a...))
@@ -635,7 +637,7 @@ instantiate(c::ConstraintAugmentation, a::Vararg{Any,N}) where {N} =
 instantiate(f::SIMDFunction, a::Vararg{Any,N}) where {N} =
     SIMDFunction(instantiate(f.f, a...), f.comp1, f.comp2,
                  instantiate(f.o0, a...), instantiate(f.o1, a...), instantiate(f.o2, a...),
-                 f.o1step, f.o2step)
+                 f.o1step, f.o2step, f.comp1p, f.comp2p, f.o1pstep, f.o2pstep)
 
 # `instantiate` is the identity on anything it has no method for, which is what
 # makes it safe to apply everywhere — and also means a type it does not know how
@@ -953,13 +955,14 @@ end
 
 @inline function Base.getindex(p::P, i) where {P<:Parameter}
     _bound_check(p.size, i)
-    ParameterNode(i + (p.offset - _start(p.size[1]) + 1))
+    ParameterNode(i + (p.offset - _start(p.size[1]) + 1), _sensitivity(p))
 end
 @inline function _getindex(p::P, is, ::Val{false}) where {P<:Parameter}
     @assert(length(is) == length(p.size), "Parameter index dimension error")
     _bound_check(p.size, is)
-    ParameterNode(p.offset + idxx(is .- (_start.(p.size) .- 1), _length.(p.size)))
+    ParameterNode(p.offset + idxx(is .- (_start.(p.size) .- 1), _length.(p.size)), _sensitivity(p))
 end
+@inline _sensitivity(::Parameter{S,O,T,L,B}) where {S,O,T,L,B} = Val(B)
 
 # `x[:, i]` expands each colon axis to its entries, column-major as in Base.
 const _Indexable = Union{AbstractVariable,Expression,Parameter}
@@ -1165,8 +1168,8 @@ end
 
 
 """
-    add_par(core, dims...; value = 0, name = nothing, tag = nothing)
-    add_par(core, value::AbstractArray; name = nothing, tag = nothing)
+    add_par(core, dims...; value = 0, name = nothing, tag = nothing, sensitivity = false)
+    add_par(core, value::AbstractArray; name = nothing, tag = nothing, sensitivity = false)
 
 Adds parameters to `core` and returns `(core, Parameter)`.
 
@@ -1178,6 +1181,7 @@ is a convenience that uses `size(value)` as the dimensions.
 - `value`: Initial parameter values. Can be a `Number`, `AbstractArray`, or `Generator`.
 - `name` : When given as `Val(:name)`, registers the parameter in `core` for later retrieval as `core.name` or `model.name`. See [`@add_par`](@ref) for the idiomatic named interface.
 - `tag`  : User-defined metadata attached to the parameter block.
+- `sensitivity`: Enables differentiation with respect to the parameter block if `true`.
 
 ## Example
 ```jldoctest
@@ -1193,24 +1197,24 @@ Parameter
   θ ∈ R^{10}
 ```
 """
-@inline function add_par(c::C, value::AbstractArray; tag = nothing, name = nothing) where {T,C<:ExaCore{T}}
-    _add_par(c, tag, name, value, Base.size(value)...)
+@inline function add_par(c::C, value::AbstractArray; tag = nothing, name = nothing, sensitivity = false) where {T,C<:ExaCore{T}}
+    _add_par(c, tag, name, value, Base.size(value)...; sensitivity)
 end
 
-@inline function add_par(c::C, n::AbstractRange; tag = nothing, name = nothing, value = zero(T)) where {T,C<:ExaCore{T}}
-    _add_par(c, tag, name, value, n)
+@inline function add_par(c::C, n::AbstractRange; tag = nothing, name = nothing, value = zero(T), sensitivity = false) where {T,C<:ExaCore{T}}
+    _add_par(c, tag, name, value, n; sensitivity)
 end
 
-@inline function add_par(c::C, ns...; tag = nothing, name = nothing, value = zero(T)) where {T,C<:ExaCore{T}}
-    _add_par(c, tag, name, value, ns...)
+@inline function add_par(c::C, ns...; tag = nothing, name = nothing, value = zero(T), sensitivity = false) where {T,C<:ExaCore{T}}
+    _add_par(c, tag, name, value, ns...; sensitivity)
 end
 
-@inline function _add_par(c, tag, name, start, ns...)
+@inline function _add_par(c, tag, name, start, ns...; sensitivity = false)
     o = c.npar
     len = total(ns)
     npar = c.npar + len
     θ = _append_slot(c.backend, c.θ, start, len)
-    p = Parameter(ns, len, o, tag)
+    p = Parameter(ns, len, o, tag, Val(sensitivity))
     (ExaCore(c; par = _prep(c.par, p), θ=θ, npar=npar, refs = add_refs(c.refs, name, p)), p)
 end
 
@@ -1995,6 +1999,130 @@ _con_hprod!(cons::Tuple{}, x, θ, y, v, Hv, obj_weight) = nothing
     _con_hprod!(Base.tail(cons), x, θ, y, v, Hv, obj_weight)
     shessian!((Hv, v), nothing, first(cons), x, θ, y, zero(eltype(Hv)))
 end
+
+# ── Parameter sensitivity ─────────────────────────────────────────────────────
+
+# Same pattern over the parameter sparse index, at offsets `o1` and `o2`.
+@inline _view_par(f::SIMDFunction, o1, o2) = SIMDFunction(
+    f.f, f.comp1p, f.comp2p, f.o0, o1, o2, f.o1pstep, f.o2pstep, Compressor{Tuple{}}(()), Compressor{Tuple{}}(()), 0, 0,
+)
+@inline _view_par(o::Objective, o1, o2) = Objective(_view_par(o.f, o1, o2), o.itr)
+@inline _view_par(c::Constraint, o1, o2) =
+    Constraint(_view_par(c.f, o1, o2), c.itr, c.offset, c.size, c.tag)
+@inline _view_par(c::ConstraintAugmentation, o1, o2) =
+    ConstraintAugmentation(_view_par(c.f, o1, o2), c.itr, c.oa, c.dims, c.tag)
+
+@inline _nnzj_par(a) = length(a.itr) * a.f.o1pstep
+@inline _nnzh_par(a) = length(a.itr) * a.f.o2pstep
+@inline _nnzj_par(as::Tuple) = sum(_nnzj_par, as; init = 0)
+@inline _nnzh_par(as::Tuple) = sum(_nnzh_par, as; init = 0)
+
+# Reverse pass on the CPU or on the KernelAbstractions backend.
+@inline _sjacobian!(::Nothing, args...) = sjacobian!(args...)
+@inline _sjacobian!(ext, args...) = sjacobian!(ext.backend, args...)
+@inline _shessian!(::Nothing, args...) = shessian!(args...)
+@inline _shessian!(ext, args...) = shessian!(ext.backend, args...)
+
+get_nnzj_par(m::AbstractExaModel) = _nnzj_par(m.cons)
+
+get_nnzh_par(m::AbstractExaModel) = _nnzh_par(m.objs) + _nnzh_par(m.cons)
+
+function jac_structure_par!(m::AbstractExaModel{T}, rows::AbstractVector, cols::AbstractVector) where {T}
+    θ = ParameterAdjointSource(NaNSource{T}(), 0)
+    _jac_par!(m.ext, m.cons, ParameterAdjointResult(rows), ParameterAdjointResult(cols), NaNSource{T}(), θ, T(NaN), 0)
+    return rows, cols
+end
+
+function jac_coord_par!(m::AbstractExaModel, x::AbstractVector, vals::AbstractVector)
+    fill!(vals, zero(eltype(vals)))
+    θ = ParameterAdjointSource(m.θ, 0)
+    _jac_par!(m.ext, m.cons, ParameterAdjointResult(vals), nothing, x, θ, one(eltype(vals)), 0)
+    return vals
+end
+
+_jac_par!(ext, ::Tuple{}, y1, y2, x, θ, adj, o1) = o1
+@inline function _jac_par!(ext, cons::Tuple, y1, y2, x, θ, adj, o1)
+    o1 = _jac_par!(ext, Base.tail(cons), y1, y2, x, θ, adj, o1)
+    con = first(cons)
+    _nnzj_par(con) > 0 && _sjacobian!(ext, y1, y2, _view_par(con, o1, 0), x, θ, adj)
+    return o1 + _nnzj_par(con)
+end
+
+function hess_structure_par!(m::AbstractExaModel{T}, rows::AbstractVector, cols::AbstractVector) where {T}
+    # The pass writes (nvar + j, i).
+    θ = ParameterAdjointSource(NaNSource{T}(), m.meta.nvar)
+    y1, y2 = ParameterAdjointResult(cols), ParameterAdjointResult(rows)
+    o2 = _hess_par!(m.ext, m.objs, y1, y2, NaNSource{T}(), θ, T(NaN), T(NaN), 0)
+    _hess_par!(m.ext, m.cons, y1, y2, NaNSource{T}(), θ, T(NaN), T(NaN), o2)
+    cols .-= m.meta.nvar
+    return rows, cols
+end
+
+function hess_coord_par!(
+    m::AbstractExaModel,
+    x::AbstractVector,
+    y::AbstractVector,
+    vals::AbstractVector;
+    obj_weight = one(eltype(x)),
+)
+    fill!(vals, zero(eltype(vals)))
+    θ = ParameterAdjointSource(m.θ, m.meta.nvar)
+    w = ParameterAdjointResult(vals)
+    o2 = _hess_par!(m.ext, m.objs, w, nothing, x, θ, obj_weight, zero(eltype(vals)), 0)
+    _hess_par!(m.ext, m.cons, w, nothing, x, θ, y, zero(eltype(vals)), o2)
+    return vals
+end
+
+_hess_par!(ext, ::Tuple{}, y1, y2, x, θ, adj1, adj2, o2) = o2
+@inline function _hess_par!(ext, fs::Tuple, y1, y2, x, θ, adj1, adj2, o2)
+    o2 = _hess_par!(ext, Base.tail(fs), y1, y2, x, θ, adj1, adj2, o2)
+    f = first(fs)
+    _nnzh_par(f) > 0 && _shessian!(ext, y1, y2, _view_par(f, 0, o2), x, θ, adj1, adj2)
+    return o2 + _nnzh_par(f)
+end
+
+_par_colmap(m::AbstractExaModel, θ::Parameter) =
+    _sensitivity(θ) === Val(true) ? _par_colmap(m, (θ,)) :
+    throw(ArgumentError("parameter block was not added with sensitivity = true"))
+function _par_colmap(m::AbstractExaModel, θs = m.pars)
+    colmap, n = zeros(Int, length(m.θ)), 0
+    for θ in sort!(filter(θ -> _sensitivity(θ) === Val(true), collect(θs)); by = θ -> θ.offset)
+        colmap[θ.offset .+ (1:θ.length)] .= n .+ (1:θ.length)
+        n += θ.length
+    end
+    return copyto!(similar(m.meta.x0, Int, length(colmap)), colmap), n
+end
+
+function _scatter_par!(::Nothing, A, rows, cols, vals, colmap)
+    @inbounds for k in eachindex(vals)
+        j = colmap[cols[k]]
+        j > 0 && (A[rows[k], j] += vals[k])
+    end
+    return A
+end
+
+function _par_dense(m, x, θ, nrow, nnz, structure!, coord!)
+    colmap, k = _par_colmap(m, θ)
+    rows, cols = structure!(m, similar(x, Int, nnz), similar(x, Int, nnz))
+    A = fill!(similar(x, nrow, k), zero(eltype(x)))
+    return _scatter_par!(m.ext, A, rows, cols, coord!(similar(x, nnz)), colmap)
+end
+
+# Calculates ∂c/∂θ at x, a dense ncon × nθ matrix.
+jac_par(m::AbstractExaModel, x::AbstractVector, θ = m.pars) =
+    _par_dense(m, x, θ, m.meta.ncon, get_nnzj_par(m), jac_structure_par!, v -> jac_coord_par!(m, x, v))
+
+# Calculates ∂²L/∂x∂θ at x and y, a dense nvar × nθ matrix.
+hess_par(m::AbstractExaModel, x::AbstractVector, y::AbstractVector, θ = m.pars; obj_weight = one(eltype(x))) =
+    _par_dense(m, x, θ, m.meta.nvar, get_nnzh_par(m), hess_structure_par!, v -> hess_coord_par!(m, x, y, v; obj_weight))
+
+# Calculates (∂²L/∂x∂θ, ∂c/∂θ) at x and y for MadNLP.sensitivity.
+(m::AbstractExaModel)(x::AbstractVector, y::AbstractVector) = (hess_par(m, x, y), jac_par(m, x))
+(m::AbstractExaModel)(θ::Parameter, x::AbstractVector, y::AbstractVector) =
+    (hess_par(m, x, y, θ), jac_par(m, x, θ))
+
+Base.getindex(m::Union{ExaCore,ExaModel}, θ::Parameter) = get_value(m, θ)
+Base.setindex!(m::Union{ExaCore,ExaModel}, values, θ::Parameter) = (set_value!(m, θ, values); m)
 
 @inbounds @inline offset0(a, i) = offset0(a.f, i)
 @inbounds @inline offset0(a::Constraint, i) = offset0(a.f, a.itr, i, _constraint_dims(a))
