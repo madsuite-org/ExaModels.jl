@@ -491,7 +491,8 @@ end
             convert_array(zeros(T, 0), backend), backend;
             nargs,
             var = _storage(concrete), par = _storage(concrete),
-            obj = _storage(concrete), cons = _storage(concrete), kwargs...,
+            obj = _storage(concrete), cons = _storage(concrete),
+            refs = _refs_storage(concrete), kwargs...,
         ),
         nargs,
     )
@@ -545,6 +546,21 @@ is known statically and destructuring stays inferable.
 @inline _storage(::Val{true}) = ()
 @inline _storage(::Val{false}) = Any[]
 
+# PROTOTYPE (refs out of the type): in non-concrete mode, named blocks
+# accumulate in a Vector{Pair} instead of a NamedTuple.  A NamedTuple ref
+# carries the named block's ENTIRE type in the core's type, so every later
+# add_* is inferred against a core type that grows with each name — the same
+# superlinear builder cost `concrete = Val(false)` removed for block storage,
+# reintroduced through names.  The NamedTuple is recovered once, in
+# `_concretize`, so `model.name`, `get_vars`/`get_cons`, recipes, and the
+# juliac path (`Val(true)`, unchanged NamedTuple) all behave as before.
+@inline _refs_storage(::Nothing) = Pair{Symbol, Any}[]
+@inline _refs_storage(::Val{true}) = (;)
+@inline _refs_storage(::Val{false}) = Pair{Symbol, Any}[]
+
+@inline _materialize_refs(nt::NamedTuple) = nt
+@inline _materialize_refs(v::Vector{Pair{Symbol, Any}}) = (; v...)
+
 # Rebuild a `Vector{Any}`-storage core with tuple accumulators. The blocks
 # inside the vectors are already concretely typed — only the container is
 # erased — so this recovers a core indistinguishable from one built with
@@ -560,6 +576,7 @@ is known statically and destructuring stays inferable.
     par = _materialize(par),
     obj = _materialize(obj),
     cons = _materialize(cons),
+    refs = _materialize_refs(c.refs),
 )
 
 @inline _exa_core_from_x0(x0, backend; kwargs...) =
@@ -1162,6 +1179,18 @@ end
 @inline _val_name(::Nothing) = :x
 @inline add_refs(refs, ::Nothing, var) = refs
 @inline add_refs(refs, ::Val{N}, var) where {N} = (; refs..., N => var)
+# Vector storage: copy (the previous core must stay valid, like `_prep`),
+# replace-or-append so a repeated name overwrites, matching NamedTuple splat.
+function add_refs(refs::Vector{Pair{Symbol, Any}}, ::Val{N}, var) where {N}
+    out = copy(refs)
+    i = findfirst(p -> p.first === N, out)
+    if i === nothing
+        push!(out, N => var)
+    else
+        out[i] = N => var
+    end
+    return out
+end
 
 
 """
@@ -1624,9 +1653,34 @@ function _add_con(c, f, pars, dims, start, lcon, ucon, name, tag)
     lcon = _append_slot(c.backend, c.lcon, lcon, nitr)
     ucon = _append_slot(c.backend, c.ucon, ucon, nitr)
 
+    # PROTOTYPE (#229): merge into the most recent block when the algebraic
+    # structure is identical.  The whole expression tree lives in typeof(f),
+    # so structural equality is a type check; the most recent block's rows and
+    # nonzeros end where this block's begin, so its affine offsets extend to
+    # the concatenated iterator unchanged.  Restricted to anonymous, untagged,
+    # 1-D blocks.
+    prev = _merge_candidate(c.cons, f, dims, name, tag)
+    if prev !== nothing
+        itr = vcat(collect(prev.itr), collect(pars))
+        con = Constraint(prev.f, convert_array(itr, c.backend), prev.offset, (length(itr),), prev.tag)
+        cons = copy(c.cons)
+        cons[1] = con
+        return (ExaCore(c; ncon=ncon, nnzj=nnzj, nnzh=nnzh, y0=y0, lcon=lcon, ucon=ucon, cons=cons), con)
+    end
+
     con = Constraint(f, convert_array(pars, c.backend), o, dims, tag)
 
     (ExaCore(c; ncon=ncon, nnzj=nnzj, nnzh=nnzh, y0=y0, lcon=lcon, ucon=ucon, cons=_prep(c.cons, con), refs = add_refs(c.refs, name, con)), con)
+end
+
+_merge_candidate(cons, f, dims, name, tag) = nothing
+function _merge_candidate(cons::Vector{Any}, f, dims, name, tag)
+    (name === nothing && tag === nothing && length(dims) == 1) || return nothing
+    isempty(cons) && return nothing
+    prev = cons[1]
+    prev isa Constraint || return nothing
+    (prev.tag === nothing && typeof(prev.f) == typeof(f) && length(prev.size) == 1) || return nothing
+    return prev
 end
 
 
@@ -1802,7 +1856,16 @@ c, s = add_expr(c, x[i, k]^2 for (i, k) in itr)
 # s[i, k] substitutes x[i,k]^2 directly
 ```
 """
-@inline function add_expr(c::C, gen::Base.Generator; name = nothing, tag = nothing) where {T, C <: ExaCore{T}}
+@inline function add_expr(c::C, gen::Base.Generator; name = nothing, tag = nothing, lift = false, start = zero(T)) where {T, C <: ExaCore{T}}
+    # PROTOTYPE: `lift = true` introduces the subexpression as a VARIABLE pinned
+    # by a defining equality constraint, instead of splicing its node tree at
+    # every reference site.  Splicing duplicates the tree (and its type) per
+    # site, so chained layers grow the type exponentially with depth; a lifted
+    # layer keeps every tree one layer deep at the cost of extra rows/columns.
+    # 1-D iterators only in this prototype.
+    if lift === true || lift === Val(true)
+        return _add_expr_lifted(c, gen, name, tag, start)
+    end
     ns = _infer_subexpr_dims(gen.iter)
 
     gen = _adapt_gen(gen)
@@ -1812,6 +1875,16 @@ c, s = add_expr(c, x[i, k]^2 for (i, k) in itr)
     # as the generator's closure — see `_reindex` in graph.jl.
     ex = Expression(ns, n, gen.f(DataSource()), collect(gen.iter), tag)
     return (ExaCore(c; refs = add_refs(c.refs, name, ex)), ex)
+end
+
+function _add_expr_lifted(c::ExaCore{T}, gen::Base.Generator, name, tag, start) where {T}
+    gen = _adapt_gen(gen)
+    data = collect(gen.iter)
+    n = length(data)
+    c, v = add_var(c, n; start = start, name = name, tag = tag)
+    f = gen.f
+    c, _ = add_con(c, (v[t[1]] - f(t[2]) for t in collect(zip(1:n, data))); lcon = zero(T), ucon = zero(T))
+    return c, v
 end
 
 function jac_structure!(m::AbstractExaModel{T}, rows::AbstractVector, cols::AbstractVector) where T
@@ -2262,12 +2335,26 @@ get_pars(x::Union{ExaCore, ExaModel}, name::Symbol) =
 # blocks share a flat namespace, so asking `get_vars` for something that is
 # really a parameter is at least as likely as a typo, and the two want
 # different fixes.
+# Container-generic refs access: NamedTuple in concrete mode, Vector{Pair} in
+# non-concrete mode (see `_refs_storage`).  Lookup is last-write-wins either
+# way; `add_refs` keeps Vector keys unique, so `findfirst` suffices there.
+@inline _refs_haskey(refs::NamedTuple, name::Symbol) = hasfield(typeof(refs), name)
+@inline _refs_haskey(refs::Vector{Pair{Symbol, Any}}, name::Symbol) =
+    findfirst(p -> p.first === name, refs) !== nothing
+@inline _refs_get(refs::NamedTuple, name::Symbol) = getfield(refs, name)
+@inline function _refs_get(refs::Vector{Pair{Symbol, Any}}, name::Symbol)
+    i = findfirst(p -> p.first === name, refs)
+    return refs[i].second
+end
+@inline _refs_keys(refs::NamedTuple) = keys(refs)
+@inline _refs_keys(refs::Vector{Pair{Symbol, Any}}) = Tuple(first(p) for p in refs)
+
 function _named_block(x, ::Type{K}, name::Symbol, kind::String, f) where {K}
     nt = _named_blocks(x, K)
     haskey(nt, name) && return nt[name]
     refs = getfield(x, :refs)
-    if hasfield(typeof(refs), name)
-        other = getfield(refs, name)
+    if _refs_haskey(refs, name)
+        other = _refs_get(refs, name)
         what = other isa AbstractVariable ? "a variable (get_vars)" :
                other isa AbstractConstraint ? "a constraint (get_cons)" :
                other isa AbstractParameter ? "a parameter (get_pars)" :
@@ -2281,15 +2368,15 @@ end
 
 @inline function _named_blocks(x::Union{ExaCore, ExaModel}, ::Type{K}) where {K}
     refs = getfield(x, :refs)
-    ks = filter(k -> getfield(refs, k) isa K, keys(refs))
-    return NamedTuple{ks}(map(k -> getfield(refs, k), ks))
+    ks = filter(k -> _refs_get(refs, k) isa K, _refs_keys(refs))
+    return NamedTuple{ks}(map(k -> _refs_get(refs, k), ks))
 end
 
 function Base.getproperty(core::E, name::Symbol) where {E <: Union{ExaCore, ExaModel}}
     if hasfield(E, name)
         getfield(core,name)
-    elseif hasfield(typeof(core.refs), name)
-        getfield(core.refs, name)
+    elseif _refs_haskey(getfield(core, :refs), name)
+        _refs_get(getfield(core, :refs), name)
     else
         getfield(core, name)
     end
