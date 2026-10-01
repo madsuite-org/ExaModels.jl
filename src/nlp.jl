@@ -78,8 +78,9 @@ evaluated once per model evaluation into a dedicated θ slot, and consumers
 reference the slot through a shallow [`SubexprNode`](@ref) leaf.  This keeps
 compilation cost additive in the nesting depth of expression trees.
 
-Currently supports objective/constraint values and dense gradients; Jacobian
-and Hessian evaluation with buffered expressions is not yet implemented.
+Supports the full NLPModels evaluation API through second order, on the host
+and on KernelAbstractions backends.  Not compatible with oracles or
+`ExaModel(c; prod = true)`.
 """
 struct BufferedExpression{S,F,T}
     size::S
@@ -1370,9 +1371,10 @@ variables or constraints are added to the problem.
   each element is evaluated once per model evaluation into a dedicated buffer
   slot, and indexing produces a shallow leaf node referencing the slot instead
   of splicing the subexpression tree into the use site. This keeps compilation
-  cost additive in the nesting depth of expression trees. Currently supports
-  objective/constraint values and dense gradients; Jacobian and Hessian
-  evaluation is not yet implemented for buffered expressions.
+  cost additive in the nesting depth of expression trees. Prefer the default
+  (inlining) for subexpressions used once or twice at shallow depth, and
+  `buffered = true` for subexpressions that are shared across many use sites
+  or nested in other subexpressions.
 
 ## Example
 ```julia

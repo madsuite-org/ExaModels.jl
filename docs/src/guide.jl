@@ -104,9 +104,19 @@ c2 = ExaCore(concrete = Val(true))
 # @add_expr(c, t, s[i] * s[i+1] for i in 1:(N - 2); buffered = true)
 # @add_obj(c, t[i]^2 for i in 1:(N - 2))
 # ```
-# Inlining (the default) remains preferable for subexpressions used only once or
-# twice at shallow depth; buffered subexpressions currently support the default
-# (CPU) backend.
+# !!! tip "Choosing between inlined and buffered subexpressions"
+#     Inlining (the default) substitutes the subexpression into each use site at
+#     no runtime cost, and is preferable when a subexpression is used once or
+#     twice at shallow depth. Buffering evaluates the subexpression once per
+#     model evaluation and is preferable when a subexpression is shared across
+#     many objectives or constraints, or nested inside other subexpressions:
+#     inlined compilation cost grows multiplicatively with the nesting depth,
+#     while buffered compilation cost is additive, and inlined evaluation
+#     recomputes each shared subexpression at every use site, while buffered
+#     evaluation computes it once. Buffered subexpressions work on GPU backends;
+#     `jprod_nln!`, `jtprod_nln!`, and `hprod!` are not available for them on
+#     device backends, while the sparse Jacobian and Hessian callbacks used by
+#     interior-point solvers are fully supported.
 #
 # For a comprehensive example using subexpressions, see the [Distillation Column example](@ref distillation).
 
