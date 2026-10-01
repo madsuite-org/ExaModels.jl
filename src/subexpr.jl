@@ -539,6 +539,7 @@ function _build_subexpr_jac(::Type{T}, stages::Tuple, cons, nnzj_ext) where {T}
     res_copy_dst = Int[]; res_copy_src = Int[]
     res_prod_dst = Int[]; res_prod_a = Int[]; res_prod_b = Int[]
     res_n = 0
+    rowmaps = Dict{Int,Dict{Int,Int}}()
     stage_o1 = Int[]
     off = 0
     for s in ordered
@@ -566,19 +567,25 @@ function _build_subexpr_jac(::Type{T}, stages::Tuple, cons, nnzj_ext) where {T}
             col = ecols[ind]
             col == 0 && continue
             push!(get!(() -> Tuple{Int,Int}[], localrows, row), (col, off + ind))
+            # Merge resolved entries per (row, x-column): one res slot per
+            # distinct column, contributions accumulated (+=) at evaluation.
+            # Without merging the row width enumerates PATHS (2^depth on a
+            # chain) instead of columns.
             lst = get!(() -> Tuple{Int,Int}[], resolved, row)
-            if col > 0
+            rmap = get!(() -> Dict{Int,Int}(), rowmaps, row)
+            getres!(xc) = get!(rmap, xc) do
                 res_n += 1
-                push!(res_copy_dst, res_n)
+                push!(lst, (xc, res_n))
+                res_n
+            end
+            if col > 0
+                push!(res_copy_dst, getres!(col))
                 push!(res_copy_src, off + ind)
-                push!(lst, (col, res_n))
             elseif col < 0
                 for (xc, b) in get(resolved, -col, Tuple{Int,Int}[])
-                    res_n += 1
-                    push!(res_prod_dst, res_n)
+                    push!(res_prod_dst, getres!(xc))
                     push!(res_prod_a, off + ind)
                     push!(res_prod_b, b)
-                    push!(lst, (xc, res_n))
                 end
             end
         end
@@ -664,14 +671,22 @@ end
 
 # Refresh the resolved stage-Jacobian values at the current point (shared by
 # Jacobian and Hessian evaluation).  Assumes θ is synced.
-function _resolve_stage_jac!(sj::SubexprJac, stages::Tuple, x, θ)
+# Fill only the local (one-level) stage Jacobian values — all the Hessian
+# needs; the Jacobian additionally resolves them to x-columns below.
+function _fill_stage_jac!(sj::SubexprJac, stages::Tuple, x, θ)
     fill!(sj.stage_ext, zero(eltype(sj.stage_ext)))
     _stage_jac_fill!(stages, sj.stage_o1, 1, sj, x, θ)
+    return nothing
+end
+
+function _resolve_stage_jac!(sj::SubexprJac, stages::Tuple, x, θ)
+    _fill_stage_jac!(sj, stages, x, θ)
+    fill!(sj.res, zero(eltype(sj.res)))
     @inbounds for m in eachindex(sj.res_copy_dst)
-        sj.res[sj.res_copy_dst[m]] = sj.stage_ext[sj.res_copy_src[m]]
+        sj.res[sj.res_copy_dst[m]] += sj.stage_ext[sj.res_copy_src[m]]
     end
     @inbounds for m in eachindex(sj.res_prod_dst)
-        sj.res[sj.res_prod_dst[m]] = sj.stage_ext[sj.res_prod_a[m]] * sj.res[sj.res_prod_b[m]]
+        sj.res[sj.res_prod_dst[m]] += sj.stage_ext[sj.res_prod_a[m]] * sj.res[sj.res_prod_b[m]]
     end
     return nothing
 end
@@ -963,7 +978,7 @@ function _hess_coord_subexpr!(
     y,
 )
     _sync_subexprs!(stages, x, θ)
-    _resolve_stage_jac!(sj, stages, x, θ)
+    _fill_stage_jac!(sj, stages, x, θ)
     fill!(abuf, zero(eltype(abuf)))
     fill!(sh.abuf2, zero(eltype(sh.abuf2)))
     fill!(sh.hess_ext, zero(eltype(sh.hess_ext)))
