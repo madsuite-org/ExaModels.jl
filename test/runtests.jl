@@ -63,7 +63,9 @@ include("SubexprTest/SubexprTest.jl")
     OracleTest.runtests()
 
     @info "Running Subexpr Test"
-    SubexprTest.runtests()
+    SubexprTest.runtests(
+        backends = unique(Any[SubexprTest.CPU(); [b for b in BACKENDS if b !== nothing]]),
+    )
 end
 
 # Force full GC before Julia exits so that OpenCL/PoCL objects are finalized

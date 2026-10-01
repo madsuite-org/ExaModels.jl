@@ -538,6 +538,8 @@ struct SubexprJac{T}
     res_prod_dst::Vector{Int}
     res_prod_a::Vector{Int}
     res_prod_b::Vector{Int}
+    lvl_res_copy::Vector{UnitRange{Int}}   # per-stage slices, oldest-first
+    lvl_res_prod::Vector{UnitRange{Int}}   # (emission order; device sweeps launch per stage)
     cons_ext::Vector{T}
     jac_copy_dst::Vector{Int}
     jac_copy_src::Vector{Int}
@@ -574,9 +576,13 @@ function _build_subexpr_jac(::Type{T}, stages::Tuple, cons, nnzj_ext) where {T}
     res_n = 0
     rowmaps = Dict{Int,Dict{Int,Int}}()
     stage_o1 = Int[]
+    lvl_res_copy = UnitRange{Int}[]
+    lvl_res_prod = UnitRange{Int}[]
     off = 0
     for s in ordered
         push!(stage_o1, off)
+        rc0 = length(res_copy_dst)
+        rp0 = length(res_prod_dst)
         n = length(s.itr)
         step = s.f.o1step
         erows = zeros(Int, n * step)
@@ -623,6 +629,8 @@ function _build_subexpr_jac(::Type{T}, stages::Tuple, cons, nnzj_ext) where {T}
             end
         end
         off += n * step
+        push!(lvl_res_copy, (rc0+1):length(res_copy_dst))
+        push!(lvl_res_prod, (rp0+1):length(res_prod_dst))
     end
     reverse!(stage_o1)   # match the newest-first stage tuple order
 
@@ -664,6 +672,8 @@ function _build_subexpr_jac(::Type{T}, stages::Tuple, cons, nnzj_ext) where {T}
             res_prod_dst,
             res_prod_a,
             res_prod_b,
+            lvl_res_copy,
+            lvl_res_prod,
             zeros(T, nnzj_ext),
             jac_copy_dst,
             jac_copy_src,
@@ -768,6 +778,7 @@ struct SubexprHess{T}
     stage_o2::Vector{Int}      # per-stage offsets into hess_ext, newest-first
     lvl_ccopy::Vector{UnitRange{Int}}
     lvl_cmul::Vector{UnitRange{Int}}
+    cmul_ph::Vector{Int}       # per level: # of cmul programs emitted in the rank-2 phase
     lvl_amul::Vector{UnitRange{Int}}
     lvl_hmul::Vector{UnitRange{Int}}
     ccopy_dst::Vector{Int}     # C[dst] += hess_ext[src]
@@ -870,6 +881,7 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, loc
     end
 
     nores = Tuple{Int,Int}[]
+    cmul_phL = Int[]
     # Eliminate levels newest → oldest.  Within a level: rank-2 pairs (both
     # coordinates at this level) first — they produce rank-1 pairs at the same
     # level — then rank-1 pairs, which only produce strictly older pairs.
@@ -893,6 +905,7 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, loc
         for p in r2
             expand(p, d[p])
         end
+        push!(cmul_phL, length(cmulL[l]))
         r1 = [p for p in keys(d) if xor(lvlof(p[1]) == l, lvlof(p[2]) == l)]
         for p in r1
             expand(p, d[p])
@@ -901,7 +914,7 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, loc
 
     # Flatten per-level programs in iteration order (newest first).
     lvl_ccopy = UnitRange{Int}[]; ccopy_dst = Int[]; ccopy_src = Int[]
-    lvl_cmul = UnitRange{Int}[]; cmul_dst = Int[]; cmul_src = Int[]; cmul_a = Int[]
+    lvl_cmul = UnitRange{Int}[]; cmul_ph = Int[]; cmul_dst = Int[]; cmul_src = Int[]; cmul_a = Int[]
     lvl_amul = UnitRange{Int}[]; amul_dst = Int[]; amul_src = Int[]; amul_a = Int[]
     lvl_hmul = UnitRange{Int}[]; hmul_dst = Int[]; hmul_src = Int[]; hmul_a = Int[]; hmul_c = T[]
     for l in nlv:-1:1
@@ -915,6 +928,7 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, loc
             push!(cmul_dst, dst); push!(cmul_src, s); push!(cmul_a, a)
         end
         push!(lvl_cmul, (n0+1):length(cmul_dst))
+        push!(cmul_ph, cmul_phL[nlv-l+1])
         n0 = length(amul_dst)
         for (dst, s, a) in amulL[l]
             push!(amul_dst, dst); push!(amul_src, s); push!(amul_a, a)
@@ -935,6 +949,7 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, loc
         stage_o2,
         lvl_ccopy,
         lvl_cmul,
+        cmul_ph,
         lvl_amul,
         lvl_hmul,
         ccopy_dst,

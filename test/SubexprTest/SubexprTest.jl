@@ -68,7 +68,60 @@ function _lag_grad(m, xv, yv)
     return g .+ J' * yv
 end
 
-function runtests()
+# Device-backend comparison: the same nested model built on a KA backend must
+# match the host inlined reference for every evaluation entry point.
+function _device_tests(backend)
+    m0 = _nested_model(buffered = false)
+    c = ExaCore(concrete = Val(true), backend = backend)
+    c, x = add_var(c, 10)
+    c, s = add_expr(c, (x[i]^2 + sin(x[i+1]) for i in 1:9); buffered = true)
+    c, t = add_expr(c, (s[i] * s[i+1] + x[i] for i in 1:8); buffered = true)
+    c, _ = add_obj(c, (exp(t[i] / 100) * t[i] + cos(x[i]) for i in 1:8))
+    c, _ = add_con(c, (t[i] + x[i+2]^2 for i in 1:8))
+    m1 = ExaModel(c)
+
+    xh = [sin(3i) + 0.5 for i in 1:10]
+    xd = copyto!(similar(m1.meta.x0, 10), xh)
+
+    @test NLPModels.obj(m1, xd) ≈ NLPModels.obj(m0, xh) rtol = 1e-13
+
+    g0 = zeros(8)
+    gd = fill!(similar(m1.meta.x0, 8), 0)
+    NLPModels.cons_nln!(m0, xh, g0)
+    NLPModels.cons_nln!(m1, xd, gd)
+    @test Array(gd) ≈ g0 rtol = 1e-13
+
+    d0 = zeros(10)
+    dd = fill!(similar(m1.meta.x0, 10), 0)
+    NLPModels.grad!(m0, xh, d0)
+    NLPModels.grad!(m1, xd, dd)
+    @test Array(dd) ≈ d0 rtol = 1e-13
+
+    r = zeros(Int, m1.meta.nnzj); cl = zeros(Int, m1.meta.nnzj)
+    NLPModels.jac_structure!(m1, r, cl)
+    vd = fill!(similar(m1.meta.x0, m1.meta.nnzj), 0)
+    NLPModels.jac_coord!(m1, xd, vd)
+    J1 = zeros(8, 10)
+    for (i, j, v) in zip(r, cl, Array(vd))
+        J1[i, j] += v
+    end
+    @test J1 ≈ _dense_jac(m0, xh) rtol = 1e-13
+
+    yh = [cos(2i) for i in 1:8]
+    yd = copyto!(similar(m1.meta.x0, 8), yh)
+    hr = zeros(Int, m1.meta.nnzh); hc = zeros(Int, m1.meta.nnzh)
+    NLPModels.hess_structure!(m1, hr, hc)
+    hv = fill!(similar(m1.meta.x0, m1.meta.nnzh), 0)
+    NLPModels.hess_coord!(m1, xd, yd, hv; obj_weight = 0.7)
+    H1 = zeros(10, 10)
+    for (i, j, v) in zip(hr, hc, Array(hv))
+        H1[i, j] += v
+        i != j && (H1[j, i] += v)
+    end
+    @test H1 ≈ _dense_hess(m0, xh, yh; obj_weight = 0.7) rtol = 1e-12
+end
+
+function runtests(; backends = Any[CPU()])
     @testset "Buffered subexpressions (first-order)" begin
         m0 = _nested_model(buffered = false)
         m1 = _nested_model(buffered = true)
@@ -289,10 +342,12 @@ function runtests()
         @test m.sb isa BufferedExpression
         @test NLPModels.obj(m, ones(4)) ≈ 12.0 rtol = 1e-14  # 3 terms, (1+1)^2 each
 
-        # non-default backends are refused at add time
-        cb = ExaCore(concrete = Val(true), backend = CPU())
-        cb, xb = add_var(cb, 3)
-        @test_throws ErrorException add_expr(cb, (xb[i]^2 for i in 1:2); buffered = true)
+        # prod = true is refused with buffered subexpressions
+        cp = ExaCore(concrete = Val(true))
+        cp, xp = add_var(cp, 3)
+        cp, sp = add_expr(cp, (xp[i]^2 for i in 1:2); buffered = true)
+        cp, _ = add_obj(cp, (sp[i] for i in 1:2))
+        @test_throws ErrorException ExaModel(cp; prod = true)
     end
 
     # End-to-end: a real solver consumes the buffered callbacks; identical
@@ -334,6 +389,12 @@ function runtests()
         NLPModels.grad!(m0, xv, d0)
         NLPModels.grad!(m1, xv, d1)
         @test d1 ≈ d0 rtol = 1e-14
+    end
+
+    for backend in backends
+        @testset "Buffered subexpressions (device: $backend)" begin
+            _device_tests(backend)
+        end
     end
 end
 

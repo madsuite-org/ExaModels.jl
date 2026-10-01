@@ -547,6 +547,9 @@ julia> result = ipopt(m; print_level=0)    # solve the problem
 """
 # No-oracle path: always returns ExaModel (type-stable for juliac --trim=safe).
 function ExaModel(c::ExaCore{T, VT, B, S, V, P, O, C, R, Tuple{}, Tuple{}, Tuple{}, SE}; prod = false, kwargs...) where {T, VT, B, S, V, P, O, C, R, SE}
+    prod && !isempty(c.subexprs) && error(
+        "ExaModel(c; prod = true) is not yet supported with buffered subexpressions",
+    )
     sjac, resolved, localrows = _build_subexpr_jac(T, c.subexprs, c.cons, c.nnzj)
     shess = _build_subexpr_hess(T, c.subexprs, c.obj, c.cons, c.nnzh, localrows, length(c.θ))
     ska = build_subexpr_ka(c, sjac, shess, c.nvar)
@@ -1423,9 +1426,6 @@ end
 end
 
 @inline function _add_expr(c::C, gen, ::Val{true}, name, tag) where {T,C<:ExaCore{T}}
-    c.backend === nothing || error(
-        "buffered subexpressions currently support only the default (CPU) backend",
-    )
     ns = _infer_subexpr_dims(gen.iter)
 
     gen = _adapt_gen(gen)
