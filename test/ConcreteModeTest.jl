@@ -5,9 +5,9 @@ import NLPModels
 
 # The same small model (variables, parameters, a subexpression, constraints,
 # an augmentation, and an objective) built on either storage mode.
-function _build(; concrete)
+function _build(; concrete, merge = nothing)
     n = 10
-    c = ExaCore(; concrete)
+    c = ExaCore(; concrete, merge)
     c, x = add_var(c, n; lvar = -1.0, uvar = 1.0, start = 0.5)
     c, θ = add_par(c, ones(n))
     c, s = add_expr(c, θ[i] * x[i]^2 for i in 1:n)
@@ -36,7 +36,10 @@ function runtests()
 
         @testset "_concretize recovers the Val(true) core" begin
             cf = _build(concrete = Val(false))
-            ct = _build(concrete = Val(true))
+            # merge defaults differ by mode (concrete stays prunable for
+            # juliac), so compare against a concrete core with the same
+            # merge setting
+            ct = _build(concrete = Val(true), merge = true)
             @test typeof(ExaModels._concretize(cf)) === typeof(ct)
             # Identity on a core that is already concrete.
             @test ExaModels._concretize(ct) === ct

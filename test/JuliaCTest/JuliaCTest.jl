@@ -131,7 +131,12 @@ function runtests()
                 ("catmix",    10, false),
                 ("chain",     20, false),
                 ("gasoil",    10, false),
-                ("glider",    20, false),
+                # glider is a knife-edge instance: on the pre-merge tree a
+                # 1e-9 perturbation of x0 flips N = 20 from converged to
+                # maxiter (and N = 15 the other way), so any change in float
+                # summation order repaints the pass pattern.  N = 30
+                # converges on both representations.
+                ("glider",    30, false),
                 ("marine",    10, false),
                 ("minsurf",   10, false),
                 ("pinene",    10, false),

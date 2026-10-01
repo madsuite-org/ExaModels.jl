@@ -1,10 +1,14 @@
 # Automatic family merging
 
-When a model is built with the default (non-concrete) storage, `ExaModel(c)`
-merges every group of constraint blocks that share one expression tree type
-into a single block. The user does not request this; it happens on every
-build, and any group the transform cannot prove safe is left as separate
-blocks.
+Merging happens during construction: when `add_con` or `add_con!` receives a
+block whose expression tree type matches a family already in the core, the
+block is folded into that family's single merged block, and the core's type
+does not change. The first block of a family is stored plain, so models
+without repeated structures are untouched. A block whose subtree sharing
+diverges from the family's representative cannot be folded incrementally
+(the slot layout is already fixed); those leftovers are merged in one batch
+pass when `ExaModel(c)` is built. Nothing is requested by the user, and any
+block the transform cannot prove safe stays separate.
 
 ```julia
 c = ExaCore()
@@ -66,15 +70,17 @@ block equivalent:
 - blocks with mismatched tags or iterator element types;
 - augmentation families on GPU backends (their accumulation uses the
   extension's collision-handling pipeline);
-- everything, when the core was built with `concrete = Val(true)`: the merge
-  pass is dynamic, so the statically compilable path never runs it.
+- everything, when merging is off. `concrete = Val(true)` defaults to off so
+  that model builders compiled with `juliac --trim` never reach the dynamic
+  merge machinery; a concrete core built in a normal session can opt in with
+  `ExaCore(concrete = Val(true), merge = true)`.
 
-Set `ExaModel(c; merge = false)` to skip merging entirely, and
-`ENV["EXAMODELS_MERGE_DEBUG"] = "1"` to print why groups were refused.
+Set `ExaCore(merge = false)` to disable merging for a core, and
+`ENV["EXAMODELS_MERGE_DEBUG"] = "1"` to print why blocks were refused.
 
 ## Cost model
 
-The merge pass itself compiles once per family set per session; rebuilding
+The merge machinery compiles once per family set per session; rebuilding
 the same families, at any replication count, reuses all of it. Evaluation
 performance is unchanged within measurement noise in most regimes and
 faster where many blocks previously paid per-block overhead; the one

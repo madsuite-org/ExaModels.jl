@@ -11,9 +11,9 @@ const MERGE_BACKENDS = isdefined(Main, :BACKENDS) ? Main.BACKENDS : [nothing]
 # blocks plus a scalar-coefficient variant (lazy segmented path), a data-tuple
 # family (lazy path over arrays), a same-type augmentation pair (array path on
 # host, unmerged on device), a named block, and a non-mergeable singleton.
-function _build(backend)
+function _build(backend; merge = true)
     n = 64
-    c = ExaCore(; backend)
+    c = ExaCore(; backend, merge)
     c, x = add_var(c, n; start = 0.3)
     c, z = add_var(c, n; start = 0.8)
     c, _ = add_con(c, sin(x[i]) * x[i+1] - 0.1 for i in 1:(n-1); lcon = -2.0, ucon = 2.0)
@@ -54,9 +54,8 @@ function _evalall(m)
 end
 
 function _test_equivalence(backend)
-    c = _build(backend)
-    m_merged = ExaModel(c)
-    m_plain = ExaModel(c; merge = false)
+    m_merged = ExaModel(_build(backend))
+    m_plain = ExaModel(_build(backend; merge = false))
     @test length(m_merged.cons) < length(m_plain.cons)
     rm = _evalall(m_merged)
     rp = _evalall(m_plain)
@@ -136,14 +135,17 @@ function runtests()
             @test typeof(m2.cons) == typeof(m4.cons)
         end
 
-        @testset "merge = false escape and non-mergeable blocks" begin
-            c = ExaCore()
-            c, x = add_var(c, 10; start = 0.5)
-            c, _ = add_con(c, sin(x[i]) for i in 1:9; lcon = -2.0, ucon = 2.0)
-            c, _ = add_con(c, sin(x[i]) for i in 1:9; lcon = -2.0, ucon = 2.0)
-            c, _ = add_obj(c, x[1])
-            @test length(ExaModel(c).cons) == 1
-            @test length(ExaModel(c; merge = false).cons) == 2
+        @testset "merge = false escape" begin
+            function build(merge)
+                c = ExaCore(; merge)
+                c, x = add_var(c, 10; start = 0.5)
+                c, _ = add_con(c, sin(x[i]) for i in 1:9; lcon = -2.0, ucon = 2.0)
+                c, _ = add_con(c, sin(x[i]) for i in 1:9; lcon = -2.0, ucon = 2.0)
+                c, _ = add_obj(c, x[1])
+                ExaModel(c)
+            end
+            @test length(build(true).cons) == 1
+            @test length(build(false).cons) == 2
         end
 
         @testset "add_expr lift = true" begin
@@ -154,7 +156,7 @@ function runtests()
                 c, e2 = add_expr(c, (sin(e1[j]) + cos(e1[j]) for j in 1:10); lift = mode)
                 c, _ = add_con(c, (exp(e2[j]) + abs2(e2[j+1]) for j in 1:9); lcon = 0.0, ucon = 0.0)
                 c, _ = add_obj(c, x[1])
-                ExaModel(c; merge = false)
+                ExaModel(c)
             end
             mS = buildl(false)
             mL = buildl(true)
@@ -190,13 +192,20 @@ function runtests()
             @test cc.y === y
         end
 
-        @testset "concrete mode never merges" begin
-            c = ExaCore(concrete = Val(true))
+        @testset "concrete mode merges when asked" begin
+            # concrete defaults to merge = false so that juliac-compiled
+            # builders stay statically prunable; dynamic sessions opt in
+            c = ExaCore(concrete = Val(true), merge = true)
             c, x = add_var(c, 10; start = 0.5)
-            c, _ = add_con(c, sin(x[i]) for i in 1:9; lcon = -2.0, ucon = 2.0)
-            c, _ = add_con(c, sin(x[i]) for i in 1:9; lcon = -2.0, ucon = 2.0)
+            c, _ = add_con(c, sin(x[i]) - 0.1 for i in 1:9; lcon = -2.0, ucon = 2.0)
+            c, _ = add_con(c, sin(x[i]) - 0.4 for i in 1:9; lcon = -2.0, ucon = 2.0)
             c, _ = add_obj(c, x[1])
-            @test length(ExaModel(c).cons) == 2
+            m = ExaModel(c)
+            @test length(m.cons) == 1
+            cv = zeros(m.meta.ncon)
+            NLPModels.cons!(m, copy(m.meta.x0), cv)
+            @test cv[1:9] ≈ fill(sin(0.5) - 0.1, 9) atol = 1e-15
+            @test cv[10:18] ≈ fill(sin(0.5) - 0.4, 9) atol = 1e-15
         end
     end
 end
