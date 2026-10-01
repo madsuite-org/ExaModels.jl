@@ -779,9 +779,11 @@ julia> result = ipopt(m; print_level=0)    # solve the problem
 ```
 """
 # No-oracle path: always returns ExaModel (type-stable for juliac --trim=safe).
-function ExaModel(c::ExaCore{T, VT, B, S, V, P, O, C, R, Tuple{}, Tuple{}, Tuple{}}; prod = false, kwargs...) where {T, VT, B, S, V, P, O, C, R}
+# `merge = false` skips the automatic family merge (see merge.jl); it only
+# has an effect on non-concrete cores, since concrete ones never merge.
+function ExaModel(c::ExaCore{T, VT, B, S, V, P, O, C, R, Tuple{}, Tuple{}, Tuple{}}; prod = false, merge = true, kwargs...) where {T, VT, B, S, V, P, O, C, R}
     _recipe_check(c)
-    c = _maybe_merge_families(_concretize(c), c.cons)
+    c = merge ? _maybe_merge_families(_concretize(c), c.cons) : _concretize(c)
     return ExaModel(
         c.name,
         c.var,
@@ -817,9 +819,10 @@ end
 # Oracle path: always returns ExaModelWithOracle (type-stable for juliac --trim=safe).
 # Family merging (merge.jl) runs only for non-concrete cores, so the
 # `concrete = Val(true)` / juliac path never sees its dynamic group pass.
-function ExaModel(c::ExaCore; prod = false, kwargs...)
+function ExaModel(c::ExaCore; prod = false, merge = true, kwargs...)
     _recipe_check(c)
-    return _build_with_oracle(_maybe_merge_families(_concretize(c), c.cons); prod, kwargs...)
+    cc = merge ? _maybe_merge_families(_concretize(c), c.cons) : _concretize(c)
+    return _build_with_oracle(cc; prod, kwargs...)
 end
 @inline _maybe_merge_families(cc, ::Tuple) = cc
 _maybe_merge_families(cc, ::Vector{Any}) = _merge_families(cc)
