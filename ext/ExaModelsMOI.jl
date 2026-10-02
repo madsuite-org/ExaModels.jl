@@ -202,6 +202,17 @@ function update_bin!(
     return bins
 end
 
+# Function types handled by extensions, e.g., `GenOpt.SumGenerator` in the
+# objective. See `ExaModels.exafy_extension_obj_arg`.
+function update_bin!(bins::Vector{Bin}, fn::AbstractBin, f)
+    if !(fn isa ObjectiveBin && ExaModels.is_extension_type(typeof(f)))
+        throw(ArgumentError("Unsupported function of type $(typeof(f))"))
+    end
+    head, data = ExaModels.exafy_extension_obj_arg(f)
+    push!(bins, Bin(head, data))
+    return bins
+end
+
 # _exafy
 
 # This method is used for objective constants.
@@ -500,6 +511,16 @@ function MOI.set(
     return
 end
 
+function MOI.supports(::Optimizer, ::MOI.ObjectiveFunction{F}) where {F}
+    return ExaModels.is_extension_type(F)
+end
+
+function MOI.set(model::Optimizer, ::MOI.ObjectiveFunction{F}, f::F) where {F}
+    empty!(model.objs)
+    update_bin!(model.objs, ObjectiveBin(), f)
+    return
+end
+
 # MOI.add_variable
 
 function MOI.add_variable(model::Optimizer{T}) where {T}
@@ -652,6 +673,39 @@ function MOI.add_constraint(
     l, u = _bounds(s)
     push!(model.lcon, l)
     push!(model.ucon, u)
+    return MOI.ConstraintIndex{typeof(f),typeof(s)}(row)
+end
+
+# Vector-valued constraints with function types handled by extensions, e.g.,
+# `GenOpt.FunctionGenerator`. See `ExaModels.exafy_extension_con`.
+
+const _VectorSets = Union{MOI.Zeros,MOI.Nonnegatives,MOI.Nonpositives}
+
+function MOI.supports_constraint(
+    ::Optimizer,
+    ::Type{F},
+    ::Type{<:_VectorSets},
+) where {F<:MOI.AbstractVectorFunction}
+    return ExaModels.is_extension_type(F)
+end
+
+_bounds(::MOI.Zeros, ::Type{T}) where {T} = (zero(T), zero(T))
+
+_bounds(::MOI.Nonnegatives, ::Type{T}) where {T} = (zero(T), typemax(T))
+
+_bounds(::MOI.Nonpositives, ::Type{T}) where {T} = (typemin(T), zero(T))
+
+function MOI.add_constraint(
+    model::Optimizer{T},
+    f::MOI.AbstractVectorFunction,
+    s::_VectorSets,
+) where {T}
+    row = length(model.lcon) + 1
+    head, data = ExaModels.exafy_extension_con(f, row)
+    push!(model.cons, Bin(head, data))
+    l, u = _bounds(s, T)
+    append!(model.lcon, fill(l, MOI.dimension(s)))
+    append!(model.ucon, fill(u, MOI.dimension(s)))
     return MOI.ConstraintIndex{typeof(f),typeof(s)}(row)
 end
 

@@ -61,6 +61,7 @@ include("oracle.jl")
 include("utils.jl")
 include("tags.jl")
 include("two_stage.jl")
+include("wrapper.jl")
 
 export ExaModel,
     ExaCore,
