@@ -296,7 +296,10 @@ end
 @inline function _merge_block(::Val{true}, c::ExaCore{T}, f, pars, dims, tag, isaug) where {T}
     _mergeable(typeof(f.f)) || return nothing
     c.nargs isa Val{0} || return nothing              # recipes: stored plain
-    isaug && c.backend !== nothing && return nothing  # device augs: ext pipeline
+    # augmentations stay plain on every backend: on device their accumulation
+    # goes through the extension's collision-handling pipeline, and merging
+    # them on host only would make a model's nnz counts backend-dependent
+    isaug && return nothing
     _merge_itr_ok(pars) || return nothing
     pbase = c.npar
     r = _smerge(T, c.cons, f, pars, dims, tag, isaug, eltype(pars), pbase)

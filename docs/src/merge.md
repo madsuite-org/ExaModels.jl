@@ -68,8 +68,9 @@ block equivalent:
   `ProdNode`, recipe placeholders);
 - blocks whose merged tree would change the per-row sparsity footprint;
 - blocks with mismatched tags or iterator element types;
-- augmentation families on GPU backends (their accumulation uses the
-  extension's collision-handling pipeline);
+- augmentation (`add_con!`) blocks, on every backend: their device
+  accumulation uses the extension's collision-handling pipeline, and merging
+  them on host only would make nnz counts backend-dependent;
 - everything, when merging is off. `concrete = Val(true)` defaults to off so
   that model builders compiled with `juliac --trim` never reach the dynamic
   merge machinery; a concrete core built in a normal session can opt in with
