@@ -78,6 +78,20 @@ block equivalent:
 Set `ExaCore(merge = false)` to disable merging for a core, and
 `ENV["EXAMODELS_MERGE_DEBUG"] = "1"` to print why blocks were refused.
 
+## Footprint of spliced subexpressions
+
+Slots are per leaf position, with no value-dependent sharing, so a tree that
+splices a subexpression at several reference sites (`add_expr` without
+`buffered` or `lift`) carries one derivative entry per site: the Jacobian
+and Hessian COO buffers grow accordingly (duplicate coordinates, summed on
+assembly; the assembled matrices are unchanged to the last bit).  On a
+splice-heavy model this is a real memory cost — the CO2-capture MESH unit
+measures nnzj 567 to 2087 and nnzh 2520 to 41640 — and the remedy is to
+mark those subexpressions `buffered = true`, which evaluates them once per
+row into a θ-backed stage and brings the footprint below the spliced
+original (nnzj 804, nnzh 550 on the same model), or `lift = true`.  Models
+without spliced subexpressions see no footprint change.
+
 ## Cost model
 
 The merge machinery compiles once per family set per session; rebuilding

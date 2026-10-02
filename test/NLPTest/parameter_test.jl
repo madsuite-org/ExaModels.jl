@@ -278,8 +278,12 @@ function test_parametric_vs_nonparametric(backend)
             @test c_param.ncon == c_nonparam.ncon
             @test ExaModels.length(c_param.obj) == ExaModels.length(c_nonparam.obj)
             @test ExaModels.length(c_param.cons) == ExaModels.length(c_nonparam.cons)
-            @test c_param.npar == 7
-            @test c_nonparam.npar == 0
+            # npar counts θ slots; family merging hoists literal scalar
+            # coefficients into θ, so declared parameter BLOCKS are the
+            # representation-independent check
+            @test c_param.npar >= 7
+            @test length(c_param.par) > 0
+            @test length(c_nonparam.par) == 0
         end
 
         @testset "Default" begin

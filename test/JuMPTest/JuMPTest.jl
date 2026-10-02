@@ -79,20 +79,14 @@ function test_fixed_variable_e2etest()
     em = ExaModels.ExaModel(jm)
     @test only(em.meta.lcon) == only(em.meta.ucon) == 1.0
     @test em.cons[1] isa ExaModels.ConstraintAugmentation
-    @test em.cons[1].f.f isa Pair
-    @test em.cons[1].f.f.second isa ExaModels.Node2{
-        typeof(*),
-        <:ExaModels.DataIndexed,
-        <:ExaModels.Var{<:ExaModels.DataIndexed},
-    }
-    @test em.cons[2] isa ExaModels.Constraint
-    @test em.cons[2].f.f isa ExaModels.Null{Nothing}
+    # family merging folds the Pair row target into per-row data, so the
+    # lowering is checked by value: at x = (1, 2, ..., N) the single row
+    # accumulates sum(x), with x[1] fixed contributing its bound value
+    xt = collect(1.0:N)
+    cv = NLPModels.cons(em, xt)
+    @test only(cv) ≈ sum(xt)
     @test length(em.objs) == 1
-    @test em.objs[1].f.f isa ExaModels.Node2{
-        typeof(*),
-        <:ExaModels.DataIndexed,
-        <:ExaModels.Node1{typeof(abs2),<:ExaModels.Var{<:ExaModels.DataIndexed}},
-    }
+    @test ExaModels.obj(em, xt) ≈ sum(2 * xt[i]^2 for i = 1:N)
     return
 end
 
@@ -107,21 +101,11 @@ function test_parameter_e2etest()
     @test only(em.meta.lcon) == only(em.meta.ucon) == 0.0
     @test only(em.θ) == 1.0
     @test em.cons[1] isa ExaModels.ConstraintAugmentation
-    @test em.cons[1].f.f isa Pair
-    @test em.cons[1].f.f.second isa ExaModels.Node2{
-        typeof(*),
-        <:ExaModels.DataIndexed,
-        <:ExaModels.ParameterNode{<:ExaModels.DataIndexed},
-    }
     @test em.cons[2] isa ExaModels.ConstraintAugmentation
-    @test em.cons[2].f.f isa Pair
-    @test em.cons[2].f.f.second isa ExaModels.Node2{
-        typeof(*),
-        <:ExaModels.DataIndexed,
-        <:ExaModels.Var{<:ExaModels.DataIndexed},
-    }
-    @test em.cons[3] isa ExaModels.Constraint
-    @test em.cons[3].f.f isa ExaModels.Null{Nothing}
+    # lowering checked by value: the row accumulates sum(x) - p
+    xt = fill(0.5, N)
+    cv = NLPModels.cons(em, xt)
+    @test only(cv) ≈ sum(xt) - 1.0
 
     jm = JuMP.Model()
     JuMP.@variable(jm, x)
@@ -163,7 +147,7 @@ function test_generic_e2etest()
     JuMP.@objective(jm, Min, sum(x[i]^2 for i = 1:N))
     em = ExaModels.ExaModel(jm)
     @test typeof(em) <: ExaModels.ExaModel{Float32}
-    @test eltype(em.cons[1].itr) <: Tuple{Int,Float32,Int}
+    @test eltype(em.cons[1].itr) <: ExaModels.MergedRow
     return
 end
 
