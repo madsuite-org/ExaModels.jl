@@ -192,10 +192,10 @@ function runtests()
             @test cc.y === y
         end
 
-        @testset "concrete mode merges when asked" begin
-            # concrete defaults to merge = false so that juliac-compiled
-            # builders stay statically prunable; dynamic sessions opt in
-            c = ExaCore(concrete = Val(true), merge = true)
+        @testset "concrete mode merges by default" begin
+            # merging is the default in both storage modes; the walk and the
+            # decision are static, so concrete builders stay trim-compilable
+            c = ExaCore(concrete = Val(true))
             c, x = add_var(c, 10; start = 0.5)
             c, _ = add_con(c, sin(x[i]) - 0.1 for i in 1:9; lcon = -2.0, ucon = 2.0)
             c, _ = add_con(c, sin(x[i]) - 0.4 for i in 1:9; lcon = -2.0, ucon = 2.0)

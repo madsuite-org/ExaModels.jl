@@ -17,10 +17,14 @@
 # The slot layout is a pure function of the tree type (one slot per scalar
 # leaf position; no value-dependent sharing), so the merged block's type, the
 # sparsity footprint, and all compiled code are identical at any replication
-# count.  The walk threads Integer-slot indices as Val so accessor type
-# parameters are compile-time constants, keeping the whole path inferable
-# and therefore compilable under `juliac --trim` (the same Val recursion
-# style as simdfunction's _gr_val).  The cost of position-wise slots: a tree
+# count.  The hoisting walk is a generated function: the generator walks the
+# tree TYPE and emits flat code (one getfield chain per leaf, literal slot
+# tuples), so `iv::NTuple{K, Int}` and `fv::NTuple{S, T}` are concrete at any
+# tree depth.  A runtime-recursive walk concatenating tuples per node widens
+# past inference's limits on deep trees, which leaves a dynamic splat in
+# compiled model builders — exactly what `juliac --trim` refuses.  The
+# generator is pure codegen from the type (no eval), so it is trim-safe.
+# The cost of position-wise slots: a tree
 # relying on ===-shared spliced subtrees (deep `add_expr` chains) carries a
 # correspondingly larger per-row sparsity footprint; `add_expr(...; lift =
 # true)` is the remedy for such models.
@@ -142,12 +146,13 @@ _mergeable(::Type{Pair{A, B}}) where {A, B} = _mergeable(B)   # aug: idx => expr
 _mergeable(::Type) = false
 
 # ── the static hoisting walk ─────────────────────────────────────────────────
-# Pairwise over the family representative's tree and an arriving tree of the
-# same type.  Slot layout = first-visit order over leaf POSITIONS.  Slot
-# indices live in FIELDS of the accessor nodes (never in type parameters), so
-# the walk's recursion signature is constant and inference terminates by
-# shrinking tree types, the same way simdfunction's _gr_val does.
-# Returns (merged_node, ivals::Tuple, fvals::Tuple).
+# `_shoist(b)` returns (merged_node, ivals::NTuple{K, Int}, fvals::NTuple{S}).
+# Slot layout = first-visit order over leaf POSITIONS (depth-first, inner1
+# before inner2); slot indices live in FIELDS of the accessor nodes.  It is
+# a generated function: the generator recurses over the tree TYPE (ordinary
+# recursion at generation time, no inference involved) and emits straight-
+# line code — one getfield chain per subnode and literal tuples for the
+# slots — so the result types are concrete however deep the tree is.
 
 """
     IvRef <: AbstractNode
@@ -176,43 +181,77 @@ end
 @inline (v::FvRef)(i, x, θ) = @inbounds getfield(i, _MROW_FV)[v.k]
 @inline (v::FvRef)(i::Identity, x, θ) = eltype(θ)(NaN)
 
-@inline function _shoist(a::Node1{F, I}, b, io::Int, fo::Int) where {F, I}
-    n, iv, fv = _shoist(getfield(a, :inner), getfield(b, :inner), io, fo)
-    return Node1{F, typeof(n)}(n), iv, fv
+# Generation-time recursion: `NT` is a subnode's type, `path` the symbol
+# holding that subnode of `b`.  Emits SSA statements into `stmts` and slot
+# expressions into `ivs`/`fvs` (slot number = push order, matching the
+# accessor literals), and returns the symbol/expression of the merged node.
+function _gwalk(NT, path, stmts, ivs, fvs)
+    out = gensym(:n)
+    if NT <: Node1
+        s = gensym(:c)
+        push!(stmts, :($s = getfield($path, :inner)))
+        n = _gwalk(NT.parameters[2], s, stmts, ivs, fvs)
+        push!(stmts, :($out = _g_rebuild1($path, $n)))
+    elseif NT <: Node2
+        s1 = gensym(:c)
+        push!(stmts, :($s1 = getfield($path, :inner1)))
+        n1 = _gwalk(NT.parameters[2], s1, stmts, ivs, fvs)
+        s2 = gensym(:c)
+        push!(stmts, :($s2 = getfield($path, :inner2)))
+        n2 = _gwalk(NT.parameters[3], s2, stmts, ivs, fvs)
+        push!(stmts, :($out = _g_rebuild2($path, $n1, $n2)))
+    elseif NT <: Var
+        s = gensym(:c)
+        push!(stmts, :($s = getfield($path, :i)))
+        n = _gwalk(NT.parameters[1], s, stmts, ivs, fvs)
+        push!(stmts, :($out = Var{typeof($n)}($n)))
+    elseif NT <: ParameterNode
+        s = gensym(:c)
+        push!(stmts, :($s = getfield($path, :i)))
+        n = _gwalk(NT.parameters[1], s, stmts, ivs, fvs)
+        push!(stmts, :($out = ParameterNode{typeof($n)}($n)))
+    elseif NT <: DataIndexed
+        s = gensym(:c)
+        push!(stmts, :($s = getfield($path, :inner)))
+        n = _gwalk(NT.parameters[1], s, stmts, ivs, fvs)
+        # J may be a Symbol (a field key), so quote it rather than splice it
+        push!(stmts, :($out = DataIndexed($n, $(QuoteNode(NT.parameters[2])))))
+    elseif NT === DataSource
+        push!(stmts, :($out = DataIndexed(DataSource(), $_MROW_D)))
+    elseif NT <: Constant || NT === VarSource || NT === ParameterSource || NT <: Val
+        return path                       # structure lives in the type: reuse
+    elseif NT <: Null
+        NT.parameters[1] === Nothing && return path
+        # a Null's value is a scalar field like any other: hoist it
+        push!(fvs, :(getfield($path, :value)))
+        push!(stmts, :($out = FvRef($(length(fvs)))))
+    elseif NT <: Integer
+        push!(ivs, :(Int($path)))
+        push!(stmts, :($out = IvRef($(length(ivs)))))
+    elseif NT <: Real
+        push!(fvs, path)
+        push!(stmts, :($out = FvRef($(length(fvs)))))
+    else
+        # unreachable behind the _mergeable gate; loud if the two ever drift
+        error("_shoist: node type not covered by the hoisting walk: ", NT)
+    end
+    return out
 end
-@inline function _shoist(a::Node2{F, I1, I2}, b, io::Int, fo::Int) where {F, I1, I2}
-    n1, iv1, fv1 = _shoist(getfield(a, :inner1), getfield(b, :inner1), io, fo)
-    n2, iv2, fv2 = _shoist(getfield(a, :inner2), getfield(b, :inner2),
-                           io + length(iv1), fo + length(fv1))
-    return Node2{F, typeof(n1), typeof(n2)}(n1, n2), (iv1..., iv2...), (fv1..., fv2...)
-end
-@inline function _shoist(a::Var, b, io::Int, fo::Int)
-    n, iv, fv = _shoist(getfield(a, :i), getfield(b, :i), io, fo)
-    return Var{typeof(n)}(n), iv, fv
-end
-@inline function _shoist(a::ParameterNode, b, io::Int, fo::Int)
-    n, iv, fv = _shoist(getfield(a, :i), getfield(b, :i), io, fo)
-    return ParameterNode{typeof(n)}(n), iv, fv
-end
-@inline function _shoist(a::DataIndexed{I, J}, b, io::Int, fo::Int) where {I, J}
-    n, iv, fv = _shoist(getfield(a, :inner), getfield(b, :inner), io, fo)
-    return DataIndexed(n, J), iv, fv
-end
-@inline _shoist(a::DataSource, b, io::Int, fo::Int) = DataIndexed(DataSource(), _MROW_D), (), ()
-@inline _shoist(a::Constant, b, io::Int, fo::Int) = a, (), ()
-@inline _shoist(a::VarSource, b, io::Int, fo::Int) = a, (), ()
-@inline _shoist(a::ParameterSource, b, io::Int, fo::Int) = a, (), ()
-@inline _shoist(a::Val, b, io::Int, fo::Int) = a, (), ()
-# a Null's value is a scalar field like any other: hoist it
-@inline function _shoist(a::Null{T}, b::Null, io::Int, fo::Int) where {T <: Real}
-    return FvRef(fo + 1), (), (getfield(b, :value),)
-end
-@inline _shoist(a::Null{Nothing}, b, io::Int, fo::Int) = a, (), ()
-@inline function _shoist(a::T, b::T, io::Int, fo::Int) where {T <: Integer}
-    return IvRef(io + 1), (Int(b),), ()
-end
-@inline function _shoist(a::T, b::T, io::Int, fo::Int) where {T <: Real}
-    return FvRef(fo + 1), (), (b,)
+
+@inline _g_rebuild1(::Node1{F}, n) where {F} = Node1{F, typeof(n)}(n)
+@inline _g_rebuild2(::Node2{F}, n1, n2) where {F} =
+    Node2{F, typeof(n1), typeof(n2)}(n1, n2)
+
+@generated function _shoist(b)
+    stmts = Any[]
+    ivs = Any[]
+    fvs = Any[]
+    node = _gwalk(b, :b, stmts, ivs, fvs)
+    return quote
+        $(Expr(:meta, :inline))
+        $(stmts...)
+        ($node, ($(ivs...),), ($(fvs...),))
+    end
 end
 
 @inline _family_tree(f::SIMDFunction) = _pair_second(f.f)
@@ -234,6 +273,12 @@ function _row_o0s(f, pars, dims)
     return Int[offset0(h, r) for r in 1:length(pars)]
 end
 
+# `map(T, t)` on tuples longer than 32 leaves Base's inlined path and goes
+# through a Vector{Any} splat, which is a dynamic call `juliac --trim`
+# refuses; `ntuple(.., Val(N))` emits a literal tuple at any length.
+@inline _fvt(::Type{T}, fvs::Tuple) where {T} =
+    ntuple(i -> T(@inbounds fvs[i]), Val(length(fvs)))
+
 # First block of a family: a one-segment merged block.  The merged tree's
 # sparsity (`mf.o1step`/`o2step`) is what the caller accounts nnz with, so
 # the family's footprint is fixed by the type from the start and later
@@ -241,11 +286,11 @@ end
 # own counters (f.o0/f.o1/f.o2 were taken from the core at this add).
 @inline function _merged_first(::Type{T}, f, pars, dims, tag, backend) where {T}
     rep = f
-    tree, ivs, fvs = _shoist(_family_tree(rep), _family_tree(rep), 0, 0)
+    tree, ivs, fvs = _shoist(_family_tree(rep))
     mf = _simdfunction(T, tree, 0, 0, 0)
     K = length(ivs)
     S = length(fvs)
-    fvt = map(T, fvs)
+    fvt = _fvt(T, fvs)
     lazy = !(f.f isa Pair) && backend === nothing
     if lazy
         segs = MergedSeg{K, S, T, typeof(pars)}[MergedSeg{K, S, T, typeof(pars)}(pars, f.o0, f.o1, f.o2, ivs, fvt)]
@@ -265,9 +310,10 @@ end
 # segment.  nnz bases again come from the arriving block's own counters.
 @inline function _merged_append(::Type{T}, prev, f, pars, dims, tag) where {T}
     m = getfield(prev, :itr)
-    rep = _mrep(m)
-    _, ivs, fvs = _shoist(_family_tree(rep), _family_tree(f), 0, 0)
-    fvt = map(T, fvs)
+    # same family means same tree type, so the arriving tree's own walk uses
+    # the representative's slot layout by construction
+    _, ivs, fvs = _shoist(_family_tree(f))
+    fvt = _fvt(T, fvs)
     if m isa SegmentedItr
         push!(m.segs, eltype(m.segs)(pars, f.o0, f.o1, f.o2, ivs, fvt))
         newlen = length(pars)

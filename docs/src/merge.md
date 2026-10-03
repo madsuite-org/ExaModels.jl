@@ -60,26 +60,25 @@ on the fly. Memory cost is proportional to the number of blocks, not rows.
 Augmentation (`add_con!`) families and all families on GPU backends use a
 materialized element array instead.
 
-## What does not merge
+## What stays plain
 
-A group is silently left unmerged when the transform cannot prove the merged
-block equivalent:
+Every exclusion is decided by type, never by value:
 
 - trees containing node kinds outside the hoisting walk (`SumNode`,
   `ProdNode`, recipe placeholders);
-- blocks whose merged tree would change the per-row sparsity footprint;
-- blocks with mismatched tags or iterator element types;
 - augmentation (`add_con!`) blocks, on every backend: their device
   accumulation uses the extension's collision-handling pipeline, and merging
   them on host only would make nnz counts backend-dependent;
 - blocks referencing buffered subexpressions, and pair-headed blocks on
   device backends;
-- everything, when merging is off. `concrete = Val(true)` defaults to off so
-  that model builders compiled with `juliac --trim` never reach the dynamic
-  merge machinery; a concrete core built in a normal session can opt in with
-  `ExaCore(concrete = Val(true), merge = true)`.
+- everything, when merging is off: `ExaCore(merge = false)`.
 
-Set `ExaCore(merge = false)` to disable merging for a core.
+Merging is on by default in both storage modes. The decision switch is a
+type parameter of the core, and the hoisting walk is a generated function
+whose output types are fixed by the tree type, so model builders compile
+under `juliac --trim` with merging on; a disabled core prunes the merge
+path statically. Blocks with different tags or iterator element types are
+not folded into each other; each simply starts its own family.
 
 ## Footprint of spliced subexpressions
 
@@ -98,9 +97,13 @@ without spliced subexpressions see no footprint change.
 ## Cost model
 
 The merge machinery compiles once per family set per session; rebuilding
-the same families, at any replication count, reuses all of it. Evaluation
-performance is unchanged within measurement noise in most regimes and
-faster where many blocks previously paid per-block overhead; the one
-measured regression is 1.1 to 1.2 times on Jacobian/Hessian evaluation for
-models consisting of a few shallow range-iterated blocks, where the per-row
-offset loads are comparable to the kernel's arithmetic.
+the same families, at any replication count, reuses all of it. Merged
+callbacks allocate nothing. Across the benchmark regimes (shallow
+range-iterated blocks at 16 and 256 replications, data-tuple blocks,
+single-block families, 64 identical blocks; 0.5 to 1 million rows), merged
+evaluation ranges from 0.73 to 1.14 times the plain times, with one
+outlier: 1.30 times on the Jacobian of a few shallow range-iterated
+blocks, where the per-row offset loads are comparable to the kernel's
+arithmetic. Single-block families pay 1.05 to 1.14 times for carrying the
+merged form. Iterator memory is at or below the plain layout in every
+multi-block regime.
