@@ -34,28 +34,28 @@ One row of a merged family: global row offset `o0`, Jacobian/Hessian nonzero
 bases `o1`/`o2`, the `K` hoisted Integer leaves, the base of this row's
 block's Float slots in `θ`, and the original iterator element `d`.
 """
-struct MergedRow{K, D}
+struct MergedRow{K, S, T, D}
     o0::Int
     o1::Int
     o2::Int
     iv::NTuple{K, Int}
-    pbase::Int
+    fv::NTuple{S, T}
     d::D
 end
 
 const _MROW_IV = 4  # field position of `iv` in MergedRow
-const _MROW_PB = 5  # field position of `pbase` in MergedRow
+const _MROW_FV = 5  # field position of `fv` in MergedRow
 const _MROW_D  = 6  # field position of `d` in MergedRow
 
 # ── merged iterators ─────────────────────────────────────────────────────────
 
-struct MergedSeg{K, I}
+struct MergedSeg{K, S, T, I}
     itr::I
     o0::Int
     o1::Int
     o2::Int
     iv::NTuple{K, Int}
-    pbase::Int
+    fv::NTuple{S, T}
 end
 
 """
@@ -68,28 +68,27 @@ layout key for later arrivals.  The containers are mutable inside an
 immutable struct: appending a segment changes no types, so the core's type
 is stable as a family grows.
 """
-struct SegmentedItr{K, D, I, RF} <: AbstractVector{MergedRow{K, D}}
+struct SegmentedItr{K, S, T, D, I, RF} <: AbstractVector{MergedRow{K, S, T, D}}
     rep::RF
-    segs::Vector{MergedSeg{K, I}}
+    segs::Vector{MergedSeg{K, S, T, I}}
     offs::Vector{Int}           # cumulative row counts
     seglen::Base.RefValue{Int}  # > 0 when all segments have equal length
     o1step::Int
     o2step::Int
-    nfval::Int                  # Float slots per source block (θ)
 end
 Base.size(s::SegmentedItr) = (isempty(s.offs) ? 0 : (@inbounds s.offs[end]),)
 @inline _segof(s::SegmentedItr, i::Int) =
     s.seglen[] > 0 ? div(i - 1, s.seglen[]) + 1 : searchsortedfirst(s.offs, i)
-@inline function Base.getindex(s::SegmentedItr{K, D}, i::Int) where {K, D}
+@inline function Base.getindex(s::SegmentedItr{K, S, T, D}, i::Int) where {K, S, T, D}
     j = _segof(s, i)
     seg = @inbounds s.segs[j]
     base = j == 1 ? 0 : @inbounds s.offs[j-1]
     r = i - base
-    return MergedRow{K, D}(
+    return MergedRow{K, S, T, D}(
         seg.o0 + r,
         seg.o1 + s.o1step * (r - 1),
         seg.o2 + s.o2step * (r - 1),
-        seg.iv, seg.pbase, (@inbounds seg.itr[r]),
+        seg.iv, seg.fv, (@inbounds seg.itr[r]),
     )
 end
 
@@ -100,10 +99,9 @@ Materialized merged iterator, used for augmentation families (their row
 targets are data-driven, not affine) and for device finalization.  Rows are
 appended in place as the family grows.
 """
-struct MergedRows{K, D, RF} <: AbstractVector{MergedRow{K, D}}
+struct MergedRows{K, S, T, D, RF} <: AbstractVector{MergedRow{K, S, T, D}}
     rep::RF
-    rows::Vector{MergedRow{K, D}}
-    nfval::Int
+    rows::Vector{MergedRow{K, S, T, D}}
 end
 Base.size(m::MergedRows) = Base.size(m.rows)
 @inline Base.getindex(m::MergedRows, i::Int) = @inbounds m.rows[i]
@@ -112,8 +110,8 @@ const _MergedItr = Union{SegmentedItr, MergedRows}
 
 _mrep(s::SegmentedItr) = s.rep
 _mrep(m::MergedRows) = m.rep
-_mrow_k(::Type{MergedRow{K, D}}) where {K, D} = K
-_mrow_dtype(::Type{MergedRow{K, D}}) where {K, D} = D
+_mrow_k(::Type{MergedRow{K, S, T, D}}) where {K, S, T, D} = K
+_mrow_dtype(::Type{MergedRow{K, S, T, D}}) where {K, S, T, D} = D
 
 # ── per-row offsets for merged blocks ────────────────────────────────────────
 @inbounds @inline offset0(f::F, itr::AbstractVector{<:MergedRow}, i, dims) where {F <: SIMDFunction} =
@@ -167,6 +165,20 @@ end
 @inline (v::IvRef)(i, x, θ) = @inbounds getfield(i, _MROW_IV)[v.k]
 @inline (v::IvRef)(i::Identity, x, θ) = eltype(θ)(NaN)
 
+"""
+    FvRef <: AbstractNode
+
+Reads the `k`-th hoisted Float leaf out of a [`MergedRow`](@ref) element.
+The values live in the segment (loop-invariant, one copy per source block),
+not in θ, so no aliasing with the output vectors blocks LLVM from hoisting
+the loads out of the row loop.
+"""
+struct FvRef <: AbstractNode
+    k::Int
+end
+@inline (v::FvRef)(i, x, θ) = @inbounds getfield(i, _MROW_FV)[v.k]
+@inline (v::FvRef)(i::Identity, x, θ) = eltype(θ)(NaN)
+
 @inline function _shoist(a::Node1{F, I}, b, io::Int, fo::Int) where {F, I}
     n, iv, fv = _shoist(getfield(a, :inner), getfield(b, :inner), io, fo)
     return Node1{F, typeof(n)}(n), iv, fv
@@ -196,15 +208,14 @@ end
 @inline _shoist(a::Val, b, io::Int, fo::Int) = a, (), ()
 # a Null's value is a scalar field like any other: hoist it
 @inline function _shoist(a::Null{T}, b::Null, io::Int, fo::Int) where {T <: Real}
-    return ParameterNode(Node2(+, DataIndexed(DataSource(), _MROW_PB), fo + 1)), (),
-           (getfield(b, :value),)
+    return FvRef(fo + 1), (), (getfield(b, :value),)
 end
 @inline _shoist(a::Null{Nothing}, b, io::Int, fo::Int) = a, (), ()
 @inline function _shoist(a::T, b::T, io::Int, fo::Int) where {T <: Integer}
     return IvRef(io + 1), (Int(b),), ()
 end
 @inline function _shoist(a::T, b::T, io::Int, fo::Int) where {T <: Real}
-    return ParameterNode(Node2(+, DataIndexed(DataSource(), _MROW_PB), fo + 1)), (), (b,)
+    return FvRef(fo + 1), (), (b,)
 end
 
 @inline _family_tree(f::SIMDFunction) = _pair_second(f.f)
@@ -235,60 +246,61 @@ end
 # arrivals can never mismatch.  Segment bases come from the arriving block's
 # own counters (f.o0/f.o1/f.o2 were taken from the core at this add);
 # `pbase` is where the caller appends this block's Float values in θ.
-@inline function _merged_first(::Type{T}, f, pars, dims, tag, backend, isaug, pbase) where {T}
+@inline function _merged_first(::Type{T}, f, pars, dims, tag, backend, isaug) where {T}
     rep = f
-    tree, _, fvs = _shoist(_family_tree(rep), _family_tree(rep), 0, 0)
-    _, ivs, _ = _shoist(_family_tree(rep), _family_tree(rep), 0, 0)
+    tree, ivs, fvs = _shoist(_family_tree(rep), _family_tree(rep), 0, 0)
     mf = _simdfunction(T, tree, 0, 0, 0)
     K = length(ivs)
+    S = length(fvs)
+    fvt = map(T, fvs)
     lazy = !isaug && !(f.f isa Pair) && backend === nothing
     if lazy
-        segs = MergedSeg{K, typeof(pars)}[MergedSeg(pars, f.o0, f.o1, f.o2, ivs, pbase)]
-        itr = SegmentedItr{K, eltype(pars), typeof(pars), typeof(rep)}(
-            rep, segs, Int[length(pars)], Ref(length(pars)), mf.o1step, mf.o2step, length(fvs))
-        return Constraint(mf, itr, 0, (length(pars),), tag), fvs, mf
+        segs = MergedSeg{K, S, T, typeof(pars)}[MergedSeg{K, S, T, typeof(pars)}(pars, f.o0, f.o1, f.o2, ivs, fvt)]
+        itr = SegmentedItr{K, S, T, eltype(pars), typeof(pars), typeof(rep)}(
+            rep, segs, Int[length(pars)], Ref(length(pars)), mf.o1step, mf.o2step)
+        return Constraint(mf, itr, 0, (length(pars),), tag), mf
     end
     o0s = _row_o0s(f, pars, dims, isaug)
     itrc = collect(pars)
-    rows = [MergedRow(o0s[r], f.o1 + mf.o1step * (r - 1), f.o2 + mf.o2step * (r - 1),
-                      ivs, pbase, itrc[r]) for r in eachindex(itrc)]
-    itr = MergedRows{K, _mrow_dtype(eltype(rows)), typeof(rep)}(rep, rows, length(fvs))
+    rows = [MergedRow{K, S, T, eltype(itrc)}(o0s[r], f.o1 + mf.o1step * (r - 1),
+                      f.o2 + mf.o2step * (r - 1), ivs, fvt, itrc[r]) for r in eachindex(itrc)]
+    itr = MergedRows{K, S, T, eltype(itrc), typeof(rep)}(rep, rows)
     con = isaug ? ConstraintAugmentation(mf, itr, 0, dims, tag) :
                   Constraint(mf, itr, 0, (length(pars),), tag)
-    return con, fvs, mf
+    return con, mf
 end
 
 # A later arrival: extract in the representative's layout, append one
 # segment.  nnz bases again come from the arriving block's own counters.
-@inline function _merged_append(::Type{T}, prev, f, pars, dims, tag, isaug, pbase) where {T}
+@inline function _merged_append(::Type{T}, prev, f, pars, dims, tag, isaug) where {T}
     m = getfield(prev, :itr)
     rep = _mrep(m)
     _, ivs, fvs = _shoist(_family_tree(rep), _family_tree(f), 0, 0)
+    fvt = map(T, fvs)
     if m isa SegmentedItr
-        push!(m.segs, MergedSeg(pars, f.o0, f.o1, f.o2, ivs, pbase))
+        push!(m.segs, eltype(m.segs)(pars, f.o0, f.o1, f.o2, ivs, fvt))
         newlen = length(pars)
         push!(m.offs, m.offs[end] + newlen)
         m.seglen[] = (m.seglen[] == newlen) ? newlen : 0
-        return Constraint(prev.f, m, 0, (m.offs[end],), tag), fvs
+        return Constraint(prev.f, m, 0, (m.offs[end],), tag)
     end
     mf = prev.f
     o0s = _row_o0s(f, pars, dims, isaug)
     itrc = collect(pars)
     for r in eachindex(itrc)
-        push!(m.rows, MergedRow(o0s[r], f.o1 + mf.o1step * (r - 1), f.o2 + mf.o2step * (r - 1),
-                                ivs, pbase, itrc[r]))
+        push!(m.rows, eltype(m.rows)(o0s[r], f.o1 + mf.o1step * (r - 1),
+                                     f.o2 + mf.o2step * (r - 1), ivs, fvt, itrc[r]))
     end
     con = isaug ? ConstraintAugmentation(prev.f, m, 0, dims, tag) :
                   Constraint(prev.f, m, 0, (length(m.rows),), tag)
-    return con, fvs
+    return con
 end
 
 # ── the merge entry point used by _add_con / _add_con! ───────────────────────
 #
 # Returns `nothing` when the block is statically non-mergeable (stored plain,
-# as before this feature), or `(cons′, θadd::Tuple, o1step, o2step)`: the
-# updated block list, the Float values the caller appends to θ at the pbase
-# it passed, and the per-row nnz steps to account nnzj/nnzh with.
+# as before this feature), or `(cons′, o1step, o2step)`: the updated block
+# list and the per-row nnz steps to account nnzj/nnzh with.
 
 @inline _merge_block(c, f, pars, dims, tag, isaug) =
     _merge_block(getfield(c, :domerge), c, f, pars, dims, tag, isaug)
@@ -301,11 +313,10 @@ end
     # them on host only would make a model's nnz counts backend-dependent
     isaug && return nothing
     _merge_itr_ok(pars) || return nothing
-    pbase = c.npar
-    r = _smerge(T, c.cons, f, pars, dims, tag, isaug, eltype(pars), pbase)
+    r = _smerge(T, c.cons, f, pars, dims, tag, isaug, eltype(pars))
     r === nothing || return r
-    con, fvs, mf = _merged_first(T, f, pars, dims, tag, c.backend, isaug, pbase)
-    return _prep(c.cons, con), fvs, mf.o1step, mf.o2step
+    con, mf = _merged_first(T, f, pars, dims, tag, c.backend, isaug)
+    return _prep(c.cons, con), mf.o1step, mf.o2step
 end
 
 @inline _merge_itr_ok(pars) =
@@ -313,43 +324,37 @@ end
 
 # scan + replace in one recursion; typed for tuple storage, dynamic for the
 # Vector{Any} default — the same fold either way
-@inline _smerge(::Type{T}, cons::Tuple{}, f, pars, dims, tag, isaug, ::Type{E}, pbase) where {T, E} = nothing
-@inline function _smerge(::Type{T}, cons::Tuple, f, pars, dims, tag, isaug, ::Type{E}, pbase) where {T, E}
+@inline _smerge(::Type{T}, cons::Tuple{}, f, pars, dims, tag, isaug, ::Type{E}) where {T, E} = nothing
+@inline function _smerge(::Type{T}, cons::Tuple, f, pars, dims, tag, isaug, ::Type{E}) where {T, E}
     b = first(cons)
     rest = Base.tail(cons)
     if _same_family(b, f, E) && (b isa ConstraintAugmentation) == isaug &&
        getfield(b, :tag) === tag && _appendable(getfield(b, :itr), pars)
-        nb, fvs = _merged_append(T, b, f, pars, dims, tag, isaug, pbase)
+        nb = _merged_append(T, b, f, pars, dims, tag, isaug)
         mf = getfield(nb, :f)
-        return (nb, rest...), fvs, mf.o1step, mf.o2step
+        return (nb, rest...), mf.o1step, mf.o2step
     end
-    r = _smerge(T, rest, f, pars, dims, tag, isaug, E, pbase)
+    r = _smerge(T, rest, f, pars, dims, tag, isaug, E)
     r === nothing && return nothing
-    ncons, fvs, s1, s2 = r
-    return (b, ncons...), fvs, s1, s2
+    ncons, s1, s2 = r
+    return (b, ncons...), s1, s2
 end
-function _smerge(::Type{T}, cons::Vector{Any}, f, pars, dims, tag, isaug, ::Type{E}, pbase) where {T, E}
+function _smerge(::Type{T}, cons::Vector{Any}, f, pars, dims, tag, isaug, ::Type{E}) where {T, E}
     for (i, b) in enumerate(cons)
         if _same_family(b, f, E) && (b isa ConstraintAugmentation) == isaug &&
            getfield(b, :tag) === tag && _appendable(getfield(b, :itr), pars)
-            nb, fvs = _merged_append(T, b, f, pars, dims, tag, isaug, pbase)
+            nb = _merged_append(T, b, f, pars, dims, tag, isaug)
             out = copy(cons)
             out[i] = nb
             mf = getfield(nb, :f)
-            return out, fvs, mf.o1step, mf.o2step
+            return out, mf.o1step, mf.o2step
         end
     end
     return nothing
 end
-@inline _appendable(m::SegmentedItr{K, D, I}, pars::I2) where {K, D, I, I2} = I === I2
+@inline _appendable(m::SegmentedItr{K, S, T, D, I}, pars::I2) where {K, S, T, D, I, I2} = I === I2
 @inline _appendable(m::MergedRows, pars) = _merge_itr_ok(pars)
 @inline _appendable(m, pars) = false
-
-# append a tuple of hoisted Float values to θ (CPU Vector or device array)
-@inline function _θappend(backend, θ, t::Tuple, ::Type{T}) where {T}
-    length(t) == 0 && return θ
-    return append!(backend, θ, T[T(v) for v in t], length(t))
-end
 
 # ── model-build finalization ─────────────────────────────────────────────────
 # Device backends evaluate merged blocks through the extension's kernels over
@@ -405,8 +410,8 @@ function sjacobian!(y1, y2, f::Constraint{F, I}, x, θ, adj) where {F, I <: Segm
     for j in eachindex(s.segs)
         seg = @inbounds s.segs[j]
         @simd for r in 1:length(seg.itr)
-            el = MergedRow(seg.o0 + r, seg.o1 + s.o1step * (r - 1),
-                           seg.o2 + s.o2step * (r - 1), seg.iv, seg.pbase,
+            el = eltype(s)(seg.o0 + r, seg.o1 + s.o1step * (r - 1),
+                           seg.o2 + s.o2step * (r - 1), seg.iv, seg.fv,
                            (@inbounds seg.itr[r]))
             @inbounds sjacobian!(y1, y2, f.f.f, el, x, θ, f.f.comp1,
                                  seg.o0 + r, seg.o1 + s.o1step * (r - 1), adj)
@@ -419,8 +424,8 @@ function shessian!(y1, y2, f::Constraint{F, I}, x, θ, adj1, adj2) where {F, I <
     for j in eachindex(s.segs)
         seg = @inbounds s.segs[j]
         @simd for r in 1:length(seg.itr)
-            el = MergedRow(seg.o0 + r, seg.o1 + s.o1step * (r - 1),
-                           seg.o2 + s.o2step * (r - 1), seg.iv, seg.pbase,
+            el = eltype(s)(seg.o0 + r, seg.o1 + s.o1step * (r - 1),
+                           seg.o2 + s.o2step * (r - 1), seg.iv, seg.fv,
                            (@inbounds seg.itr[r]))
             @inbounds shessian!(y1, y2, f.f.f, el, x, θ, f.f.comp2,
                                 seg.o2 + s.o2step * (r - 1), adj1, adj2)
@@ -433,8 +438,8 @@ function shessian!(y1, y2, f::Constraint{F, I}, x, θ, adj1s::V, adj2) where {F,
     for j in eachindex(s.segs)
         seg = @inbounds s.segs[j]
         @simd for r in 1:length(seg.itr)
-            el = MergedRow(seg.o0 + r, seg.o1 + s.o1step * (r - 1),
-                           seg.o2 + s.o2step * (r - 1), seg.iv, seg.pbase,
+            el = eltype(s)(seg.o0 + r, seg.o1 + s.o1step * (r - 1),
+                           seg.o2 + s.o2step * (r - 1), seg.iv, seg.fv,
                            (@inbounds seg.itr[r]))
             @inbounds shessian!(y1, y2, f.f.f, el, x, θ, f.f.comp2,
                                 seg.o2 + s.o2step * (r - 1), adj1s[seg.o0 + r], adj2)
@@ -447,8 +452,8 @@ function _cons_rows!(g, con::Constraint{F, I}, x, θ) where {F, I <: SegmentedIt
     for j in eachindex(s.segs)
         seg = @inbounds s.segs[j]
         @simd for r in 1:length(seg.itr)
-            el = MergedRow(seg.o0 + r, seg.o1 + s.o1step * (r - 1),
-                           seg.o2 + s.o2step * (r - 1), seg.iv, seg.pbase,
+            el = eltype(s)(seg.o0 + r, seg.o1 + s.o1step * (r - 1),
+                           seg.o2 + s.o2step * (r - 1), seg.iv, seg.fv,
                            (@inbounds seg.itr[r]))
             @inbounds g[seg.o0 + r] += con.f(el, x, θ)
         end

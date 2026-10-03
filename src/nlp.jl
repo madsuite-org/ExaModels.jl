@@ -1762,13 +1762,11 @@ function _add_con(c, f, pars, dims, start, lcon, ucon, name, tag)
 
     m = _merge_block(c, f, pars, dims, tag, false)
     if m !== nothing
-        cons2, fvs, s1, s2 = m
+        cons2, s1, s2 = m
         nnzj = c.nnzj + nitr * s1
         nnzh = c.nnzh + nitr * s2
-        θ = _θappend(c.backend, c.θ, fvs, eltype(c.θ))
-        npar = c.npar + length(fvs)
         return (ExaCore(c; ncon=ncon, nnzj=nnzj, nnzh=nnzh, y0=y0, lcon=lcon, ucon=ucon,
-                        cons=cons2, θ=θ, npar=npar, refs = add_refs(c.refs, name, con)), con)
+                        cons=cons2, refs = add_refs(c.refs, name, con)), con)
     end
 
     nnzj = c.nnzj + nitr * f.o1step
@@ -1901,12 +1899,10 @@ function _add_con!(c, f, pars, dims, tag)
 
     m = _merge_block(c, f, pars, dims, tag, true)
     if m !== nothing
-        cons2, fvs, s1, s2 = m
+        cons2, s1, s2 = m
         nnzj = c.nnzj + nitr * s1
         nnzh = c.nnzh + nitr * s2
-        θ = _θappend(c.backend, c.θ, fvs, eltype(c.θ))
-        npar = c.npar + length(fvs)
-        return (ExaCore(c; nconaug=nconaug, nnzj=nnzj, nnzh=nnzh, cons=cons2, θ=θ, npar=npar), con)
+        return (ExaCore(c; nconaug=nconaug, nnzj=nnzj, nnzh=nnzh, cons=cons2), con)
     end
 
     nnzj = c.nnzj + nitr * f.o1step

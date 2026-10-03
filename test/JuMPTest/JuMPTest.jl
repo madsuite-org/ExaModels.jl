@@ -147,7 +147,9 @@ function test_generic_e2etest()
     JuMP.@objective(jm, Min, sum(x[i]^2 for i = 1:N))
     em = ExaModels.ExaModel(jm)
     @test typeof(em) <: ExaModels.ExaModel{Float32}
-    @test eltype(em.cons[1].itr) <: ExaModels.MergedRow
+    # the MOI lowering assembles its blocks directly (not through add_con),
+    # so they are stored plain regardless of the merge default
+    @test eltype(em.cons[1].itr) <: Tuple{Int,Float32,Int}
     return
 end
 

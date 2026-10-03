@@ -46,9 +46,10 @@ are hoisted out of the tree:
 - `Integer` leaves (they feed variable indices, which sparsity-structure
   evaluation needs with no parameter values available) travel in the
   iterator element;
-- `AbstractFloat` leaves are appended to the parameter vector `θ`, stored
-  once per source block and read as `θ[pbase + s]`. A merged coefficient is
-  therefore also an updatable parameter;
+- `AbstractFloat` leaves travel in the segment descriptor, one copy per
+  source block: loop-invariant struct loads, which the compiler hoists out
+  of the row loops (storing them in `θ` instead would alias the output
+  vectors and block that);
 - each row carries the row and nonzero offsets its source block gave it, so
   no constraint row, bound, sparsity position, or name handle moves.
 
