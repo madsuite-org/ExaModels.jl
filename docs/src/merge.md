@@ -3,12 +3,12 @@
 Merging happens during construction: when `add_con` or `add_con!` receives a
 block whose expression tree type matches a family already in the core, the
 block is folded into that family's single merged block, and the core's type
-does not change. The first block of a family is stored plain, so models
-without repeated structures are untouched. A block whose subtree sharing
-diverges from the family's representative cannot be folded incrementally
-(the slot layout is already fixed); those leftovers are merged in one batch
-pass when `ExaModel(c)` is built. Nothing is requested by the user, and any
-block the transform cannot prove safe stays separate.
+does not change. Every mergeable block is stored in merged form from its
+first add (a one-segment merged block), so the family's slot layout and
+sparsity footprint are fixed by the tree type alone and later arrivals can
+never mismatch. All decisions are static: same tree type means merge,
+always; trees containing node kinds outside the hoisting walk are statically
+non-mergeable and stay plain.
 
 ```julia
 c = ExaCore()
@@ -72,13 +72,14 @@ block equivalent:
 - augmentation (`add_con!`) blocks, on every backend: their device
   accumulation uses the extension's collision-handling pipeline, and merging
   them on host only would make nnz counts backend-dependent;
+- blocks referencing buffered subexpressions, and pair-headed blocks on
+  device backends;
 - everything, when merging is off. `concrete = Val(true)` defaults to off so
   that model builders compiled with `juliac --trim` never reach the dynamic
   merge machinery; a concrete core built in a normal session can opt in with
   `ExaCore(concrete = Val(true), merge = true)`.
 
-Set `ExaCore(merge = false)` to disable merging for a core, and
-`ENV["EXAMODELS_MERGE_DEBUG"] = "1"` to print why blocks were refused.
+Set `ExaCore(merge = false)` to disable merging for a core.
 
 ## Footprint of spliced subexpressions
 

@@ -1,11 +1,12 @@
 # merge.jl — static family merging at construction time
 #
-# Every constraint/augmentation block whose expression tree is mergeable (a
-# type-level property) is stored in MERGED form from its first add: a one-
-# segment merged block whose scalar leaves are hoisted into per-row data
-# (`Integer` leaves, which feed variable indices that sparsity-structure
-# evaluation reads with θ = NaNSource) and into `θ` (`AbstractFloat` leaves,
-# one copy per source block, read as θ[pbase + s]).  A later `add_con` /
+# Every constraint block whose expression tree is mergeable (a type-level
+# property) is stored in MERGED form from its first add: a one-segment
+# merged block whose scalar leaves are hoisted into the iterator's own data
+# (`Integer` leaves per row, since they feed variable indices that
+# sparsity-structure evaluation reads with θ = NaNSource; `AbstractFloat`
+# leaves once per segment, as loop-invariant struct loads that cannot alias
+# the output vectors the way θ reads would).  A later `add_con` /
 # `add_con!` whose tree type matches an existing family appends one segment;
 # the core's type does not change.  All decisions are static: same tree type
 # means merge, always; there is no runtime merge heuristic and no refusal
@@ -122,10 +123,6 @@ _mrow_dtype(::Type{MergedRow{K, S, T, D}}) where {K, S, T, D} = D
     getfield(a.itr[i], :o1)
 @inbounds @inline offset2(a::Constraint{F, I}, i) where {F, I <: AbstractVector{<:MergedRow}} =
     getfield(a.itr[i], :o2)
-@inbounds @inline offset1(a::ConstraintAugmentation{F, I}, i) where {F, I <: AbstractVector{<:MergedRow}} =
-    getfield(a.itr[i], :o1)
-@inbounds @inline offset2(a::ConstraintAugmentation{F, I}, i) where {F, I <: AbstractVector{<:MergedRow}} =
-    getfield(a.itr[i], :o2)
 
 # ── mergeability: a property of the tree TYPE ────────────────────────────────
 
@@ -227,16 +224,13 @@ end
 @inline _same_family(a, f, ::Type{E}) where {E} = false
 @inline _same_family(a::Constraint{F2, I}, f::F, ::Type{E}) where {F2, F, E, I <: _MergedItr} =
     typeof(_mrep(getfield(a, :itr))) == F && _mrow_dtype(eltype(getfield(a, :itr))) == E
-@inline _same_family(a::ConstraintAugmentation{F2, I}, f::F, ::Type{E}) where {F2, F, E, I <: _MergedItr} =
-    typeof(_mrep(getfield(a, :itr))) == F && _mrow_dtype(eltype(getfield(a, :itr))) == E
 
 # ── block creation and appends ───────────────────────────────────────────────
 
-# per-row o0 values of an arriving block, in iteration order (folds in the
-# augmentation Pair row targets and dims)
-function _row_o0s(f, pars, dims, isaug)
-    h = isaug ? ConstraintAugmentation(f, pars, 0, dims, nothing) :
-                Constraint(f, pars, 0, dims, nothing)
+# per-row o0 values of an arriving block, in iteration order (folds in Pair
+# row targets and dims for pair-headed plain blocks)
+function _row_o0s(f, pars, dims)
+    h = Constraint(f, pars, 0, dims, nothing)
     return Int[offset0(h, r) for r in 1:length(pars)]
 end
 
@@ -244,35 +238,32 @@ end
 # sparsity (`mf.o1step`/`o2step`) is what the caller accounts nnz with, so
 # the family's footprint is fixed by the type from the start and later
 # arrivals can never mismatch.  Segment bases come from the arriving block's
-# own counters (f.o0/f.o1/f.o2 were taken from the core at this add);
-# `pbase` is where the caller appends this block's Float values in θ.
-@inline function _merged_first(::Type{T}, f, pars, dims, tag, backend, isaug) where {T}
+# own counters (f.o0/f.o1/f.o2 were taken from the core at this add).
+@inline function _merged_first(::Type{T}, f, pars, dims, tag, backend) where {T}
     rep = f
     tree, ivs, fvs = _shoist(_family_tree(rep), _family_tree(rep), 0, 0)
     mf = _simdfunction(T, tree, 0, 0, 0)
     K = length(ivs)
     S = length(fvs)
     fvt = map(T, fvs)
-    lazy = !isaug && !(f.f isa Pair) && backend === nothing
+    lazy = !(f.f isa Pair) && backend === nothing
     if lazy
         segs = MergedSeg{K, S, T, typeof(pars)}[MergedSeg{K, S, T, typeof(pars)}(pars, f.o0, f.o1, f.o2, ivs, fvt)]
         itr = SegmentedItr{K, S, T, eltype(pars), typeof(pars), typeof(rep)}(
             rep, segs, Int[length(pars)], Ref(length(pars)), mf.o1step, mf.o2step)
         return Constraint(mf, itr, 0, (length(pars),), tag), mf
     end
-    o0s = _row_o0s(f, pars, dims, isaug)
+    o0s = _row_o0s(f, pars, dims)
     itrc = collect(pars)
     rows = [MergedRow{K, S, T, eltype(itrc)}(o0s[r], f.o1 + mf.o1step * (r - 1),
                       f.o2 + mf.o2step * (r - 1), ivs, fvt, itrc[r]) for r in eachindex(itrc)]
     itr = MergedRows{K, S, T, eltype(itrc), typeof(rep)}(rep, rows)
-    con = isaug ? ConstraintAugmentation(mf, itr, 0, dims, tag) :
-                  Constraint(mf, itr, 0, (length(pars),), tag)
-    return con, mf
+    return Constraint(mf, itr, 0, (length(pars),), tag), mf
 end
 
 # A later arrival: extract in the representative's layout, append one
 # segment.  nnz bases again come from the arriving block's own counters.
-@inline function _merged_append(::Type{T}, prev, f, pars, dims, tag, isaug) where {T}
+@inline function _merged_append(::Type{T}, prev, f, pars, dims, tag) where {T}
     m = getfield(prev, :itr)
     rep = _mrep(m)
     _, ivs, fvs = _shoist(_family_tree(rep), _family_tree(f), 0, 0)
@@ -285,15 +276,13 @@ end
         return Constraint(prev.f, m, 0, (m.offs[end],), tag)
     end
     mf = prev.f
-    o0s = _row_o0s(f, pars, dims, isaug)
+    o0s = _row_o0s(f, pars, dims)
     itrc = collect(pars)
     for r in eachindex(itrc)
         push!(m.rows, eltype(m.rows)(o0s[r], f.o1 + mf.o1step * (r - 1),
                                      f.o2 + mf.o2step * (r - 1), ivs, fvt, itrc[r]))
     end
-    con = isaug ? ConstraintAugmentation(prev.f, m, 0, dims, tag) :
-                  Constraint(prev.f, m, 0, (length(m.rows),), tag)
-    return con
+    return Constraint(prev.f, m, 0, (length(m.rows),), tag)
 end
 
 # ── the merge entry point used by _add_con / _add_con! ───────────────────────
@@ -312,10 +301,14 @@ end
     # goes through the extension's collision-handling pipeline, and merging
     # them on host only would make a model's nnz counts backend-dependent
     isaug && return nothing
+    # pair-headed plain blocks (data-driven row targets) stay plain on device
+    # backends for the same reason: merging would move cross-block row
+    # collisions from sequential launches into one kernel
+    f.f isa Pair && c.backend !== nothing && return nothing
     _merge_itr_ok(pars) || return nothing
-    r = _smerge(T, c.cons, f, pars, dims, tag, isaug, eltype(pars))
+    r = _smerge(T, c.cons, f, pars, dims, tag, eltype(pars))
     r === nothing || return r
-    con, mf = _merged_first(T, f, pars, dims, tag, c.backend, isaug)
+    con, mf = _merged_first(T, f, pars, dims, tag, c.backend)
     return _prep(c.cons, con), mf.o1step, mf.o2step
 end
 
@@ -324,26 +317,26 @@ end
 
 # scan + replace in one recursion; typed for tuple storage, dynamic for the
 # Vector{Any} default — the same fold either way
-@inline _smerge(::Type{T}, cons::Tuple{}, f, pars, dims, tag, isaug, ::Type{E}) where {T, E} = nothing
-@inline function _smerge(::Type{T}, cons::Tuple, f, pars, dims, tag, isaug, ::Type{E}) where {T, E}
+@inline _smerge(::Type{T}, cons::Tuple{}, f, pars, dims, tag, ::Type{E}) where {T, E} = nothing
+@inline function _smerge(::Type{T}, cons::Tuple, f, pars, dims, tag, ::Type{E}) where {T, E}
     b = first(cons)
     rest = Base.tail(cons)
-    if _same_family(b, f, E) && (b isa ConstraintAugmentation) == isaug &&
-       getfield(b, :tag) === tag && _appendable(getfield(b, :itr), pars)
-        nb = _merged_append(T, b, f, pars, dims, tag, isaug)
+    if _same_family(b, f, E) && getfield(b, :tag) === tag &&
+       _appendable(getfield(b, :itr), pars)
+        nb = _merged_append(T, b, f, pars, dims, tag)
         mf = getfield(nb, :f)
         return (nb, rest...), mf.o1step, mf.o2step
     end
-    r = _smerge(T, rest, f, pars, dims, tag, isaug, E)
+    r = _smerge(T, rest, f, pars, dims, tag, E)
     r === nothing && return nothing
     ncons, s1, s2 = r
     return (b, ncons...), s1, s2
 end
-function _smerge(::Type{T}, cons::Vector{Any}, f, pars, dims, tag, isaug, ::Type{E}) where {T, E}
+function _smerge(::Type{T}, cons::Vector{Any}, f, pars, dims, tag, ::Type{E}) where {T, E}
     for (i, b) in enumerate(cons)
-        if _same_family(b, f, E) && (b isa ConstraintAugmentation) == isaug &&
-           getfield(b, :tag) === tag && _appendable(getfield(b, :itr), pars)
-            nb = _merged_append(T, b, f, pars, dims, tag, isaug)
+        if _same_family(b, f, E) && getfield(b, :tag) === tag &&
+           _appendable(getfield(b, :itr), pars)
+            nb = _merged_append(T, b, f, pars, dims, tag)
             out = copy(cons)
             out[i] = nb
             mf = getfield(nb, :f)
@@ -361,9 +354,7 @@ end
 # a materialized element array; non-concrete models keep var/par/refs
 # type-erased so the model's type is a function of its families alone.
 
-_has_merged(cons) = any(
-    b -> (b isa Constraint || b isa ConstraintAugmentation) && getfield(b, :itr) isa _MergedItr,
-    cons)
+_has_merged(cons) = any(b -> b isa Constraint && getfield(b, :itr) isa _MergedItr, cons)
 
 _materialize_mergeditr(backend, s::SegmentedItr) =
     convert_array([s[i] for i in 1:length(s)], backend)

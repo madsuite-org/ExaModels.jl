@@ -309,7 +309,7 @@ end
 abstract type AbstractExaCore{T,VT,B,S} end
 
 """
-    ExaCore([array_eltype::Type; backend = nothing, concrete = Val(false), minimize = true, name = :Generic])
+    ExaCore([array_eltype::Type; backend = nothing, concrete = Val(false), merge = true, minimize = true, name = :Generic])
 
 Creates an intermediate data object `ExaCore`, which later can be used for creating an `ExaModel`
 
@@ -605,7 +605,7 @@ is known statically and destructuring stays inferable.
 @inline _storage(::Val{true}) = ()
 @inline _storage(::Val{false}) = Any[]
 
-# PROTOTYPE (refs out of the type): in non-concrete mode, named blocks
+# refs out of the type: in non-concrete mode, named blocks
 # accumulate in a Vector{Pair} instead of a NamedTuple.  A NamedTuple ref
 # carries the named block's ENTIRE type in the core's type, so every later
 # add_* is inferred against a core type that grows with each name — the same
@@ -1926,6 +1926,12 @@ variables or constraints are added to the problem.
 ## Keyword Arguments
 - `name`: When given as `Val(:name)`, registers the subexpression in `core` for later retrieval as `core.name` or `model.name`. See [`@add_expr`](@ref) for the idiomatic named interface.
 - `tag` : User-defined metadata attached to the expression.
+- `buffered`: evaluate the subexpression once per row into a θ-backed stage
+  buffer instead of splicing its tree at every reference site; the remedy
+  for deeply nested or widely referenced subexpressions.
+- `lift`: introduce the subexpression as a variable pinned by a defining
+  equality constraint (adds rows and columns; 1-D iterators only).
+- `start`: starting point for the lifted variable when `lift = true`.
 - `buffered`: When `true` (or `Val(true)`), returns a [`BufferedExpression`](@ref):
   each element is evaluated once per model evaluation into a dedicated buffer
   slot, and indexing produces a shallow leaf node referencing the slot instead
