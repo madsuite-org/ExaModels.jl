@@ -180,103 +180,102 @@ end
 # is first-visit order over leaf positions (depth-first, inner1 before
 # inner2), identical in all three recursions.
 
-# per-subtree slot counts, recursive over the tree TYPE (used to advance
-# the counters across a Node2's left child)
-_niv(::Type{Node1{F, I}}) where {F, I} = _niv(I)
-_niv(::Type{Node2{F, I1, I2}}) where {F, I1, I2} = _niv(I1) + _niv(I2)
-_niv(::Type{Var{I}}) where {I} = _niv(I)
-_niv(::Type{ParameterNode{I}}) where {I} = _niv(I)
-_niv(::Type{DataIndexed{I, J}}) where {I, J} = _niv(I)
-_niv(::Type{DataSource}) = 0
-_niv(::Type{<:Constant}) = 0
-_niv(::Type{VarSource}) = 0
-_niv(::Type{ParameterSource}) = 0
-_niv(::Type{<:Val}) = 0
-_niv(::Type{<:Null}) = 0
-_niv(::Type{T}) where {T <: Integer} = 1
-_niv(::Type{T}) where {T <: Real} = 0
-
-_nfv(::Type{Node1{F, I}}) where {F, I} = _nfv(I)
-_nfv(::Type{Node2{F, I1, I2}}) where {F, I1, I2} = _nfv(I1) + _nfv(I2)
-_nfv(::Type{Var{I}}) where {I} = _nfv(I)
-_nfv(::Type{ParameterNode{I}}) where {I} = _nfv(I)
-_nfv(::Type{DataIndexed{I, J}}) where {I, J} = _nfv(I)
-_nfv(::Type{DataSource}) = 0
-_nfv(::Type{<:Constant}) = 0
-_nfv(::Type{VarSource}) = 0
-_nfv(::Type{ParameterSource}) = 0
-_nfv(::Type{<:Val}) = 0
-_nfv(::Type{Null{Nothing}}) = 0
-_nfv(::Type{Null{T}}) where {T <: Real} = 1
-_nfv(::Type{T}) where {T <: Integer} = 0
-_nfv(::Type{T}) where {T <: Real} = 1
-
 # the merged tree: scalar leaves become slot accessors (indices in FIELDS,
-# never in type parameters), everything else is rebuilt as-is
+# never in type parameters), everything else is rebuilt as-is.  Slot offsets
+# travel DOWN as plain Int arguments and subtree slot COUNTS come back up in
+# the same recursion, so no separate counting traversal is needed; the return
+# type stays small (a node plus two Ints) at any depth.
 @inline function _stree(a::Node1{F, I}, io::Int, fo::Int) where {F, I}
-    n = _stree(getfield(a, :inner), io, fo)
-    return Node1{F, typeof(n)}(n)
+    n, k, s = _stree(getfield(a, :inner), io, fo)
+    return Node1{F, typeof(n)}(n), k, s
 end
 @inline function _stree(a::Node2{F, I1, I2}, io::Int, fo::Int) where {F, I1, I2}
-    n1 = _stree(getfield(a, :inner1), io, fo)
-    n2 = _stree(getfield(a, :inner2), io + _niv(I1), fo + _nfv(I1))
-    return Node2{F, typeof(n1), typeof(n2)}(n1, n2)
+    n1, k1, s1 = _stree(getfield(a, :inner1), io, fo)
+    n2, k2, s2 = _stree(getfield(a, :inner2), io + k1, fo + s1)
+    return Node2{F, typeof(n1), typeof(n2)}(n1, n2), k1 + k2, s1 + s2
 end
 @inline function _stree(a::Var, io::Int, fo::Int)
-    n = _stree(getfield(a, :i), io, fo)
-    return Var{typeof(n)}(n)
+    n, k, s = _stree(getfield(a, :i), io, fo)
+    return Var{typeof(n)}(n), k, s
 end
 @inline function _stree(a::ParameterNode, io::Int, fo::Int)
-    n = _stree(getfield(a, :i), io, fo)
-    return ParameterNode{typeof(n)}(n)
+    n, k, s = _stree(getfield(a, :i), io, fo)
+    return ParameterNode{typeof(n)}(n), k, s
 end
 @inline function _stree(a::DataIndexed{I, J}, io::Int, fo::Int) where {I, J}
-    n = _stree(getfield(a, :inner), io, fo)
-    return DataIndexed(n, J)
+    n, k, s = _stree(getfield(a, :inner), io, fo)
+    return DataIndexed(n, J), k, s
 end
-@inline _stree(a::DataSource, io::Int, fo::Int) = DataIndexed(DataSource(), _MROW_D)
-@inline _stree(a::Constant, io::Int, fo::Int) = a
-@inline _stree(a::VarSource, io::Int, fo::Int) = a
-@inline _stree(a::ParameterSource, io::Int, fo::Int) = a
-@inline _stree(a::Val, io::Int, fo::Int) = a
-@inline _stree(a::Null{Nothing}, io::Int, fo::Int) = a
+@inline _stree(a::DataSource, io::Int, fo::Int) = DataIndexed(DataSource(), _MROW_D), 0, 0
+@inline _stree(a::Constant, io::Int, fo::Int) = a, 0, 0
+@inline _stree(a::VarSource, io::Int, fo::Int) = a, 0, 0
+@inline _stree(a::ParameterSource, io::Int, fo::Int) = a, 0, 0
+@inline _stree(a::Val, io::Int, fo::Int) = a, 0, 0
+@inline _stree(a::Null{Nothing}, io::Int, fo::Int) = a, 0, 0
 # a Null's value is a scalar field like any other: hoist it
-@inline _stree(a::Null{T}, io::Int, fo::Int) where {T <: Real} = FvRef(fo + 1)
-@inline _stree(a::T, io::Int, fo::Int) where {T <: Integer} = IvRef(io + 1)
-@inline _stree(a::T, io::Int, fo::Int) where {T <: Real} = FvRef(fo + 1)
+@inline _stree(a::Null{T}, io::Int, fo::Int) where {T <: Real} = FvRef(fo + 1), 0, 1
+@inline _stree(a::T, io::Int, fo::Int) where {T <: Integer} = IvRef(io + 1), 1, 0
+@inline _stree(a::T, io::Int, fo::Int) where {T <: Real} = FvRef(fo + 1), 0, 1
 
-# the Integer slots, in tree order
-@inline _siv(b::Node1) = _siv(getfield(b, :inner))
-@inline _siv(b::Node2) = (_siv(getfield(b, :inner1))..., _siv(getfield(b, :inner2))...)
-@inline _siv(b::Var) = _siv(getfield(b, :i))
-@inline _siv(b::ParameterNode) = _siv(getfield(b, :i))
-@inline _siv(b::DataIndexed) = _siv(getfield(b, :inner))
-@inline _siv(b::DataSource) = ()
-@inline _siv(b::Constant) = ()
-@inline _siv(b::VarSource) = ()
-@inline _siv(b::ParameterSource) = ()
-@inline _siv(b::Val) = ()
-@inline _siv(b::Null) = ()
-@inline _siv(b::T) where {T <: Integer} = (Int(b),)
-@inline _siv(b::T) where {T <: Real} = ()
+# the slots.  Concatenating a tuple per node would mint one tuple TYPE per
+# slot (81 of them on a deep capture tree), and inference pays for each, so
+# collection is mutating instead: the recursions return only the running
+# slot count, and one flat `ntuple` materializes the tuple at the end.
+Base.@assume_effects :foldable _niv(::Type{Node1{F, I}}) where {F, I} = _niv(I)
+Base.@assume_effects :foldable _niv(::Type{Node2{F, I1, I2}}) where {F, I1, I2} = _niv(I1) + _niv(I2)
+Base.@assume_effects :foldable _niv(::Type{Var{I}}) where {I} = _niv(I)
+Base.@assume_effects :foldable _niv(::Type{ParameterNode{I}}) where {I} = _niv(I)
+Base.@assume_effects :foldable _niv(::Type{DataIndexed{I, J}}) where {I, J} = _niv(I)
+_niv(::Type{T}) where {T <: Integer} = 1
+_niv(::Type{<:Real}) = 0
+_niv(::Type) = 0
 
-# the Float slots, in tree order (converted to the model eltype by _fvt)
-@inline _sfv(b::Node1) = _sfv(getfield(b, :inner))
-@inline _sfv(b::Node2) = (_sfv(getfield(b, :inner1))..., _sfv(getfield(b, :inner2))...)
-@inline _sfv(b::Var) = _sfv(getfield(b, :i))
-@inline _sfv(b::ParameterNode) = _sfv(getfield(b, :i))
-@inline _sfv(b::DataIndexed) = _sfv(getfield(b, :inner))
-@inline _sfv(b::DataSource) = ()
-@inline _sfv(b::Constant) = ()
-@inline _sfv(b::VarSource) = ()
-@inline _sfv(b::ParameterSource) = ()
-@inline _sfv(b::Val) = ()
-@inline _sfv(b::Null{Nothing}) = ()
-@inline _sfv(b::Null{T}) where {T <: Real} = (getfield(b, :value),)
-@inline _sfv(b::T) where {T <: Integer} = ()
-@inline _sfv(b::T) where {T <: Real} = (b,)
+Base.@assume_effects :foldable _nfv(::Type{Node1{F, I}}) where {F, I} = _nfv(I)
+Base.@assume_effects :foldable _nfv(::Type{Node2{F, I1, I2}}) where {F, I1, I2} = _nfv(I1) + _nfv(I2)
+Base.@assume_effects :foldable _nfv(::Type{Var{I}}) where {I} = _nfv(I)
+Base.@assume_effects :foldable _nfv(::Type{ParameterNode{I}}) where {I} = _nfv(I)
+Base.@assume_effects :foldable _nfv(::Type{DataIndexed{I, J}}) where {I, J} = _nfv(I)
+_nfv(::Type{Null{T}}) where {T <: Real} = 1
+_nfv(::Type{<:Null}) = 0
+_nfv(::Type{<:Integer}) = 0
+_nfv(::Type{<:Real}) = 1
+_nfv(::Type) = 0
 
-@inline _shoist(b) = (_stree(b, 0, 0), _siv(b), _sfv(b))
+@inline _civ!(out, b::Node1, k::Int) = _civ!(out, getfield(b, :inner), k)
+@inline _civ!(out, b::Node2, k::Int) =
+    _civ!(out, getfield(b, :inner2), _civ!(out, getfield(b, :inner1), k))
+@inline _civ!(out, b::Var, k::Int) = _civ!(out, getfield(b, :i), k)
+@inline _civ!(out, b::ParameterNode, k::Int) = _civ!(out, getfield(b, :i), k)
+@inline _civ!(out, b::DataIndexed, k::Int) = _civ!(out, getfield(b, :inner), k)
+@inline _civ!(out, b::T, k::Int) where {T <: Integer} = (@inbounds out[k] = Int(b); k + 1)
+@inline _civ!(out, b, k::Int) = k
+
+@inline _cfv!(out, b::Node1, k::Int) = _cfv!(out, getfield(b, :inner), k)
+@inline _cfv!(out, b::Node2, k::Int) =
+    _cfv!(out, getfield(b, :inner2), _cfv!(out, getfield(b, :inner1), k))
+@inline _cfv!(out, b::Var, k::Int) = _cfv!(out, getfield(b, :i), k)
+@inline _cfv!(out, b::ParameterNode, k::Int) = _cfv!(out, getfield(b, :i), k)
+@inline _cfv!(out, b::DataIndexed, k::Int) = _cfv!(out, getfield(b, :inner), k)
+@inline _cfv!(out::Vector{T}, b::Null{<:Real}, k::Int) where {T} =
+    (@inbounds out[k] = getfield(b, :value); k + 1)
+@inline _cfv!(out::Vector, b::Integer, k::Int) = k
+@inline _cfv!(out::Vector{T}, b::Real, k::Int) where {T} = (@inbounds out[k] = T(b); k + 1)
+@inline _cfv!(out, b, k::Int) = k
+
+@inline function _siv(b)
+    K = _niv(typeof(b))
+    out = Vector{Int}(undef, K)
+    _civ!(out, b, 1)
+    return ntuple(i -> (@inbounds out[i]), Val(K))
+end
+@inline function _sfv(::Type{T}, b) where {T}
+    S = _nfv(typeof(b))
+    out = Vector{T}(undef, S)
+    _cfv!(out, b, 1)
+    return ntuple(i -> (@inbounds out[i]), Val(S))
+end
+
+@inline _shoist(::Type{T}, b) where {T} = (first(_stree(b, 0, 0)), _siv(b), _sfv(T, b))
 
 @inline _family_tree(f::SIMDFunction) = _pair_second(f.f)
 @inline _pair_second(p::Pair) = p.second
@@ -297,12 +296,6 @@ function _row_o0s(f, pars, dims)
     return Int[offset0(h, r) for r in 1:length(pars)]
 end
 
-# `map(T, t)` on tuples longer than 32 leaves Base's inlined path and goes
-# through a Vector{Any} splat, which is a dynamic call `juliac --trim`
-# refuses; `ntuple(.., Val(N))` emits a literal tuple at any length.
-@inline _fvt(::Type{T}, fvs::Tuple) where {T} =
-    ntuple(i -> T(@inbounds fvs[i]), Val(length(fvs)))
-
 # First block of a family: a one-segment merged block.  The merged tree's
 # sparsity (`mf.o1step`/`o2step`) is what the caller accounts nnz with, so
 # the family's footprint is fixed by the type from the start and later
@@ -310,10 +303,10 @@ end
 # own counters (f.o0/f.o1/f.o2 were taken from the core at this add).
 @inline function _merged_first(::Type{T}, f, pars, dims, tag, backend) where {T}
     rep = f
-    tree, ivs, fvs = _shoist(_family_tree(rep))
+    tree, ivs, fvt = _shoist(T, _family_tree(rep))
     mf = _simdfunction(T, tree, 0, 0, 0)
     itr = _merged_first_itr(T, getfield(f, :f), backend, rep, mf, f, pars, dims,
-                            ivs, _fvt(T, fvs))
+                            ivs, fvt)
     return Constraint(mf, itr, 0, (length(pars),), tag), mf
 end
 
@@ -349,9 +342,9 @@ end
 @inline function _merged_append(::Type{T}, prev, f, pars, dims, tag) where {T}
     # same family means same tree type, so the arriving tree's own walk uses
     # the representative's slot layout by construction
-    _, ivs, fvs = _shoist(_family_tree(f))
+    _, ivs, fvt = _shoist(T, _family_tree(f))
     return _merged_append_itr(getfield(prev, :itr), prev, f, pars, dims, tag,
-                              ivs, _fvt(T, fvs))
+                              ivs, fvt)
 end
 
 @inline function _merged_append_itr(m::SegmentedItr, prev, f, pars, dims, tag, ivs, fvt)
