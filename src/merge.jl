@@ -29,8 +29,8 @@
 # correspondingly larger per-row sparsity footprint; `add_expr(...; lift =
 # true)` is the remedy for such models.
 #
-# `ExaCore(merge = false)` disables merging; the switch is type-level, so
-# the disabled path prunes statically.
+# Merging is unconditional: there is no off switch, so every core pays the
+# same (statically decided) path and the whole suite exercises merged form.
 
 """
     MergedRow{K, D}
@@ -337,10 +337,7 @@ end
 # as before this feature), or `(cons′, o1step, o2step)`: the updated block
 # list and the per-row nnz steps to account nnzj/nnzh with.
 
-@inline _merge_block(c, f, pars, dims, tag, isaug) =
-    _merge_block(getfield(c, :domerge), c, f, pars, dims, tag, isaug)
-@inline _merge_block(::Val{false}, c, f, pars, dims, tag, isaug) = nothing
-@inline function _merge_block(::Val{true}, c::ExaCore{T}, f, pars, dims, tag, isaug) where {T}
+@inline function _merge_block(c::ExaCore{T}, f, pars, dims, tag, isaug) where {T}
     _mergeable(typeof(f.f)) || return nothing
     c.nargs isa Val{0} || return nothing              # recipes: stored plain
     # augmentations stay plain on every backend: on device their accumulation
@@ -406,9 +403,7 @@ _materialize_mergeditr(backend, s::SegmentedItr) =
     convert_array([s[i] for i in 1:length(s)], backend)
 _materialize_mergeditr(backend, m::MergedRows) = convert_array(m.rows, backend)
 
-_finalize_merged(c::ExaCore) = _finalize_merged(getfield(c, :domerge), c)
-_finalize_merged(::Val{false}, c::ExaCore) = c
-_finalize_merged(::Val{true}, c::ExaCore) = _finalize_merged2(c, c.backend, getfield(c, :var))
+_finalize_merged(c::ExaCore) = _finalize_merged2(c, c.backend, getfield(c, :var))
 
 # plain CPU, concrete storage: identity, fully static
 @inline _finalize_merged2(c::ExaCore, ::Nothing, ::Tuple) = c

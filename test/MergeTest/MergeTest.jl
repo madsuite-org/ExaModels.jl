@@ -11,9 +11,9 @@ const MERGE_BACKENDS = isdefined(Main, :BACKENDS) ? Main.BACKENDS : [nothing]
 # blocks plus a scalar-coefficient variant (lazy segmented path), a data-tuple
 # family (lazy path over arrays), a same-type augmentation pair (array path on
 # host, unmerged on device), a named block, and a non-mergeable singleton.
-function _build(backend; merge = true)
+function _build(backend)
     n = 64
-    c = ExaCore(; backend, merge)
+    c = ExaCore(; backend)
     c, x = add_var(c, n; start = 0.3)
     c, z = add_var(c, n; start = 0.8)
     c, _ = add_con(c, sin(x[i]) * x[i+1] - 0.1 for i in 1:(n-1); lcon = -2.0, ucon = 2.0)
@@ -53,26 +53,99 @@ function _evalall(m)
     return (o, Array(g), Array(cv), Array(jr), Array(jc), Array(jv), Array(hr), Array(hc), Array(hv))
 end
 
-function _test_equivalence(backend)
-    m_merged = ExaModel(_build(backend))
-    m_plain = ExaModel(_build(backend; merge = false))
-    @test length(m_merged.cons) < length(m_plain.cons)
-    rm = _evalall(m_merged)
-    rp = _evalall(m_plain)
-    @test rm[1] ≈ rp[1] rtol = 1e-12
+# Merging has no off switch, so the reference is independent of the merge
+# machinery: constraint and objective VALUES are checked against the host
+# model (and, on the host itself, derivative values against central finite
+# differences of those values); device backends are checked against the host
+# result on every callback.
+function _fd_jac(m, x0)
+    n = length(x0)
+    J = zeros(m.meta.ncon, n)
+    h = 1e-6
+    cp = zeros(m.meta.ncon)
+    cm = zeros(m.meta.ncon)
+    for j in 1:n
+        xp = copy(x0); xp[j] += h
+        xm = copy(x0); xm[j] -= h
+        NLPModels.cons!(m, xp, cp)
+        NLPModels.cons!(m, xm, cm)
+        J[:, j] .= (cp .- cm) ./ (2h)
+    end
+    return J
+end
+
+function _gradL(m, x, y)
+    g = zeros(length(x))
+    NLPModels.grad!(m, x, g)
+    jr = zeros(Int, m.meta.nnzj); jc = zeros(Int, m.meta.nnzj)
+    jv = zeros(m.meta.nnzj)
+    NLPModels.jac_structure!(m, jr, jc)
+    NLPModels.jac_coord!(m, x, jv)
+    for k in 1:m.meta.nnzj
+        g[jc[k]] += jv[k] * y[jr[k]]
+    end
+    return g
+end
+
+function _test_host_derivatives()
+    m = ExaModel(_build(nothing))
+    # the fixture's 10 adds collapse to: one range family, one data-tuple
+    # family, the named block, two augmentations (plain), and a singleton
+    @test length(m.cons) == 6
+    x0 = copy(m.meta.x0) .+ 0.01
+    # Jacobian values against central finite differences of cons!
+    jr = zeros(Int, m.meta.nnzj); jc = zeros(Int, m.meta.nnzj)
+    jv = zeros(m.meta.nnzj)
+    NLPModels.jac_structure!(m, jr, jc)
+    NLPModels.jac_coord!(m, x0, jv)
+    J = zeros(m.meta.ncon, length(x0))
+    for k in 1:m.meta.nnzj
+        J[jr[k], jc[k]] += jv[k]
+    end
+    @test isapprox(J, _fd_jac(m, x0); rtol = 1e-6, atol = 1e-8)
+    # Lagrangian Hessian values against central finite differences of
+    # grad(obj) + J(x)'y (the Jacobian is validated just above)
+    y = fill!(zeros(m.meta.ncon), 1.0)
+    hr = zeros(Int, m.meta.nnzh); hc = zeros(Int, m.meta.nnzh)
+    hv = zeros(m.meta.nnzh)
+    NLPModels.hess_structure!(m, hr, hc)
+    NLPModels.hess_coord!(m, x0, y, hv)
+    H = zeros(length(x0), length(x0))
+    for k in 1:m.meta.nnzh
+        H[hr[k], hc[k]] += hv[k]
+        hr[k] != hc[k] && (H[hc[k], hr[k]] += hv[k])
+    end
+    h = 1e-5
+    Hfd = zeros(length(x0), length(x0))
+    for j in 1:length(x0)
+        xp = copy(x0); xp[j] += h
+        xm = copy(x0); xm[j] -= h
+        Hfd[:, j] .= (_gradL(m, xp, y) .- _gradL(m, xm, y)) ./ (2h)
+    end
+    @test isapprox(H, Hfd; rtol = 1e-4, atol = 1e-6)
+end
+
+function _test_backend_matches_host(backend)
+    rb = _evalall(ExaModel(_build(backend)))
+    rh = _evalall(ExaModel(_build(nothing)))
+    @test rb[1] ≈ rh[1] rtol = 1e-12
     for k in (2, 3, 6, 9)                       # grad, cons, jac vals, hess vals
-        @test sum(rm[k]) ≈ sum(rp[k]) rtol = 1e-10
-        @test maximum(abs, rm[k]) ≈ maximum(abs, rp[k]) rtol = 1e-10
+        @test sum(rb[k]) ≈ sum(rh[k]) rtol = 1e-10
+        @test maximum(abs, rb[k]) ≈ maximum(abs, rh[k]) rtol = 1e-10
     end
     for k in (4, 5, 7, 8)                       # sparsity coordinates
-        @test sort(rm[k]) == sort(rp[k])
+        @test sort(rb[k]) == sort(rh[k])
     end
 end
 
 function runtests()
     @testset "Family merge" begin
-        @testset "merged == unmerged (backend = $(b === nothing ? "CPU" : b))" for b in MERGE_BACKENDS
-            _test_equivalence(b)
+        @testset "host derivatives against finite differences" begin
+            _test_host_derivatives()
+        end
+
+        @testset "matches host result (backend = $b)" for b in MERGE_BACKENDS
+            b === nothing || _test_backend_matches_host(b)
         end
 
         @testset "cross-variable and coefficient hoisting" begin
@@ -135,17 +208,13 @@ function runtests()
             @test typeof(m2.cons) == typeof(m4.cons)
         end
 
-        @testset "merge = false escape" begin
-            function build(merge)
-                c = ExaCore(; merge)
-                c, x = add_var(c, 10; start = 0.5)
-                c, _ = add_con(c, sin(x[i]) for i in 1:9; lcon = -2.0, ucon = 2.0)
-                c, _ = add_con(c, sin(x[i]) for i in 1:9; lcon = -2.0, ucon = 2.0)
-                c, _ = add_obj(c, x[1])
-                ExaModel(c)
-            end
-            @test length(build(true).cons) == 1
-            @test length(build(false).cons) == 2
+        @testset "merging is unconditional" begin
+            c = ExaCore()
+            c, x = add_var(c, 10; start = 0.5)
+            c, _ = add_con(c, sin(x[i]) for i in 1:9; lcon = -2.0, ucon = 2.0)
+            c, _ = add_con(c, sin(x[i]) for i in 1:9; lcon = -2.0, ucon = 2.0)
+            c, _ = add_obj(c, x[1])
+            @test length(ExaModel(c).cons) == 1
         end
 
         @testset "add_expr lift = true" begin

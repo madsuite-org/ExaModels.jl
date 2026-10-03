@@ -14,7 +14,6 @@ if !(@isdefined _PAGES)
             "recipe.md",
             "constraint_augmentation.md",
             "performance.md",
-            "merge.md",
             "gpu.md",
             "parameters.md",
 

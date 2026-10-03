@@ -309,7 +309,7 @@ end
 abstract type AbstractExaCore{T,VT,B,S} end
 
 """
-    ExaCore([array_eltype::Type; backend = nothing, concrete = Val(false), merge = true, minimize = true, name = :Generic])
+    ExaCore([array_eltype::Type; backend = nothing, concrete = Val(false), minimize = true, name = :Generic])
 
 Creates an intermediate data object `ExaCore`, which later can be used for creating an `ExaModel`
 
@@ -368,7 +368,7 @@ An ExaCore
 # (`ExaCore{T}`, `ExaCore{T,VT,B}`, the no-oracle signature below) still match.
 # `T` is now passed explicitly at construction: it used to be recovered from the
 # `VT <: AbstractVector{T}` bound, and no field carries it on its own.
-struct ExaCore{T, VT, B, S, V, P, O, C, R, OR, SOR, EV, SE, DM,
+struct ExaCore{T, VT, B, S, V, P, O, C, R, OR, SOR, EV, SE,
                NV, NP, NC, NCA, NO, NZC, NZG, NZJ, NZH,
                TH, LV, UV, Y0, LC, UC, NARGS} <: AbstractExaCore{T, VT, B, S}
     name::Symbol
@@ -400,10 +400,6 @@ struct ExaCore{T, VT, B, S, V, P, O, C, R, OR, SOR, EV, SE, DM,
     oracles::OR                # Tuple of VectorNonlinearOracle
     scalar_oracles::SOR        # Tuple of ScalarNonlinearOracle
     evals::EV                  # Tuple of OracleEvaluator (augment pre-existing constraint rows)
-    # Whether construction-time family merging is enabled, as a Val so the
-    # merge machinery is statically unreachable (prunable by juliac --trim)
-    # when disabled (see merge.jl).
-    domerge::DM
     # How many `ArgSource` placeholders this core was built against, as a
     # `Val{N}`.  Zero-size, so it costs nothing to carry, and it puts the arity
     # in the *type* — which is the point: whether a core is a recipe, and how
@@ -446,16 +442,15 @@ end
     oracles::OR,
     scalar_oracles::SOR,
     evals::EV,
-    domerge::DM,
     nargs::NARGS,
-) where {T, VT, B, S, V, P, O, C, R, OR, SOR, EV, SE, DM,
+) where {T, VT, B, S, V, P, O, C, R, OR, SOR, EV, SE,
          NV, NP, NC, NCA, NO, NZC, NZG, NZJ, NZH, TH, LV, UV, Y0, LC, UC, NARGS} =
-    ExaCore{T, VT, B, S, V, P, O, C, R, OR, SOR, EV, SE, DM,
+    ExaCore{T, VT, B, S, V, P, O, C, R, OR, SOR, EV, SE,
             NV, NP, NC, NCA, NO, NZC, NZG, NZJ, NZH, TH, LV, UV, Y0, LC, UC, NARGS}(
         name, backend, var, par, obj, cons, subexprs,
         nvar, npar, ncon, nconaug, nobj, nnzc, nnzg, nnzj, nnzh,
         x0, θ, lvar, uvar, y0, lcon, ucon,
-        minimize, tag, refs, oracles, scalar_oracles, evals, domerge, nargs,
+        minimize, tag, refs, oracles, scalar_oracles, evals, nargs,
     )
 
 @inline function _exa_core(
@@ -490,7 +485,6 @@ end
         oracles = (),
         scalar_oracles = (),
         evals = (),
-        domerge = Val(true),
         nargs = Val(0),
     ) where {T}
 
@@ -524,7 +518,6 @@ end
         oracles,
         scalar_oracles,
         evals,
-        domerge,
         nargs,
     )
 end
@@ -537,18 +530,13 @@ end
 # needs. `ExaModel` concretizes a `Vector{Any}` core at entry (`_concretize`),
 # so both modes produce the same `ExaModel` and the same AD kernels.
 
-@inline _domerge_default(concrete, ::Nothing) = Val(true)
-@inline _domerge_default(concrete, merge::Bool) = Val(merge)
-@inline _domerge_default(concrete, merge::Val) = merge
-
 @inline function ExaCore(
-    ::Type{T}; backend = nothing, concrete = nothing, nargs = Val(0), merge = nothing, kwargs...,
+    ::Type{T}; backend = nothing, concrete = nothing, nargs = Val(0), kwargs...,
 ) where {T<:AbstractFloat}
     return _with_args(
         _exa_core_from_x0(
             convert_array(zeros(T, 0), backend), backend;
             nargs,
-            domerge = _domerge_default(concrete, merge),
             var = _storage(concrete), par = _storage(concrete),
             obj = _storage(concrete), cons = _storage(concrete),
             refs = _refs_storage(concrete), kwargs...,
@@ -556,8 +544,8 @@ end
         nargs,
     )
 end
-@inline function ExaCore(; backend = nothing, concrete = nothing, nargs = Val(0), merge = nothing, kwargs...)
-    return ExaCore(default_T(backend); backend, concrete, nargs, merge, kwargs...)
+@inline function ExaCore(; backend = nothing, concrete = nothing, nargs = Val(0), kwargs...)
+    return ExaCore(default_T(backend); backend, concrete, nargs, kwargs...)
 end
 
 """
@@ -688,7 +676,6 @@ function instantiate(c::ExaCore{T}, a::Vararg{Any,N}) where {T, N}
         instantiate(c.oracles, a...),
         instantiate(c.scalar_oracles, a...),
         instantiate(c.evals, a...),
-        c.domerge,
         Val(0),
     )
 end
@@ -892,8 +879,6 @@ function ExaModel(c::ExaCore{T, VT, B, S, V, P, O, C, R, Tuple{}, Tuple{}, Tuple
 end
 
 # Oracle path: always returns ExaModelWithOracle (type-stable for juliac --trim=safe).
-# Family merging (merge.jl) runs only for non-concrete cores, so the
-# `concrete = Val(true)` / juliac path never sees its dynamic group pass.
 function ExaModel(c::ExaCore; prod = false, kwargs...)
     _recipe_check(c)
     cc = _finalize_merged(_concretize(c))
