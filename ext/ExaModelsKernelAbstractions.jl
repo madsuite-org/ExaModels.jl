@@ -1347,7 +1347,7 @@ end
 
 
 
-# ── merged (family-merged) constraint blocks ─────────────────────────────────
+# ── merged (family-merged) constraint and objective blocks ──────────────────
 # A merged block's row/nonzero offsets live in its MergedRow elements, not in
 # the SIMDFunction's affine fields, so the generic kernels' offset1/offset2
 # calls would be wrong for them.  These variants read the element.  (The cons
@@ -1387,7 +1387,34 @@ end
     end
 end
 
+@kernel function kerg_m(y, @Const(f), @Const(itr), @Const(x), @Const(θ), @Const(adj))
+    I = @index(Global)
+    @inbounds begin
+        el = itr[I]
+        ExaModels.grpass(
+            f(el, ExaModels.AdjointNodeSource(x), θ),
+            f.comp1, y, el.o1, 0, adj,
+        )
+    end
+end
+
 const _MergedCon = ExaModels.Constraint{F, I} where {F, I <: AbstractVector{<:ExaModels.MergedRow}}
+const _MergedObj = ExaModels.Objective{F, I} where {F, I <: AbstractVector{<:ExaModels.MergedRow}}
+
+# objectives: the gradient and Hessian passes (values and structure both go
+# through these two) read the element's o1/o2.  The objective Hessian weight
+# is always scalar, so kerh_m covers it; kerh2_m stays constraint-only.
+function ExaModels.sgradient!(backend::B, y, f::_MergedObj, x, θ, adj) where {B <: KernelAbstractions.Backend}
+    if !isempty(f.itr)
+        kerg_m(backend)(y, f.f, f.itr, x, θ, adj; ndrange = length(f.itr))
+    end
+end
+
+function ExaModels.shessian!(backend::B, y1, y2, f::_MergedObj, x, θ, adj, adj2) where {B <: KernelAbstractions.Backend}
+    if !isempty(f.itr)
+        kerh_m(backend)(y1, y2, f.f, f.itr, x, θ, adj, adj2; ndrange = length(f.itr))
+    end
+end
 
 function ExaModels.sjacobian!(backend::B, y1, y2, f::_MergedCon, x, θ, adj) where {B <: KernelAbstractions.Backend}
     if !isempty(f.itr)

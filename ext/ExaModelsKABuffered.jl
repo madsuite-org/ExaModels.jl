@@ -154,9 +154,17 @@ end
 _lamgrad!(backend, y, ::Tuple{}, x, θ, w) = nothing
 function _lamgrad!(backend, y, (obj, objs...), x, θ, w)
     _lamgrad!(backend, y, objs, x, θ, w)
-    if !isempty(obj.itr)
-        kerg(backend)(y, obj.f, obj.itr, x, θ, w; ndrange = length(obj.itr))
-    end
+    _lamgrad1!(backend, y, obj, x, θ, w)
+end
+# a merged objective's gradient offsets live in its elements
+function _lamgrad1!(backend, y, obj, x, θ, w)
+    isempty(obj.itr) && return nothing
+    kerg(backend)(y, obj.f, obj.itr, x, θ, w; ndrange = length(obj.itr))
+end
+function _lamgrad1!(backend, y, obj::ExaModels.Objective{F, I}, x, θ, w) where
+        {F, I <: AbstractVector{<:ExaModels.MergedRow}}
+    isempty(obj.itr) && return nothing
+    ExaModels.sgradient!(backend, y, obj, x, θ, w)
 end
 
 _lamjac!(backend, y, ::Tuple{}, x, θ, yv) = nothing

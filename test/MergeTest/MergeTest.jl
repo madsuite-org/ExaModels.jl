@@ -28,6 +28,14 @@ function _build(backend)
     c, _ = add_con!(c, g, i => sin(z[i + 1]) for i in 1:8)
     c, _ = add_con(c, tanh(x[i]) * exp(z[i]) for i in 1:4; lcon = -3.0, ucon = 3.0)
     c, _ = add_obj(c, abs2(x[i] - z[i]) for i in 1:n)
+    # loop-written objectives: one scalar add per iteration, two variable
+    # blocks, collapsing into a single objective family
+    for k in 1:4
+        c, _ = add_obj(c, 0.25 * abs2(x[k]) - 0.1 * z[k+1])
+    end
+    for k in 1:4
+        c, _ = add_obj(c, 0.25 * abs2(z[k]) - 0.1 * x[k+1])
+    end
     return c
 end
 
@@ -89,9 +97,12 @@ end
 
 function _test_host_derivatives()
     m = ExaModel(_build(nothing))
-    # the fixture's 10 adds collapse to: one range family, one data-tuple
-    # family, the named block, two augmentations (plain), and a singleton
+    # the fixture's 10 constraint adds collapse to: one range family, one
+    # data-tuple family, the named block, two augmentations (plain), and a
+    # singleton; its 9 objective adds collapse to the generator objective
+    # plus one merged family for the 8 loop-written ones
     @test length(m.cons) == 6
+    @test length(m.objs) == 2
     x0 = copy(m.meta.x0) .+ 0.01
     # Jacobian values against central finite differences of cons!
     jr = zeros(Int, m.meta.nnzj); jc = zeros(Int, m.meta.nnzj)
@@ -206,6 +217,40 @@ function runtests()
             m4 = build(4)
             @test typeof(m2) == typeof(m4)
             @test typeof(m2.cons) == typeof(m4.cons)
+        end
+
+        @testset "loop-written objectives merge" begin
+            N = 16
+            c = ExaCore()
+            c, x = add_var(c, N+1; start = 0.5)
+            c, y = add_var(c, N+1; start = 0.25)
+            for i in 1:N
+                c, _ = add_obj(c, 2.0 * abs2(x[i]) - 0.5 * x[i+1])
+            end
+            for i in 1:N                     # same pattern, other variables
+                c, _ = add_obj(c, 2.0 * abs2(y[i]) - 0.5 * y[i+1])
+            end
+            c, _ = add_con(c, x[i] + y[i] - 1.0 for i in 1:N; lcon=-1.0, ucon=1.0)
+            m = ExaModel(c)
+            @test length(m.objs) == 1
+            x0 = copy(m.meta.x0)
+            # closed form at the starting point
+            want = N * (2 * 0.5^2 - 0.5 * 0.5) + N * (2 * 0.25^2 - 0.5 * 0.25)
+            @test NLPModels.obj(m, x0) ≈ want rtol = 1e-14
+            g = zeros(length(x0))
+            NLPModels.grad!(m, x0, g)
+            # d/dx[i] = 4x[i] for i <= N, and -0.5 lands on x[i+1]
+            @test g[1] ≈ 4 * 0.5 rtol = 1e-14
+            @test g[N+1] ≈ -0.5 rtol = 1e-14
+            @test g[N+2] ≈ 4 * 0.25 rtol = 1e-14
+            @test g[2N+2] ≈ -0.5 rtol = 1e-14
+            hr = zeros(Int, m.meta.nnzh); hc = zeros(Int, m.meta.nnzh)
+            hv = zeros(m.meta.nnzh)
+            NLPModels.hess_structure!(m, hr, hc)
+            NLPModels.hess_coord!(m, x0, ones(m.meta.ncon), hv)
+            @test sum(hv) ≈ 4.0 * 2N rtol = 1e-14
+            # every Hessian entry is a diagonal of one of the two blocks
+            @test all(hr .== hc)
         end
 
         @testset "merging is unconditional" begin

@@ -123,6 +123,10 @@ _mrow_dtype(::Type{MergedRow{K, S, T, D}}) where {K, S, T, D} = D
     getfield(a.itr[i], :o1)
 @inbounds @inline offset2(a::Constraint{F, I}, i) where {F, I <: AbstractVector{<:MergedRow}} =
     getfield(a.itr[i], :o2)
+@inbounds @inline offset1(a::Objective{F, I}, i) where {F, I <: AbstractVector{<:MergedRow}} =
+    getfield(a.itr[i], :o1)
+@inbounds @inline offset2(a::Objective{F, I}, i) where {F, I <: AbstractVector{<:MergedRow}} =
+    getfield(a.itr[i], :o2)
 
 # ── mergeability: a property of the tree TYPE ────────────────────────────────
 
@@ -277,6 +281,20 @@ end
 
 @inline _shoist(::Type{T}, b) where {T} = (first(_stree(b, 0, 0)), _siv(b), _sfv(T, b))
 
+# ── block kind ───────────────────────────────────────────────────────────────
+# Constraints and objectives share the whole merge machinery and differ only
+# in how a block is wrapped and whether it carries a tag.  Both are dispatch.
+
+@inline _mkblock(::Type{Constraint}, mf, itr, n, tag) = Constraint(mf, itr, 0, (n,), tag)
+@inline _mkblock(::Type{Objective}, mf, itr, n, tag) = Objective(mf, itr)
+# rewrap an existing block around a grown iterator, keeping its own kind
+@inline _rewrap(prev::Constraint, mf, itr, n, tag) = Constraint(mf, itr, 0, (n,), tag)
+@inline _rewrap(prev::Objective, mf, itr, n, tag) = Objective(mf, itr)
+# objectives have no tag, so every objective family is tag-compatible
+@inline _blocktag(b::Constraint) = getfield(b, :tag)
+@inline _blocktag(b::Objective) = nothing
+@inline _blocktag(b) = nothing
+
 @inline _family_tree(f::SIMDFunction) = _pair_second(f.f)
 @inline _pair_second(p::Pair) = p.second
 @inline _pair_second(t) = t
@@ -285,6 +303,8 @@ end
 
 @inline _same_family(a, f, ::Type{E}) where {E} = false
 @inline _same_family(a::Constraint{F2, I}, f::F, ::Type{E}) where {F2, F, E, I <: _MergedItr} =
+    typeof(_mrep(getfield(a, :itr))) == F && _mrow_dtype(eltype(getfield(a, :itr))) == E
+@inline _same_family(a::Objective{F2, I}, f::F, ::Type{E}) where {F2, F, E, I <: _MergedItr} =
     typeof(_mrep(getfield(a, :itr))) == F && _mrow_dtype(eltype(getfield(a, :itr))) == E
 
 # ── block creation and appends ───────────────────────────────────────────────
@@ -301,13 +321,13 @@ end
 # the family's footprint is fixed by the type from the start and later
 # arrivals can never mismatch.  Segment bases come from the arriving block's
 # own counters (f.o0/f.o1/f.o2 were taken from the core at this add).
-@inline function _merged_first(::Type{T}, f, pars, dims, tag, backend) where {T}
+@inline function _merged_first(::Type{T}, kind, f, pars, dims, tag, backend) where {T}
     rep = f
     tree, ivs, fvt = _shoist(T, _family_tree(rep))
     mf = _simdfunction(T, tree, 0, 0, 0)
     itr = _merged_first_itr(T, getfield(f, :f), backend, rep, mf, f, pars, dims,
                             ivs, fvt)
-    return Constraint(mf, itr, 0, (length(pars),), tag), mf
+    return _mkblock(kind, mf, itr, length(pars), tag), mf
 end
 
 # a plain (non-pair) head on the host gets the lazy segmented iterator
@@ -352,7 +372,7 @@ end
     newlen = length(pars)
     push!(m.offs, m.offs[end] + newlen)
     m.seglen[] = (m.seglen[] == newlen) ? newlen : 0
-    return Constraint(prev.f, m, 0, (m.offs[end],), tag)
+    return _rewrap(prev, prev.f, m, m.offs[end], tag)
 end
 @inline function _merged_append_itr(m::MergedRows, prev, f, pars, dims, tag, ivs, fvt)
     mf = prev.f
@@ -362,7 +382,7 @@ end
         push!(m.rows, eltype(m.rows)(o0s[r], f.o1 + mf.o1step * (r - 1),
                                      f.o2 + mf.o2step * (r - 1), ivs, fvt, itrc[r]))
     end
-    return Constraint(prev.f, m, 0, (length(m.rows),), tag)
+    return _rewrap(prev, prev.f, m, length(m.rows), tag)
 end
 
 # ── the merge entry point used by _add_con / _add_con! ───────────────────────
@@ -375,8 +395,19 @@ end
     _mergeable(typeof(f.f)) || return nothing
     _merge_allowed(getfield(c, :nargs), getfield(f, :f), c.backend) || return nothing
     _merge_itr_ok(pars) || return nothing
-    return _merge_result(_smerge(T, c.cons, f, pars, dims, tag, eltype(pars)),
-                         T, c, f, pars, dims, tag)
+    return _merge_result(_smerge(T, Constraint, c.cons, f, pars, dims, tag, eltype(pars)),
+                         T, Constraint, c, c.cons, f, pars, dims, tag)
+end
+
+# objectives: same machinery, `c.obj` instead of `c.cons`, no tag.  The nnz
+# steps come back as (nnzg, nnzh) per row rather than (nnzj, nnzh).
+@inline function _merge_obj(c::ExaCore{T}, f, pars) where {T}
+    _mergeable(typeof(f.f)) || return nothing
+    _merge_allowed(getfield(c, :nargs), getfield(f, :f), c.backend) || return nothing
+    _merge_itr_ok(pars) || return nothing
+    dims = (length(pars),)
+    return _merge_result(_smerge(T, Objective, c.obj, f, pars, dims, nothing, eltype(pars)),
+                         T, Objective, c, c.obj, f, pars, dims, nothing)
 end
 
 # recipes (nargs > 0) are stored plain; pair-headed plain blocks (data-driven
@@ -388,10 +419,10 @@ end
 @inline _merge_allowed(nargs, head, backend) = false
 
 # an existing family absorbed the block, or (on `nothing`) it starts one
-@inline _merge_result(r::Tuple, ::Type, c, f, pars, dims, tag) = r
-@inline function _merge_result(::Nothing, ::Type{T}, c, f, pars, dims, tag) where {T}
-    con, mf = _merged_first(T, f, pars, dims, tag, c.backend)
-    return _prep(c.cons, con), mf.o1step, mf.o2step
+@inline _merge_result(r::Tuple, ::Type, kind, c, blocks, f, pars, dims, tag) = r
+@inline function _merge_result(::Nothing, ::Type{T}, kind, c, blocks, f, pars, dims, tag) where {T}
+    b, mf = _merged_first(T, kind, f, pars, dims, tag, c.backend)
+    return _prep(blocks, b), mf.o1step, mf.o2step
 end
 
 @inline _merge_itr_ok(pars) = _merge_itr_ok(Base.IteratorSize(pars))
@@ -400,24 +431,24 @@ end
 
 # scan + replace in one recursion; typed for tuple storage, dynamic for the
 # Vector{Any} default; the same fold either way
-@inline _smerge(::Type{T}, cons::Tuple{}, f, pars, dims, tag, ::Type{E}) where {T, E} = nothing
-@inline function _smerge(::Type{T}, cons::Tuple, f, pars, dims, tag, ::Type{E}) where {T, E}
+@inline _smerge(::Type{T}, kind, cons::Tuple{}, f, pars, dims, tag, ::Type{E}) where {T, E} = nothing
+@inline function _smerge(::Type{T}, kind, cons::Tuple, f, pars, dims, tag, ::Type{E}) where {T, E}
     b = first(cons)
     rest = Base.tail(cons)
-    if _same_family(b, f, E) && getfield(b, :tag) === tag &&
+    if _same_family(b, f, E) && _blocktag(b) === tag &&
        _appendable(getfield(b, :itr), pars)
         nb = _merged_append(T, b, f, pars, dims, tag)
         mf = getfield(nb, :f)
         return (nb, rest...), mf.o1step, mf.o2step
     end
-    r = _smerge(T, rest, f, pars, dims, tag, E)
+    r = _smerge(T, kind, rest, f, pars, dims, tag, E)
     r === nothing && return nothing
     ncons, s1, s2 = r
     return (b, ncons...), s1, s2
 end
-function _smerge(::Type{T}, cons::Vector{Any}, f, pars, dims, tag, ::Type{E}) where {T, E}
+function _smerge(::Type{T}, kind, cons::Vector{Any}, f, pars, dims, tag, ::Type{E}) where {T, E}
     for (i, b) in enumerate(cons)
-        if _same_family(b, f, E) && getfield(b, :tag) === tag &&
+        if _same_family(b, f, E) && _blocktag(b) === tag &&
            _appendable(getfield(b, :itr), pars)
             nb = _merged_append(T, b, f, pars, dims, tag)
             out = copy(cons)
@@ -439,6 +470,7 @@ end
 
 _is_merged(b) = false
 _is_merged(::Constraint{F, I}) where {F, I <: _MergedItr} = true
+_is_merged(::Objective{F, I}) where {F, I <: _MergedItr} = true
 _has_merged(cons) = any(_is_merged, cons)
 
 _erase_refs(refs::NamedTuple) = Pair{Symbol, Any}[k => v for (k, v) in pairs(refs)]
@@ -448,6 +480,8 @@ _erase_refs(refs) = refs
 _materialize_block(backend, b) = b
 _materialize_block(backend, b::Constraint{F, I}) where {F, I <: _MergedItr} =
     Constraint(b.f, _materialize_mergeditr(backend, getfield(b, :itr)), 0, b.size, b.tag)
+_materialize_block(backend, b::Objective{F, I}) where {F, I <: _MergedItr} =
+    Objective(b.f, _materialize_mergeditr(backend, getfield(b, :itr)))
 
 _materialize_mergeditr(backend, s::SegmentedItr) =
     convert_array([s[i] for i in 1:length(s)], backend)
@@ -459,19 +493,22 @@ _finalize_merged(c::ExaCore) = _finalize_merged2(c, c.backend, getfield(c, :var)
 @inline _finalize_merged2(c::ExaCore, ::Nothing, ::Tuple) = c
 # plain CPU, erased storage: keep var/par/refs erased when anything merged
 function _finalize_merged2(c::ExaCore, ::Nothing, ::Vector{Any})
-    _has_merged(c.cons) || return c
+    (_has_merged(c.cons) || _has_merged(c.obj)) || return c
     return ExaCore(c; cons = Tuple(Any[b for b in c.cons]),
+                   obj = Tuple(Any[b for b in c.obj]),
                    var = Any[c.var...], par = Any[c.par...],
                    refs = _erase_refs(getfield(c, :refs)))
 end
 # device: additionally materialize merged iterators as device arrays
 function _finalize_merged2(c::ExaCore, backend, var::Vector{Any})
-    cons = Any[_materialize_block(backend, b) for b in c.cons]
-    return ExaCore(c; cons = Tuple(cons), var = Any[c.var...], par = Any[c.par...],
+    return ExaCore(c; cons = Tuple(Any[_materialize_block(backend, b) for b in c.cons]),
+                   obj = Tuple(Any[_materialize_block(backend, b) for b in c.obj]),
+                   var = Any[c.var...], par = Any[c.par...],
                    refs = _erase_refs(getfield(c, :refs)))
 end
 function _finalize_merged2(c::ExaCore, backend, var)
-    return ExaCore(c; cons = Tuple(Any[_materialize_block(backend, b) for b in c.cons]))
+    return ExaCore(c; cons = Tuple(Any[_materialize_block(backend, b) for b in c.cons]),
+                   obj = Tuple(Any[_materialize_block(backend, b) for b in c.obj]))
 end
 
 # ── specialized hot loops for the lazy iterator ──────────────────────────────

@@ -1614,12 +1614,21 @@ end
 @inline function _add_obj(c, f, pars, name = nothing)
     nitr = length(pars)
     nobj = c.nobj + nitr
-    nnzg = c.nnzg + nitr * f.o1step
-    nnzh = c.nnzh + nitr * f.o2step
-
     obj = Objective(f, convert_array(pars, c.backend))
-    (ExaCore(c; nobj=nobj, nnzg=nnzg, nnzh=nnzh, obj=_prep(c.obj, obj), refs = add_refs(c.refs, name, obj)), obj)
+    return _add_obj_store(_merge_obj(c, f, pars), c, obj, f, name, nitr, nobj)
 end
+
+# merged into a family: the per-row gradient/Hessian nnz steps come back
+# from the merge, since the merged tree's footprint is its own
+@inline function _add_obj_store(m::Tuple, c, obj, f, name, nitr, nobj)
+    objs2, s1, s2 = m
+    (ExaCore(c; nobj=nobj, nnzg=c.nnzg+nitr*s1, nnzh=c.nnzh+nitr*s2,
+             obj=objs2, refs = add_refs(c.refs, name, obj)), obj)
+end
+# statically non-mergeable: stored plain
+@inline _add_obj_store(::Nothing, c, obj, f, name, nitr, nobj) =
+    (ExaCore(c; nobj=nobj, nnzg=c.nnzg+nitr*f.o1step, nnzh=c.nnzh+nitr*f.o2step,
+             obj=_prep(c.obj, obj), refs = add_refs(c.refs, name, obj)), obj)
 
 
 """
