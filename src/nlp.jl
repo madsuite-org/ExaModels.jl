@@ -1745,19 +1745,21 @@ function _add_con(c, f, pars, dims, start, lcon, ucon, name, tag)
 
     con = Constraint(f, convert_array(pars, c.backend), o, dims, tag)
 
-    m = _merge_block(c, f, pars, dims, tag, false)
-    if m !== nothing
-        cons2, s1, s2 = m
-        nnzj = c.nnzj + nitr * s1
-        nnzh = c.nnzh + nitr * s2
-        return (ExaCore(c; ncon=ncon, nnzj=nnzj, nnzh=nnzh, y0=y0, lcon=lcon, ucon=ucon,
-                        cons=cons2, refs = add_refs(c.refs, name, con)), con)
-    end
-
-    nnzj = c.nnzj + nitr * f.o1step
-    nnzh = c.nnzh + nitr * f.o2step
-    (ExaCore(c; ncon=ncon, nnzj=nnzj, nnzh=nnzh, y0=y0, lcon=lcon, ucon=ucon, cons=_prep(c.cons, con), refs = add_refs(c.refs, name, con)), con)
+    return _add_con_store(_merge_block(c, f, pars, dims, tag),
+                          c, con, f, name, nitr, ncon, y0, lcon, ucon)
 end
+
+# merged into a family: the per-row nnz steps come back from the merge
+@inline function _add_con_store(m::Tuple, c, con, f, name, nitr, ncon, y0, lcon, ucon)
+    cons2, s1, s2 = m
+    (ExaCore(c; ncon=ncon, nnzj=c.nnzj+nitr*s1, nnzh=c.nnzh+nitr*s2, y0=y0,
+             lcon=lcon, ucon=ucon, cons=cons2, refs = add_refs(c.refs, name, con)), con)
+end
+# statically non-mergeable: stored plain
+@inline _add_con_store(::Nothing, c, con, f, name, nitr, ncon, y0, lcon, ucon) =
+    (ExaCore(c; ncon=ncon, nnzj=c.nnzj+nitr*f.o1step, nnzh=c.nnzh+nitr*f.o2step, y0=y0,
+             lcon=lcon, ucon=ucon, cons=_prep(c.cons, con),
+             refs = add_refs(c.refs, name, con)), con)
 
 
 
@@ -1882,14 +1884,9 @@ function _add_con!(c, f, pars, dims, tag)
     nconaug = c.nconaug + nitr
     con = ConstraintAugmentation(f, convert_array(pars, c.backend), oa, dims, tag)
 
-    m = _merge_block(c, f, pars, dims, tag, true)
-    if m !== nothing
-        cons2, s1, s2 = m
-        nnzj = c.nnzj + nitr * s1
-        nnzh = c.nnzh + nitr * s2
-        return (ExaCore(c; nconaug=nconaug, nnzj=nnzj, nnzh=nnzh, cons=cons2), con)
-    end
-
+    # augmentations stay plain on every backend: on device their accumulation
+    # goes through the extension's collision-handling pipeline, and merging
+    # them on host only would make a model's nnz counts backend-dependent
     nnzj = c.nnzj + nitr * f.o1step
     nnzh = c.nnzh + nitr * f.o2step
     (ExaCore(c; nconaug=nconaug, nnzj=nnzj, nnzh=nnzh, cons=_prep(c.cons, con)), con)
@@ -1961,13 +1958,14 @@ c, s = add_expr(c, x[i, k]^2 for (i, k) in itr)
     # defining equality constraint; `buffered = true` evaluates it once per
     # row into a θ-backed buffer (subexpr.jl); the default splices the node
     # tree at every reference site.
-    if lift === true || lift === Val(true)
-        return _add_expr_lifted(c, gen, name, tag, start)
-    end
-    return _add_expr(c, gen, _buffered_val(buffered), name, tag)
+    return _add_expr_route(_kw_val(lift), c, gen, _kw_val(buffered), name, tag, start)
 end
-@inline _buffered_val(b::Bool) = Val(b)
-@inline _buffered_val(b::Val) = b
+@inline _kw_val(b::Bool) = Val(b)
+@inline _kw_val(b::Val) = b
+@inline _add_expr_route(::Val{true}, c, gen, buffered, name, tag, start) =
+    _add_expr_lifted(c, gen, name, tag, start)
+@inline _add_expr_route(::Val{false}, c, gen, buffered, name, tag, start) =
+    _add_expr(c, gen, buffered, name, tag)
 
 @inline function _add_expr(c::C, gen, ::Val{false}, name, tag) where {T,C<:ExaCore{T}}
     ns = _infer_subexpr_dims(gen.iter)
@@ -2611,9 +2609,11 @@ function _named_block(x, ::Type{K}, name::Symbol, kind::String, f) where {K}
         (isempty(keys(nt)) ? " (none — was it added with a `name`?)" : "")))
 end
 
+@inline _refs_isa(::Type{K}, ::K) where {K} = true
+@inline _refs_isa(::Type, x) = false
 @inline function _named_blocks(x::Union{ExaCore, ExaModel}, ::Type{K}) where {K}
     refs = getfield(x, :refs)
-    ks = filter(k -> _refs_get(refs, k) isa K, _refs_keys(refs))
+    ks = filter(k -> _refs_isa(K, _refs_get(refs, k)), _refs_keys(refs))
     return NamedTuple{ks}(map(k -> _refs_get(refs, k), ks))
 end
 

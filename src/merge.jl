@@ -181,62 +181,82 @@ end
 @inline (v::FvRef)(i, x, θ) = @inbounds getfield(i, _MROW_FV)[v.k]
 @inline (v::FvRef)(i::Identity, x, θ) = eltype(θ)(NaN)
 
-# Generation-time recursion: `NT` is a subnode's type, `path` the symbol
-# holding that subnode of `b`.  Emits SSA statements into `stmts` and slot
-# expressions into `ivs`/`fvs` (slot number = push order, matching the
-# accessor literals), and returns the symbol/expression of the merged node.
-function _gwalk(NT, path, stmts, ivs, fvs)
+# Generation-time walk: one method per node kind, dispatched on the node's
+# TYPE (`::Type{...}`), mirroring `_mergeable` above.  `path` is the symbol
+# holding that subnode of `b`; each method emits SSA statements into `stmts`
+# and slot expressions into `ivs`/`fvs` (slot number = push order, matching
+# the accessor literals) and returns the merged node's symbol or expression.
+function _gwalk(::Type{Node1{F, I}}, path, stmts, ivs, fvs) where {F, I}
+    s = gensym(:c)
+    push!(stmts, :($s = getfield($path, :inner)))
+    n = _gwalk(I, s, stmts, ivs, fvs)
     out = gensym(:n)
-    if NT <: Node1
-        s = gensym(:c)
-        push!(stmts, :($s = getfield($path, :inner)))
-        n = _gwalk(NT.parameters[2], s, stmts, ivs, fvs)
-        push!(stmts, :($out = _g_rebuild1($path, $n)))
-    elseif NT <: Node2
-        s1 = gensym(:c)
-        push!(stmts, :($s1 = getfield($path, :inner1)))
-        n1 = _gwalk(NT.parameters[2], s1, stmts, ivs, fvs)
-        s2 = gensym(:c)
-        push!(stmts, :($s2 = getfield($path, :inner2)))
-        n2 = _gwalk(NT.parameters[3], s2, stmts, ivs, fvs)
-        push!(stmts, :($out = _g_rebuild2($path, $n1, $n2)))
-    elseif NT <: Var
-        s = gensym(:c)
-        push!(stmts, :($s = getfield($path, :i)))
-        n = _gwalk(NT.parameters[1], s, stmts, ivs, fvs)
-        push!(stmts, :($out = Var{typeof($n)}($n)))
-    elseif NT <: ParameterNode
-        s = gensym(:c)
-        push!(stmts, :($s = getfield($path, :i)))
-        n = _gwalk(NT.parameters[1], s, stmts, ivs, fvs)
-        push!(stmts, :($out = ParameterNode{typeof($n)}($n)))
-    elseif NT <: DataIndexed
-        s = gensym(:c)
-        push!(stmts, :($s = getfield($path, :inner)))
-        n = _gwalk(NT.parameters[1], s, stmts, ivs, fvs)
-        # J may be a Symbol (a field key), so quote it rather than splice it
-        push!(stmts, :($out = DataIndexed($n, $(QuoteNode(NT.parameters[2])))))
-    elseif NT === DataSource
-        push!(stmts, :($out = DataIndexed(DataSource(), $_MROW_D)))
-    elseif NT <: Constant || NT === VarSource || NT === ParameterSource || NT <: Val
-        return path                       # structure lives in the type: reuse
-    elseif NT <: Null
-        NT.parameters[1] === Nothing && return path
-        # a Null's value is a scalar field like any other: hoist it
-        push!(fvs, :(getfield($path, :value)))
-        push!(stmts, :($out = FvRef($(length(fvs)))))
-    elseif NT <: Integer
-        push!(ivs, :(Int($path)))
-        push!(stmts, :($out = IvRef($(length(ivs)))))
-    elseif NT <: Real
-        push!(fvs, path)
-        push!(stmts, :($out = FvRef($(length(fvs)))))
-    else
-        # unreachable behind the _mergeable gate; loud if the two ever drift
-        error("_shoist: node type not covered by the hoisting walk: ", NT)
-    end
+    push!(stmts, :($out = _g_rebuild1($path, $n)))
     return out
 end
+function _gwalk(::Type{Node2{F, I1, I2}}, path, stmts, ivs, fvs) where {F, I1, I2}
+    s1 = gensym(:c)
+    push!(stmts, :($s1 = getfield($path, :inner1)))
+    n1 = _gwalk(I1, s1, stmts, ivs, fvs)
+    s2 = gensym(:c)
+    push!(stmts, :($s2 = getfield($path, :inner2)))
+    n2 = _gwalk(I2, s2, stmts, ivs, fvs)
+    out = gensym(:n)
+    push!(stmts, :($out = _g_rebuild2($path, $n1, $n2)))
+    return out
+end
+function _gwalk(::Type{Var{I}}, path, stmts, ivs, fvs) where {I}
+    s = gensym(:c)
+    push!(stmts, :($s = getfield($path, :i)))
+    n = _gwalk(I, s, stmts, ivs, fvs)
+    out = gensym(:n)
+    push!(stmts, :($out = Var{typeof($n)}($n)))
+    return out
+end
+function _gwalk(::Type{ParameterNode{I}}, path, stmts, ivs, fvs) where {I}
+    s = gensym(:c)
+    push!(stmts, :($s = getfield($path, :i)))
+    n = _gwalk(I, s, stmts, ivs, fvs)
+    out = gensym(:n)
+    push!(stmts, :($out = ParameterNode{typeof($n)}($n)))
+    return out
+end
+function _gwalk(::Type{DataIndexed{I, J}}, path, stmts, ivs, fvs) where {I, J}
+    s = gensym(:c)
+    push!(stmts, :($s = getfield($path, :inner)))
+    n = _gwalk(I, s, stmts, ivs, fvs)
+    out = gensym(:n)
+    # J may be a Symbol (a field key), so quote it rather than splice it
+    push!(stmts, :($out = DataIndexed($n, $(QuoteNode(J)))))
+    return out
+end
+function _gwalk(::Type{DataSource}, path, stmts, ivs, fvs)
+    out = gensym(:n)
+    push!(stmts, :($out = DataIndexed(DataSource(), $_MROW_D)))
+    return out
+end
+# structure lives entirely in the type: reuse the arriving node
+_gwalk(::Type{<:Constant}, path, stmts, ivs, fvs) = path
+_gwalk(::Type{VarSource}, path, stmts, ivs, fvs) = path
+_gwalk(::Type{ParameterSource}, path, stmts, ivs, fvs) = path
+_gwalk(::Type{<:Val}, path, stmts, ivs, fvs) = path
+_gwalk(::Type{Null{Nothing}}, path, stmts, ivs, fvs) = path
+# a Null's value is a scalar field like any other: hoist it
+function _gwalk(::Type{Null{T}}, path, stmts, ivs, fvs) where {T <: Real}
+    push!(fvs, :(getfield($path, :value)))
+    return :(FvRef($(length(fvs))))
+end
+function _gwalk(::Type{T}, path, stmts, ivs, fvs) where {T <: Integer}
+    push!(ivs, :(Int($path)))
+    return :(IvRef($(length(ivs))))
+end
+function _gwalk(::Type{T}, path, stmts, ivs, fvs) where {T <: Real}
+    push!(fvs, path)
+    return :(FvRef($(length(fvs))))
+end
+# unreachable behind the _mergeable gate; loud if the two ever drift
+_gwalk(::Type{T}, path, stmts, ivs, fvs) where {T} =
+    error("_shoist: node type not covered by the hoisting walk: ", T)
 
 @inline _g_rebuild1(::Node1{F}, n) where {F} = Node1{F, typeof(n)}(n)
 @inline _g_rebuild2(::Node2{F}, n1, n2) where {F} =
@@ -288,39 +308,56 @@ end
     rep = f
     tree, ivs, fvs = _shoist(_family_tree(rep))
     mf = _simdfunction(T, tree, 0, 0, 0)
+    itr = _merged_first_itr(T, getfield(f, :f), backend, rep, mf, f, pars, dims,
+                            ivs, _fvt(T, fvs))
+    return Constraint(mf, itr, 0, (length(pars),), tag), mf
+end
+
+# a plain (non-pair) head on the host gets the lazy segmented iterator
+@inline function _merged_first_itr(::Type{T}, head, ::Nothing, rep, mf, f, pars, dims,
+                                   ivs, fvt) where {T}
     K = length(ivs)
-    S = length(fvs)
-    fvt = _fvt(T, fvs)
-    lazy = !(f.f isa Pair) && backend === nothing
-    if lazy
-        segs = MergedSeg{K, S, T, typeof(pars)}[MergedSeg{K, S, T, typeof(pars)}(pars, f.o0, f.o1, f.o2, ivs, fvt)]
-        itr = SegmentedItr{K, S, T, eltype(pars), typeof(pars), typeof(rep)}(
-            rep, segs, Int[length(pars)], Ref(length(pars)), mf.o1step, mf.o2step)
-        return Constraint(mf, itr, 0, (length(pars),), tag), mf
-    end
+    S = length(fvt)
+    segs = MergedSeg{K, S, T, typeof(pars)}[MergedSeg{K, S, T, typeof(pars)}(pars, f.o0, f.o1, f.o2, ivs, fvt)]
+    return SegmentedItr{K, S, T, eltype(pars), typeof(pars), typeof(rep)}(
+        rep, segs, Int[length(pars)], Ref(length(pars)), mf.o1step, mf.o2step)
+end
+# pair heads (data-driven row targets) and device backends materialize rows
+@inline _merged_first_itr(::Type{T}, head::Pair, ::Nothing, rep, mf, f, pars, dims,
+                          ivs, fvt) where {T} =
+    _merged_rows(T, rep, mf, f, pars, dims, ivs, fvt)
+@inline _merged_first_itr(::Type{T}, head, backend, rep, mf, f, pars, dims,
+                          ivs, fvt) where {T} =
+    _merged_rows(T, rep, mf, f, pars, dims, ivs, fvt)
+
+@inline function _merged_rows(::Type{T}, rep, mf, f, pars, dims, ivs, fvt) where {T}
+    K = length(ivs)
+    S = length(fvt)
     o0s = _row_o0s(f, pars, dims)
     itrc = collect(pars)
     rows = [MergedRow{K, S, T, eltype(itrc)}(o0s[r], f.o1 + mf.o1step * (r - 1),
                       f.o2 + mf.o2step * (r - 1), ivs, fvt, itrc[r]) for r in eachindex(itrc)]
-    itr = MergedRows{K, S, T, eltype(itrc), typeof(rep)}(rep, rows)
-    return Constraint(mf, itr, 0, (length(pars),), tag), mf
+    return MergedRows{K, S, T, eltype(itrc), typeof(rep)}(rep, rows)
 end
 
 # A later arrival: extract in the representative's layout, append one
 # segment.  nnz bases again come from the arriving block's own counters.
 @inline function _merged_append(::Type{T}, prev, f, pars, dims, tag) where {T}
-    m = getfield(prev, :itr)
     # same family means same tree type, so the arriving tree's own walk uses
     # the representative's slot layout by construction
     _, ivs, fvs = _shoist(_family_tree(f))
-    fvt = _fvt(T, fvs)
-    if m isa SegmentedItr
-        push!(m.segs, eltype(m.segs)(pars, f.o0, f.o1, f.o2, ivs, fvt))
-        newlen = length(pars)
-        push!(m.offs, m.offs[end] + newlen)
-        m.seglen[] = (m.seglen[] == newlen) ? newlen : 0
-        return Constraint(prev.f, m, 0, (m.offs[end],), tag)
-    end
+    return _merged_append_itr(getfield(prev, :itr), prev, f, pars, dims, tag,
+                              ivs, _fvt(T, fvs))
+end
+
+@inline function _merged_append_itr(m::SegmentedItr, prev, f, pars, dims, tag, ivs, fvt)
+    push!(m.segs, eltype(m.segs)(pars, f.o0, f.o1, f.o2, ivs, fvt))
+    newlen = length(pars)
+    push!(m.offs, m.offs[end] + newlen)
+    m.seglen[] = (m.seglen[] == newlen) ? newlen : 0
+    return Constraint(prev.f, m, 0, (m.offs[end],), tag)
+end
+@inline function _merged_append_itr(m::MergedRows, prev, f, pars, dims, tag, ivs, fvt)
     mf = prev.f
     o0s = _row_o0s(f, pars, dims)
     itrc = collect(pars)
@@ -337,26 +374,32 @@ end
 # as before this feature), or `(cons′, o1step, o2step)`: the updated block
 # list and the per-row nnz steps to account nnzj/nnzh with.
 
-@inline function _merge_block(c::ExaCore{T}, f, pars, dims, tag, isaug) where {T}
+@inline function _merge_block(c::ExaCore{T}, f, pars, dims, tag) where {T}
     _mergeable(typeof(f.f)) || return nothing
-    c.nargs isa Val{0} || return nothing              # recipes: stored plain
-    # augmentations stay plain on every backend: on device their accumulation
-    # goes through the extension's collision-handling pipeline, and merging
-    # them on host only would make a model's nnz counts backend-dependent
-    isaug && return nothing
-    # pair-headed plain blocks (data-driven row targets) stay plain on device
-    # backends for the same reason: merging would move cross-block row
-    # collisions from sequential launches into one kernel
-    f.f isa Pair && c.backend !== nothing && return nothing
+    _merge_allowed(getfield(c, :nargs), getfield(f, :f), c.backend) || return nothing
     _merge_itr_ok(pars) || return nothing
-    r = _smerge(T, c.cons, f, pars, dims, tag, eltype(pars))
-    r === nothing || return r
+    return _merge_result(_smerge(T, c.cons, f, pars, dims, tag, eltype(pars)),
+                         T, c, f, pars, dims, tag)
+end
+
+# recipes (nargs > 0) are stored plain; pair-headed plain blocks (data-driven
+# row targets) stay plain on device backends, where merging would move
+# cross-block row collisions from sequential launches into one kernel
+@inline _merge_allowed(::Val{0}, head, backend) = true
+@inline _merge_allowed(::Val{0}, head::Pair, ::Nothing) = true
+@inline _merge_allowed(::Val{0}, head::Pair, backend) = false
+@inline _merge_allowed(nargs, head, backend) = false
+
+# an existing family absorbed the block, or (on `nothing`) it starts one
+@inline _merge_result(r::Tuple, ::Type, c, f, pars, dims, tag) = r
+@inline function _merge_result(::Nothing, ::Type{T}, c, f, pars, dims, tag) where {T}
     con, mf = _merged_first(T, f, pars, dims, tag, c.backend)
     return _prep(c.cons, con), mf.o1step, mf.o2step
 end
 
-@inline _merge_itr_ok(pars) =
-    Base.IteratorSize(pars) isa Union{Base.HasLength, Base.HasShape}
+@inline _merge_itr_ok(pars) = _merge_itr_ok(Base.IteratorSize(pars))
+@inline _merge_itr_ok(::Union{Base.HasLength, Base.HasShape}) = true
+@inline _merge_itr_ok(::Base.IteratorSize) = false
 
 # scan + replace in one recursion; typed for tuple storage, dynamic for the
 # Vector{Any} default — the same fold either way
@@ -397,7 +440,17 @@ end
 # a materialized element array; non-concrete models keep var/par/refs
 # type-erased so the model's type is a function of its families alone.
 
-_has_merged(cons) = any(b -> b isa Constraint && getfield(b, :itr) isa _MergedItr, cons)
+_is_merged(b) = false
+_is_merged(::Constraint{F, I}) where {F, I <: _MergedItr} = true
+_has_merged(cons) = any(_is_merged, cons)
+
+_erase_refs(refs::NamedTuple) = Pair{Symbol, Any}[k => v for (k, v) in pairs(refs)]
+_erase_refs(refs) = refs
+
+# device finalization: merged iterators become device element arrays
+_materialize_block(backend, b) = b
+_materialize_block(backend, b::Constraint{F, I}) where {F, I <: _MergedItr} =
+    Constraint(b.f, _materialize_mergeditr(backend, getfield(b, :itr)), 0, b.size, b.tag)
 
 _materialize_mergeditr(backend, s::SegmentedItr) =
     convert_array([s[i] for i in 1:length(s)], backend)
@@ -410,27 +463,18 @@ _finalize_merged(c::ExaCore) = _finalize_merged2(c, c.backend, getfield(c, :var)
 # plain CPU, erased storage: keep var/par/refs erased when anything merged
 function _finalize_merged2(c::ExaCore, ::Nothing, ::Vector{Any})
     _has_merged(c.cons) || return c
-    refs = getfield(c, :refs)
-    erased_refs = refs isa NamedTuple ?
-        Pair{Symbol, Any}[k => v for (k, v) in pairs(refs)] : refs
     return ExaCore(c; cons = Tuple(Any[b for b in c.cons]),
-                   var = Any[c.var...], par = Any[c.par...], refs = erased_refs)
+                   var = Any[c.var...], par = Any[c.par...],
+                   refs = _erase_refs(getfield(c, :refs)))
 end
 # device: additionally materialize merged iterators as device arrays
+function _finalize_merged2(c::ExaCore, backend, var::Vector{Any})
+    cons = Any[_materialize_block(backend, b) for b in c.cons]
+    return ExaCore(c; cons = Tuple(cons), var = Any[c.var...], par = Any[c.par...],
+                   refs = _erase_refs(getfield(c, :refs)))
+end
 function _finalize_merged2(c::ExaCore, backend, var)
-    cons = Any[b for b in c.cons]
-    for (i, b) in enumerate(cons)
-        b isa Constraint && getfield(b, :itr) isa _MergedItr || continue
-        cons[i] = Constraint(b.f, _materialize_mergeditr(backend, getfield(b, :itr)), 0, b.size, b.tag)
-    end
-    if var isa Vector{Any}
-        refs = getfield(c, :refs)
-        erased_refs = refs isa NamedTuple ?
-            Pair{Symbol, Any}[k => v for (k, v) in pairs(refs)] : refs
-        return ExaCore(c; cons = Tuple(cons), var = Any[c.var...], par = Any[c.par...],
-                       refs = erased_refs)
-    end
-    return ExaCore(c; cons = Tuple(cons))
+    return ExaCore(c; cons = Tuple(Any[_materialize_block(backend, b) for b in c.cons]))
 end
 
 # ── specialized hot loops for the lazy iterator ──────────────────────────────
