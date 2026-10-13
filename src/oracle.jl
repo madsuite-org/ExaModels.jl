@@ -579,14 +579,41 @@ _eval_input(ev::OracleEvaluator, x) = _do_adapt(ev.adapt, x)
 struct ScalarOracleCache{VF <: AbstractVector}
     buf_nvar::VF             # device-side, length oracle.nvar
     cpu_nvar::Vector{Float64}
+    # second-order bookkeeping (explicit-sparsity Hessian via hvp columns)
+    hess_idx::UnitRange{Int}         # global slots in the model Hessian
+    hess_rows::Vector{Int}           # oracle-local pattern (1-based into x)
+    hess_cols::Vector{Int}
+    hvp_cols::Vector{Int}            # distinct columns needing one hvp each
+    col_slots::Vector{Vector{Int}}   # per distinct column: local slot list
+    col_rows::Vector{Vector{Int}}    # per distinct column: row of each slot
+    buf_dir::Vector{Float64}         # e_j direction buffer (CPU)
+    buf_hv::Vector{Float64}          # hvp output buffer (CPU)
 end
 
-_build_scalar_oracle_cache(oracle::ScalarNonlinearOracle) =
-    ScalarOracleCache(zeros(oracle.nvar), zeros(oracle.nvar))
+function _build_scalar_oracle_cache(oracle::ScalarNonlinearOracle, hess_off::Int)
+    cols = sort(unique(oracle.hess_cols))
+    col_slots = [Int[] for _ in cols]
+    col_rows = [Int[] for _ in cols]
+    colpos = Dict(c => k for (k, c) in enumerate(cols))
+    for (slot, (r, c)) in enumerate(zip(oracle.hess_rows, oracle.hess_cols))
+        k = colpos[c]
+        push!(col_slots[k], slot)
+        push!(col_rows[k], r)
+    end
+    return ScalarOracleCache(
+        zeros(oracle.nvar), zeros(oracle.nvar),
+        hess_off+1:hess_off+oracle.nnzh,
+        copy(oracle.hess_rows), copy(oracle.hess_cols),
+        cols, col_slots, col_rows,
+        zeros(oracle.nvar), zeros(oracle.nvar),
+    )
+end
 
 _adapt_scalar_cache(c::ScalarOracleCache, ::Nothing) = c
-_adapt_scalar_cache(c::ScalarOracleCache, backend) =
-    ScalarOracleCache(convert_array(c.buf_nvar, backend), c.cpu_nvar)
+_adapt_scalar_cache(c::ScalarOracleCache, backend) = ScalarOracleCache(
+    convert_array(c.buf_nvar, backend), c.cpu_nvar,
+    c.hess_idx, c.hess_rows, c.hess_cols,
+    c.hvp_cols, c.col_slots, c.col_rows, c.buf_dir, c.buf_hv)
 
 """
     ExaModelWithOracle
@@ -737,11 +764,14 @@ function _build_with_oracle(c::ExaCore; kwargs...)
             for i in eachindex(evaluators)
     ]
 
-    # Precompute scalar oracle caches (one nvar-length buffer per oracle).
-    scalar_oracle_caches = [
-        _adapt_scalar_cache(_build_scalar_oracle_cache(o), c.backend)
-            for o in s_oracles
-    ]
+    # Precompute scalar oracle caches. Their Hessian slots follow the vector
+    # oracles in the NNZ layout (hess_off cursor continues from the loop above).
+    scalar_oracle_caches = ScalarOracleCache[]
+    for o in s_oracles
+        push!(scalar_oracle_caches,
+              _adapt_scalar_cache(_build_scalar_oracle_cache(o, hess_off), c.backend))
+        hess_off += o.nnzh
+    end
 
     # Shared full-problem work buffers for explicit-jac fallback paths in
     # jprod_nln! / jtprod_nln! / hprod!.  Allocated even when no fallback path
@@ -1049,6 +1079,13 @@ function hess_structure!(m::ExaModelWithOracle{T}, rows::AbstractVector, cols::A
             cols[cache.hess_idx] .= cache.hess_cols_copy
         end
     end
+    for (i, oracle) in enumerate(m.scalar_oracles)
+        cache = m.scalar_oracle_caches[i]
+        if oracle.nnzh > 0
+            rows[cache.hess_idx] .= cache.hess_rows
+            cols[cache.hess_idx] .= cache.hess_cols
+        end
+    end
     for (i, ev) in enumerate(m.evals)
         cache = m.eval_caches[i]
         if ev.nnzh > 0
@@ -1082,6 +1119,21 @@ function hess_coord!(
             hess[cache.hess_idx] .= cache.buf_nnzh
         else
             _hess_reconstruct_via_hvp!(oracle, x, y, hess, cache, backend)
+        end
+    end
+    for (i, oracle) in enumerate(m.scalar_oracles)
+        cache = m.scalar_oracle_caches[i]
+        oracle.nnzh == 0 && continue
+        oracle.hvp! === nothing && error(
+            "ScalarNonlinearOracle with explicit Hessian sparsity needs hvp!")
+        xin = _oracle_input(oracle, x)
+        for (k, j) in enumerate(cache.hvp_cols)
+            fill!(cache.buf_dir, 0.0)
+            cache.buf_dir[j] = 1.0
+            oracle.hvp!(cache.buf_hv, xin, cache.buf_dir)
+            for (slot, r) in zip(cache.col_slots[k], cache.col_rows[k])
+                hess[cache.hess_idx[slot]] = obj_weight * cache.buf_hv[r]
+            end
         end
     end
     for (i, ev) in enumerate(m.evals)
@@ -1234,6 +1286,16 @@ function hprod!(
             copyto!(m.work_nvar, delta)
             Hv .+= m.work_nvar
         end
+    end
+    for (i, oracle) in enumerate(m.scalar_oracles)
+        cache = m.scalar_oracle_caches[i]
+        oracle.hvp! === nothing && continue   # L-BFGS-only oracle
+        xin = _oracle_input(oracle, x)
+        vin = _oracle_input(oracle, v)
+        _run_with_buf!(oracle, backend, cache.buf_nvar, cache.cpu_nvar) do b
+            oracle.hvp!(b, xin, vin)
+        end
+        Hv .+= obj_weight .* cache.buf_nvar
     end
     for (i, ev) in enumerate(m.evals)
         cache = m.eval_caches[i]
