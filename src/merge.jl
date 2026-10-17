@@ -391,8 +391,12 @@ end
     itrc = collect(pars)
     rows = copy(m.rows)
     for r in eachindex(itrc)
-        push!(rows, eltype(rows)(o0s[r], f.o1 + mf.o1step * (r - 1),
-                                 f.o2 + mf.o2step * (r - 1), ivs, fvt, itrc[r]))
+        push!(
+            rows, eltype(rows)(
+                o0s[r], f.o1 + mf.o1step * (r - 1),
+                f.o2 + mf.o2step * (r - 1), ivs, fvt, itrc[r]
+            )
+        )
     end
     m2 = typeof(m)(m.rep, rows)
     return _rewrap(prev, prev.f, m2, length(rows), tag)

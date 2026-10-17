@@ -180,13 +180,13 @@ function _test_core_persistence()
         # materialized path: same-type augmentations form a MergedRows family
         d0 = ExaCore()
         d0, z = add_var(d0, 10; start = 0.5)
-        d1, h = add_con(d0, z[i] + z[i+1] for i in 1:4; lcon = -2.0, ucon = 2.0, name = Val(:hpersist))
+        d1, h = add_con(d0, z[i] + z[i + 1] for i in 1:4; lcon = -2.0, ucon = 2.0, name = Val(:hpersist))
         d1, _ = add_con!(d1, h, i => sin(z[i]) for i in 1:4)
         d1, _ = add_obj(d1, z[1])
         n1 = ExaModel(d1)
         augi = findfirst(b -> b isa ExaModels.ConstraintAugmentation, Any[n1.cons...])
         len1 = length(n1.cons[augi].itr)
-        d2, _ = add_con!(d1, h, i => sin(z[i+1]) for i in 1:4)   # same family: appends
+        d2, _ = add_con!(d1, h, i => sin(z[i + 1]) for i in 1:4)   # same family: appends
         @test length(n1.cons[augi].itr) == len1
         gn = zeros(n1.meta.ncon)
         NLPModels.cons!(n1, fill(0.5, 10), gn)
