@@ -1917,11 +1917,9 @@ variables or constraints are added to the problem.
 ## Keyword Arguments
 - `name`: When given as `Val(:name)`, registers the subexpression in `core` for later retrieval as `core.name` or `model.name`. See [`@add_expr`](@ref) for the idiomatic named interface.
 - `tag` : User-defined metadata attached to the expression.
-- `buffered`: evaluate the subexpression once per row into a θ-backed stage
-  buffer instead of splicing its tree at every reference site; the remedy
-  for deeply nested or widely referenced subexpressions.
 - `lift`: introduce the subexpression as a variable pinned by a defining
-  equality constraint (adds rows and columns; 1-D iterators only).
+  equality constraint (adds rows and columns; 1-D iterators only). Takes
+  precedence over `buffered`, which is ignored when `lift = true`.
 - `start`: starting point for the lifted variable when `lift = true`.
 - `buffered`: When `true` (or `Val(true)`), returns a [`BufferedExpression`](@ref):
   each element is evaluated once per model evaluation into a dedicated buffer
