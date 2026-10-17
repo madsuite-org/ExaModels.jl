@@ -192,6 +192,32 @@ function _lamjac1!(backend, y, con::ExaModels.Constraint, x, θ, yv)
     isempty(con.itr) && return nothing
     kerjs(backend)(y, con.f, con.itr, x, θ, yv, ExaModels._constraint_dims(con); ndrange = length(con.itr))
 end
+# a merged block's row/nonzero offsets live in its MergedRow elements, not in
+# the SIMDFunction's affine fields (f.o1 == 0 there): the generic kerjs would
+# write its nonzeros into the first n * o1step slots of cons_ext, on top of
+# whatever block owns them. Same pattern as kerj_m in the KernelAbstractions
+# extension.
+function _lamjac1!(backend, y, con::ExaModels.Constraint{F, I}, x, θ, yv) where
+        {F, I <: AbstractVector{<:ExaModels.MergedRow}}
+    isempty(con.itr) && return nothing
+    kerjs_m(backend)(y, con.f, con.itr, x, θ, yv; ndrange = length(con.itr))
+end
+@kernel function kerjs_m(y1, @Const(f), @Const(itr), @Const(x), @Const(θ), @Const(adjs))
+    I = @index(Global)
+    @inbounds begin
+        el = itr[I]
+        ExaModels.jrpass(
+            f(el, ExaModels.AdjointNodeSource(x), θ),
+            f.comp1,
+            el.o0,
+            y1,
+            nothing,
+            el.o1,
+            0,
+            adjs[el.o0],
+        )
+    end
+end
 
 # host-side gradient structure pass (objective comp1 slots → (target, slot))
 function _grad_structure_host!(::Type{T}, objs, gsp) where {T}
