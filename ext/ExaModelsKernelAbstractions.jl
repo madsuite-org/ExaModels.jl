@@ -845,6 +845,7 @@ function ExaModels.hess_structure!(
             cols[cache.hess_idx] .= cache.hess_cols_copy
         end
     end
+    ExaModels._scalar_oracles_hess_structure!(m, rows, cols)
     for (i, ev) in enumerate(m.evals)
         cache = m.eval_caches[i]
         if ev.nnzh > 0
@@ -954,6 +955,7 @@ function ExaModels.hess_coord!(
             ExaModels._hess_reconstruct_via_hvp!(oracle, x, y, hess, cache, backend)
         end
     end
+    ExaModels._scalar_oracles_hess_coord!(m, x, hess, T(obj_weight), backend)
     for (i, ev) in enumerate(m.evals)
         cache = m.eval_caches[i]
         ev.nnzh == 0 && continue
@@ -1277,6 +1279,7 @@ function ExaModels.hprod!(
             Hv .+= m.work_nvar
         end
     end
+    ExaModels._scalar_oracles_hprod!(m, x, v, Hv, obj_weight, backend)
     for (i, ev) in enumerate(m.evals)
         cache = m.eval_caches[i]
         ev.nnzh == 0 && continue
