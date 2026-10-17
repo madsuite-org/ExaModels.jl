@@ -53,7 +53,7 @@ jobs:
           claude_args: |
             --model claude-fable-5-1
             --effort high
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Glob,Grep,LS,Bash(git:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh pr review:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(gh api:*),Bash(cat:*),Bash(sed:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(diff:*)"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Write,Glob,Grep,LS,Bash(git:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh pr review:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(gh api:*),Bash(cat:*),Bash(sed:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(diff:*)"
           prompt: |
             You are the reviewer of madsuite-org/ExaModels.jl, running unattended in GitHub Actions.
             REPO: ${{ github.repository }}   PR: #${{ env.PR }}   HEAD: ${{ env.HEAD_SHA }}   BRANCH: ${{ env.HEAD_REF }}
@@ -101,7 +101,11 @@ jobs:
             - Then exactly one verdict, posted as a neutral review so that it never blocks
               the merge by itself: `gh pr review ${{ env.PR }} --comment --body "$BODY"`;
               if that command fails, post the same body with
-              `gh pr comment ${{ env.PR }} --body "$BODY"`. The first line of the body
+              `gh pr comment ${{ env.PR }} --body "$BODY"`. Post it as ONE direct
+              command: write the body to a file with the Write tool and pass it with
+              `--body-file <path>` instead of `--body` whenever it is longer than a couple
+              of sentences — shell variables, heredocs and command substitution in the
+              posting command are rejected by the tool allowlist. The first line of the body
               must be exactly
               `VERDICT: APPROVE (head ${{ env.HEAD_SHA }})` or
               `VERDICT: CHANGES_REQUESTED (head ${{ env.HEAD_SHA }})`, followed by a short
