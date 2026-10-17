@@ -34,7 +34,7 @@ function test_moi_tests()
     MOI.Test.runtests(
         model,
         MOI.Test.Config(;
-            atol = 1e-4,
+            atol = 1.0e-4,
             optimal_status = MOI.LOCALLY_SOLVED,
             exclude = Any[
                 MOI.DualObjectiveValue,
@@ -62,7 +62,7 @@ end
 function test_nlp_legacy()
     jm = JuMP.Model()
     JuMP.@variable(jm, x[1:10])
-    JuMP.@NLobjective(jm, Min, sum(x[i] for i=1:10))
+    JuMP.@NLobjective(jm, Min, sum(x[i] for i in 1:10))
     @test_throws ErrorException ExaModels.ExaModel(jm)
     jm = JuMP.Model(() -> ExaModels.Optimizer(NLPModelsIpopt.ipopt))
     @test_throws ErrorException JuMP.optimize!(jm)
@@ -75,24 +75,18 @@ function test_fixed_variable_e2etest()
     JuMP.@variable(jm, x[1:N])
     JuMP.fix(x[1], 1.0)
     JuMP.@constraint(jm, sum(x) == 1.0)
-    JuMP.@objective(jm, Min, sum(2*x[i]^2 for i = 1:N))
+    JuMP.@objective(jm, Min, sum(2 * x[i]^2 for i in 1:N))
     em = ExaModels.ExaModel(jm)
     @test only(em.meta.lcon) == only(em.meta.ucon) == 1.0
     @test em.cons[1] isa ExaModels.ConstraintAugmentation
-    @test em.cons[1].f.f isa Pair
-    @test em.cons[1].f.f.second isa ExaModels.Node2{
-        typeof(*),
-        <:ExaModels.DataIndexed,
-        <:ExaModels.Var{<:ExaModels.DataIndexed},
-    }
-    @test em.cons[2] isa ExaModels.Constraint
-    @test em.cons[2].f.f isa ExaModels.Null{Nothing}
+    # family merging folds the Pair row target into per-row data, so the
+    # lowering is checked by value: at x = (1, 2, ..., N) the single row
+    # accumulates sum(x), with x[1] fixed contributing its bound value
+    xt = collect(1.0:N)
+    cv = NLPModels.cons(em, xt)
+    @test only(cv) ≈ sum(xt)
     @test length(em.objs) == 1
-    @test em.objs[1].f.f isa ExaModels.Node2{
-        typeof(*),
-        <:ExaModels.DataIndexed,
-        <:ExaModels.Node1{typeof(abs2),<:ExaModels.Var{<:ExaModels.DataIndexed}},
-    }
+    @test ExaModels.obj(em, xt) ≈ sum(2 * xt[i]^2 for i in 1:N)
     return
 end
 
@@ -107,21 +101,11 @@ function test_parameter_e2etest()
     @test only(em.meta.lcon) == only(em.meta.ucon) == 0.0
     @test only(em.θ) == 1.0
     @test em.cons[1] isa ExaModels.ConstraintAugmentation
-    @test em.cons[1].f.f isa Pair
-    @test em.cons[1].f.f.second isa ExaModels.Node2{
-        typeof(*),
-        <:ExaModels.DataIndexed,
-        <:ExaModels.ParameterNode{<:ExaModels.DataIndexed},
-    }
     @test em.cons[2] isa ExaModels.ConstraintAugmentation
-    @test em.cons[2].f.f isa Pair
-    @test em.cons[2].f.f.second isa ExaModels.Node2{
-        typeof(*),
-        <:ExaModels.DataIndexed,
-        <:ExaModels.Var{<:ExaModels.DataIndexed},
-    }
-    @test em.cons[3] isa ExaModels.Constraint
-    @test em.cons[3].f.f isa ExaModels.Null{Nothing}
+    # lowering checked by value: the row accumulates sum(x) - p
+    xt = fill(0.5, N)
+    cv = NLPModels.cons(em, xt)
+    @test only(cv) ≈ sum(xt) - 1.0
 
     jm = JuMP.Model()
     JuMP.@variable(jm, x)
@@ -133,12 +117,12 @@ function test_no_constraints_e2etest()
     N = 5
     jm = JuMP.Model()
     JuMP.@variable(jm, x[1:N])
-    JuMP.@objective(jm, Max, sum(sin(x[i]) for i = 1:N))
+    JuMP.@objective(jm, Max, sum(sin(x[i]) for i in 1:N))
     em = ExaModels.ExaModel(jm)
     @test isempty(em.cons)
     @test length(em.objs) == 1
     @test em.objs[1].f.f isa
-        ExaModels.Node1{typeof(sin),<:ExaModels.Var{<:ExaModels.DataIndexed}}
+        ExaModels.Node1{typeof(sin), <:ExaModels.Var{<:ExaModels.DataIndexed}}
     return
 end
 
@@ -146,12 +130,12 @@ function test_no_constraints_simd_failure()
     N = 5
     jm = JuMP.Model()
     JuMP.@variable(jm, x[1:N])
-    JuMP.@objective(jm, Max, sin(sum(x[i] for i = 1:N)))
+    JuMP.@objective(jm, Max, sin(sum(x[i] for i in 1:N)))
     em = ExaModels.ExaModel(jm)
     @test isempty(em.cons)
     @test length(em.objs) == 1
     # broken since ExaMOI fails to detect SIMD in this case
-    @test_broken em.objs[1].f.f isa ExaModels.Node1{typeof(sin),<:ExaModels.Var}
+    @test_broken em.objs[1].f.f isa ExaModels.Node1{typeof(sin), <:ExaModels.Var}
     return
 end
 
@@ -160,10 +144,12 @@ function test_generic_e2etest()
     jm = JuMP.GenericModel{Float32}()
     JuMP.@variable(jm, x[1:N])
     JuMP.@constraint(jm, sum(x) == 1.0f0)
-    JuMP.@objective(jm, Min, sum(x[i]^2 for i = 1:N))
+    JuMP.@objective(jm, Min, sum(x[i]^2 for i in 1:N))
     em = ExaModels.ExaModel(jm)
     @test typeof(em) <: ExaModels.ExaModel{Float32}
-    @test eltype(em.cons[1].itr) <: Tuple{Int,Float32,Int}
+    # the MOI lowering assembles its blocks directly (not through add_con),
+    # so they are stored plain regardless of the merge default
+    @test eltype(em.cons[1].itr) <: Tuple{Int, Float32, Int}
     return
 end
 
@@ -195,14 +181,14 @@ end
 
 function jump_luksan_vlcek_model(N)
     jm = JuMP.Model()
-    JuMP.@variable(jm, x[i=1:N], start = mod(i, 2) == 1 ? -1.2 : 1.0)
+    JuMP.@variable(jm, x[i = 1:N], start = mod(i, 2) == 1 ? -1.2 : 1.0)
     JuMP.@constraint(
         jm,
-        s[i=1:(N-2)],
-        3x[i+1]^3 + 2x[i+2] - 5 + sin(x[i+1] - x[i+2])sin(x[i+1] + x[i+2]) + 4x[i+1] -
-        x[i]exp(x[i] - x[i+1]) - 3 == 0.0
+        s[i = 1:(N - 2)],
+        3x[i + 1]^3 + 2x[i + 2] - 5 + sin(x[i + 1] - x[i + 2])sin(x[i + 1] + x[i + 2]) + 4x[i + 1] -
+            x[i]exp(x[i] - x[i + 1]) - 3 == 0.0
     )
-    JuMP.@objective(jm, Min, sum(100(x[i-1]^2 - x[i])^2 + (x[i-1] - 1)^2 for i = 2:N))
+    JuMP.@objective(jm, Min, sum(100(x[i - 1]^2 - x[i])^2 + (x[i - 1] - 1)^2 for i in 2:N))
     return jm
 end
 
@@ -234,21 +220,21 @@ function jump_ac_power_model(filename::String)
     JuMP.@variable(
         model,
         -ref[:branch][l]["rate_a"] <=
-        p[(l, i, j) in ref[:arcs]] <=
-        ref[:branch][l]["rate_a"]
+            p[(l, i, j) in ref[:arcs]] <=
+            ref[:branch][l]["rate_a"]
     )
     JuMP.@variable(
         model,
         -ref[:branch][l]["rate_a"] <=
-        q[(l, i, j) in ref[:arcs]] <=
-        ref[:branch][l]["rate_a"]
+            q[(l, i, j) in ref[:arcs]] <=
+            ref[:branch][l]["rate_a"]
     )
     JuMP.@objective(
         model,
         Min,
         sum(
             gen["cost"][1] * pg[i]^2 + gen["cost"][2] * pg[i] + gen["cost"][3] for
-            (i, gen) in ref[:gen]
+                (i, gen) in ref[:gen]
         )
     )
     for (i, bus) in ref[:ref_buses]
@@ -260,14 +246,14 @@ function jump_ac_power_model(filename::String)
         JuMP.@constraint(
             model,
             sum(p[a] for a in ref[:bus_arcs][i]) ==
-            sum(pg[g] for g in ref[:bus_gens][i]) - sum(load["pd"] for load in bus_loads) -
-            sum(shunt["gs"] for shunt in bus_shunts) * vm[i]^2
+                sum(pg[g] for g in ref[:bus_gens][i]) - sum(load["pd"] for load in bus_loads) -
+                sum(shunt["gs"] for shunt in bus_shunts) * vm[i]^2
         )
         JuMP.@constraint(
             model,
             sum(q[a] for a in ref[:bus_arcs][i]) ==
-            sum(qg[g] for g in ref[:bus_gens][i]) - sum(load["qd"] for load in bus_loads) +
-            sum(shunt["bs"] for shunt in bus_shunts) * vm[i]^2
+                sum(qg[g] for g in ref[:bus_gens][i]) - sum(load["qd"] for load in bus_loads) +
+                sum(shunt["bs"] for shunt in bus_shunts) * vm[i]^2
         )
     end
     # Branch power flow physics and limit constraints
@@ -293,31 +279,31 @@ function jump_ac_power_model(filename::String)
         JuMP.@constraint(
             model,
             p_fr ==
-            (g + g_fr) / ttm * vm_fr^2 +
-            (-g * tr + b * ti) / ttm * (vm_fr * vm_to * cos(va_fr - va_to)) +
-            (-b * tr - g * ti) / ttm * (vm_fr * vm_to * sin(va_fr - va_to))
+                (g + g_fr) / ttm * vm_fr^2 +
+                (-g * tr + b * ti) / ttm * (vm_fr * vm_to * cos(va_fr - va_to)) +
+                (-b * tr - g * ti) / ttm * (vm_fr * vm_to * sin(va_fr - va_to))
         )
         JuMP.@constraint(
             model,
             q_fr ==
-            -(b + b_fr) / ttm * vm_fr^2 -
-            (-b * tr - g * ti) / ttm * (vm_fr * vm_to * cos(va_fr - va_to)) +
-            (-g * tr + b * ti) / ttm * (vm_fr * vm_to * sin(va_fr - va_to))
+                -(b + b_fr) / ttm * vm_fr^2 -
+                (-b * tr - g * ti) / ttm * (vm_fr * vm_to * cos(va_fr - va_to)) +
+                (-g * tr + b * ti) / ttm * (vm_fr * vm_to * sin(va_fr - va_to))
         )
         # To side of the branch flow
         JuMP.@constraint(
             model,
             p_to ==
-            (g + g_to) * vm_to^2 +
-            (-g * tr - b * ti) / ttm * (vm_to * vm_fr * cos(va_to - va_fr)) +
-            (-b * tr + g * ti) / ttm * (vm_to * vm_fr * sin(va_to - va_fr))
+                (g + g_to) * vm_to^2 +
+                (-g * tr - b * ti) / ttm * (vm_to * vm_fr * cos(va_to - va_fr)) +
+                (-b * tr + g * ti) / ttm * (vm_to * vm_fr * sin(va_to - va_fr))
         )
         JuMP.@constraint(
             model,
             q_to ==
-            -(b + b_to) * vm_to^2 -
-            (-b * tr + g * ti) / ttm * (vm_to * vm_fr * cos(va_to - va_fr)) +
-            (-g * tr - b * ti) / ttm * (vm_to * vm_fr * sin(va_to - va_fr))
+                -(b + b_to) * vm_to^2 -
+                (-b * tr + g * ti) / ttm * (vm_to * vm_fr * cos(va_to - va_fr)) +
+                (-g * tr - b * ti) / ttm * (vm_to * vm_fr * sin(va_to - va_fr))
         )
         # Voltage angle difference limit
         JuMP.@constraint(model, branch["angmin"] <= va_fr - va_to <= branch["angmax"])
@@ -366,9 +352,9 @@ function _hessian_matrix(model, x, y; obj_weight)
 end
 
 function _test_callback_equivalence(
-    model::JuMP.GenericModel{T},
-    points::Vector{Vector{T}},
-) where {T}
+        model::JuMP.GenericModel{T},
+        points::Vector{Vector{T}},
+    ) where {T}
     model_exa = ExaModels.ExaModel(model)
     model_nlp = NLPModelsJuMP.MathOptNLPModel(model)
     # Constraint rows may be ordered differently by the two adapters. Restrict
@@ -383,7 +369,7 @@ function _test_callback_equivalence(
         @test NLPModels.grad(model_exa, x) ≈ NLPModels.grad(model_nlp, x)
         @test _jacobian_matrix(model_exa, x) ≈ _jacobian_matrix(model_nlp, x)
         @test _hessian_matrix(model_exa, x, y; obj_weight) ≈
-              _hessian_matrix(model_nlp, x, y; obj_weight)
+            _hessian_matrix(model_nlp, x, y; obj_weight)
     end
     return
 end
@@ -461,7 +447,7 @@ function test_nonlinear_objective_parameter()
     model = JuMP.Model()
     JuMP.@variable(model, x[1:8])
     JuMP.@variable(model, p in JuMP.Parameter(0.4))
-    JuMP.@objective(model, Min, sum(sin(p * x[i]) for i = 1:8))
+    JuMP.@objective(model, Min, sum(sin(p * x[i]) for i in 1:8))
     model_exa = ExaModels.ExaModel(model)
     @test length(model_exa.objs) == 1
     @test model_exa.meta.nnzo == 8
@@ -476,7 +462,7 @@ function test_nonlinear_objective_coupled()
     N = 20
     model = JuMP.Model()
     JuMP.@variable(model, x[1:N])
-    JuMP.@objective(model, Min, sum(100(x[i-1]^2 - x[i])^2 + (x[i-1] - 1)^2 for i = 2:N))
+    JuMP.@objective(model, Min, sum(100(x[i - 1]^2 - x[i])^2 + (x[i - 1] - 1)^2 for i in 2:N))
     model_exa = ExaModels.ExaModel(model)
     _test_callback_equivalence(model, [collect(range(-0.5, 0.5; length = N))])
     return
@@ -509,9 +495,9 @@ function test_nonlinear_batching()
         model,
         [i = 1:K],
         p[i] -
-        1.2vmf[i]^2 -
-        0.7vmf[i] * vmt[i] * cos(vaf[i] - vat[i]) -
-        0.3vmf[i] * vmt[i] * sin(vaf[i] - vat[i]) == 0.0,
+            1.2vmf[i]^2 -
+            0.7vmf[i] * vmt[i] * cos(vaf[i] - vat[i]) -
+            0.3vmf[i] * vmt[i] * sin(vaf[i] - vat[i]) == 0.0,
     )
     JuMP.@objective(model, Min, sum(p))
     model_exa = ExaModels.ExaModel(model)
@@ -526,15 +512,15 @@ function test_nonlinear_batching()
         collect(-0.2:0.05:-0.05),
     )
     @test NLPModels.cons(model_exa, batched_point) ≈
-            [
+        [
         batched_point[i] -
-        1.2batched_point[K+i]^2 -
-        0.7batched_point[K+i] *
-        batched_point[2K+i] *
-        cos(batched_point[3K+i] - batched_point[4K+i]) -
-        0.3batched_point[K+i] *
-        batched_point[2K+i] *
-        sin(batched_point[3K+i] - batched_point[4K+i]) for i = 1:K
+            1.2batched_point[K + i]^2 -
+            0.7batched_point[K + i] *
+            batched_point[2K + i] *
+            cos(batched_point[3K + i] - batched_point[4K + i]) -
+            0.3batched_point[K + i] *
+            batched_point[2K + i] *
+            sin(batched_point[3K + i] - batched_point[4K + i]) for i in 1:K
     ]
     return
 end
@@ -603,7 +589,7 @@ function test_nonlinear_shapes()
     @test model_exa.meta.nnzj == 6
     shapes_point = [0.2, -0.4, 0.7]
     @test NLPModels.cons(model_exa, shapes_point) ≈
-            [
+        [
         sin(shapes_point[1]),
         exp(shapes_point[2] + shapes_point[3]) - 1.0,
         cos(shapes_point[1] * shapes_point[2]) + shapes_point[3],
@@ -625,12 +611,12 @@ function test_nonlinear_float32()
     @test eltype(NLPModels.cons(model_exa, float_point)) == Float32
     difference = float_point[1] - float_point[2]
     @test NLPModels.cons(model_exa, float_point) ≈
-          Float32[sin(float_point[1]) + float_point[1]^2 + cos(difference)]
+        Float32[sin(float_point[1]) + float_point[1]^2 + cos(difference)]
     @test NLPModels.grad(model_exa, float_point) ≈ ones(Float32, 2)
     @test _jacobian_matrix(model_exa, float_point) ≈
-          Float32[(cos(float_point[1]) + 2float_point[1] - sin(difference)) sin(difference)]
+        Float32[(cos(float_point[1]) + 2float_point[1] - sin(difference)) sin(difference)]
     expected_hessian = Float32[
-        -sin(float_point[1])+2-cos(difference) cos(difference)
+        -sin(float_point[1]) + 2 - cos(difference) cos(difference)
         cos(difference) -cos(difference)
     ]
     @test _hessian_matrix(
@@ -646,7 +632,7 @@ function test_nonlinear_constraint_sum()
     N = 20
     model = JuMP.Model()
     JuMP.@variable(model, x[1:N])
-    JuMP.@constraint(model, 0 <= sum(100(x[i-1]^2 - x[i])^2 + (x[i-1] - 1)^2 for i = 2:N) <= 1)
+    JuMP.@constraint(model, 0 <= sum(100(x[i - 1]^2 - x[i])^2 + (x[i - 1] - 1)^2 for i in 2:N) <= 1)
     model_exa = ExaModels.ExaModel(model)
     @test length(model_exa.cons) == 5
     return
@@ -656,7 +642,7 @@ function test_sum_objective_decomposition()
     model = JuMP.Model()
     JuMP.@variable(model, x[1:3])
     JuMP.@expression(model, a, sum(x))
-    JuMP.@expression(model, b, sum(x.^2))
+    JuMP.@expression(model, b, sum(x .^ 2))
     JuMP.@expression(model, c, sum(exp.(x)))
     JuMP.@objective(model, Min, a + b + c)
     model_exa = ExaModels.ExaModel(model)
@@ -670,7 +656,7 @@ function test_sum_constraint_decomposition()
     model = JuMP.Model()
     JuMP.@variable(model, x[1:3])
     JuMP.@expression(model, a, sum(x))
-    JuMP.@expression(model, b, sum(x.^2))
+    JuMP.@expression(model, b, sum(x .^ 2))
     JuMP.@expression(model, c, sum(exp.(x)))
     JuMP.@constraint(model, a + b + c == 0)
     model_exa = ExaModels.ExaModel(model)
@@ -684,7 +670,7 @@ function test_sum_constraint_decomposition_multiple_rhs_terms()
     model = JuMP.Model()
     JuMP.@variable(model, x[1:3])
     JuMP.@expression(model, a, sum(x))
-    JuMP.@expression(model, b, sum(x.^2))
+    JuMP.@expression(model, b, sum(x .^ 2))
     JuMP.@expression(model, c, sum(exp.(x)))
     JuMP.@constraint(model, a == b + c - 2)
     model_exa = ExaModels.ExaModel(model)
