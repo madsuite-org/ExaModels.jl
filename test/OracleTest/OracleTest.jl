@@ -801,6 +801,61 @@ function test_embed_oracle()
     end
 end
 
+# Scalar + vector oracles together: hess_structure!/hess_coord!/hprod! must
+# fill every block (the scalar-oracle block used to be allocated but never
+# written), on the host and on every device backend.
+function test_scalar_oracle_hessian(backend)
+    return @testset "scalar-oracle Hessian assembly" begin
+        c = ExaCore(Float64; backend = backend)
+        c, x = add_var(c, 2; start = [1.0, 2.0])
+        sor = ScalarNonlinearOracle(;
+            nvar = 2,
+            f = x_ -> x_[1]^2 * x_[2],
+            grad! = (g, x_) -> (g[1] = 2x_[1] * x_[2]; g[2] = x_[1]^2),
+            hvp! = (Hv, x_, v) -> (Hv[1] = 2x_[2] * v[1] + 2x_[1] * v[2];
+                                   Hv[2] = 2x_[1] * v[1]),
+            hess_rows = [1, 2, 2], hess_cols = [1, 1, 2],
+            adapt = Val(true),
+        )
+        c = objective(c, sor)
+        vor = VectorNonlinearOracle(;
+            nvar = 2, ncon = 1,
+            jac_rows = [1, 1], jac_cols = [1, 2],
+            hess_rows = [2], hess_cols = [1],
+            lcon = [0.0], ucon = [0.0],
+            f! = (cv, x_) -> (cv[1] = x_[1] * x_[2] - 1.0),
+            jac! = (vals, x_) -> (vals[1] = x_[2]; vals[2] = x_[1]),
+            hess! = (vals, x_, y_) -> (vals[1] = y_[1]),
+            adapt = Val(true),
+        )
+        c = constraint(c, vor)
+        m = ExaModel(c; prod = true)
+        rows = similar(m.meta.x0, Int, m.meta.nnzh)
+        colsv = similar(rows)
+        NLPModels.hess_structure!(m, rows, colsv)
+        @test sort(collect(zip(Array(rows), Array(colsv)))) == [(1, 1), (2, 1), (2, 1), (2, 2)]
+        xv = similar(m.meta.x0, 2)
+        copyto!(xv, [1.0, 2.0])
+        y = similar(m.meta.x0, 1)
+        fill!(y, 1.0)
+        vals = similar(m.meta.x0, m.meta.nnzh)
+        NLPModels.hess_coord!(m, xv, y, vals; obj_weight = 0.5)
+        H = zeros(2, 2)
+        for (i, j, vv) in zip(Array(rows), Array(colsv), Array(vals))
+            H[i, j] += vv
+        end
+        # 0.5 * obj hessian [4 2; 2 0] + y1 * con hessian [0 1; 1 0] (lower)
+        @test H[1, 1] == 2.0 && H[2, 1] == 2.0 && H[2, 2] == 0.0
+        v = similar(xv)
+        copyto!(v, [1.0, 0.0])
+        Hv = similar(xv)
+        NLPModels.hprod!(m, xv, y, v, Hv; obj_weight = 0.5)
+        @test Array(Hv) == [2.0, 2.0]   # 0.5*[4,2] + 1.0*[0,1]
+        NLPModels.hprod!(m, xv, v, Hv; obj_weight = 0.5)   # objective-only
+        @test Array(Hv) == [2.0, 1.0]   # 0.5*[4,2]
+    end
+end
+
 function runtests()
     return @testset "OracleTest" begin
         @testset "VectorNonlinearOracle type checks" begin
@@ -816,6 +871,7 @@ function runtests()
                 test_hess(backend)
                 test_jprod_jtprod(backend)
                 test_hprod(backend)
+                test_scalar_oracle_hessian(backend)
                 test_val_false_jprod_jtprod_hprod(backend)
                 test_multiple_oracles(backend)
                 test_gpu_oracle(backend)
