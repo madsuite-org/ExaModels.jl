@@ -346,6 +346,46 @@ function verify_derivative_tables()
         @test g[1] == 4.0 && g[2] == 0.0
     end
 
+    @testset "oracle Hessian assembly" begin
+        # scalar + vector oracles together: hess_structure/hess_coord must fill
+        # every block (the scalar block used to be allocated but never written)
+        c = ExaModels.ExaCore(Float64)
+        c, x = ExaModels.add_var(c, 2; start = [1.0, 2.0])
+        sor = ExaModels.ScalarNonlinearOracle(;
+            nvar = 2,
+            f = x_ -> x_[1]^2 * x_[2],
+            grad! = (g, x_) -> (g[1] = 2x_[1] * x_[2]; g[2] = x_[1]^2),
+            hvp! = (Hv, x_, v) -> (Hv[1] = 2x_[2] * v[1] + 2x_[1] * v[2];
+                                   Hv[2] = 2x_[1] * v[1]),
+            hess_rows = [1, 2, 2], hess_cols = [1, 1, 2],
+        )
+        c = ExaModels.objective(c, sor)
+        vor = ExaModels.VectorNonlinearOracle(;
+            nvar = 2, ncon = 1,
+            jac_rows = [1, 1], jac_cols = [1, 2],
+            hess_rows = [2], hess_cols = [1],
+            lcon = [0.0], ucon = [0.0],
+            f! = (cv, x_) -> (cv[1] = x_[1] * x_[2] - 1.0),
+            jac! = (vals, x_) -> (vals[1] = x_[2]; vals[2] = x_[1]),
+            hess! = (vals, x_, y) -> (vals[1] = y[1]),
+        )
+        c = ExaModels.constraint(c, vor)
+        m = ExaModels.ExaModel(c)
+        rows = zeros(Int, m.meta.nnzh); colsv = zeros(Int, m.meta.nnzh)
+        NLPModels.hess_structure!(m, rows, colsv)
+        @test sort(collect(zip(rows, colsv))) == [(1, 1), (2, 1), (2, 1), (2, 2)]
+        xv = [1.0, 2.0]
+        H = zeros(2, 2)
+        v = zeros(m.meta.nnzh)
+        NLPModels.hess_coord!(m, xv, [1.0], v; obj_weight = 0.5)
+        for (i, j, vv) in zip(rows, colsv, v); H[i, j] += vv; end
+        # 0.5 * obj hessian [4 2; 2 0] + y1 * con hessian [0 1; 1 0](lower)
+        @test H[1, 1] == 2.0 && H[2, 1] == 2.0 && H[2, 2] == 0.0
+        Hv = zeros(2)
+        NLPModels.hprod!(m, xv, [1.0], [1.0, 0.0], Hv; obj_weight = 0.5)
+        @test Hv == [2.0, 2.0]   # 0.5*[4,2] + 1.0*[0,1]
+    end
+
     return @testset "Bivariate derivative tables" begin
         for (fname, df1, df2, ddf11, ddf12, ddf22) in ExaModels._BIVARIATES
             f = getfield(Base, fname)
