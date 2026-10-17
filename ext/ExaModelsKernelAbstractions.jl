@@ -820,6 +820,13 @@ function ExaModels.hess_structure!(
             cols[cache.hess_idx] .= cache.hess_cols_copy
         end
     end
+    for (i, oracle) in enumerate(m.scalar_oracles)
+        cache = m.scalar_oracle_caches[i]
+        if oracle.nnzh > 0
+            rows[cache.hess_idx] .= cache.hess_rows_copy
+            cols[cache.hess_idx] .= cache.hess_cols_copy
+        end
+    end
     for (i, ev) in enumerate(m.evals)
         cache = m.eval_caches[i]
         if ev.nnzh > 0
@@ -928,6 +935,11 @@ function ExaModels.hess_coord!(
         else
             ExaModels._hess_reconstruct_via_hvp!(oracle, x, y, hess, cache, backend)
         end
+    end
+    for (i, oracle) in enumerate(m.scalar_oracles)
+        cache = m.scalar_oracle_caches[i]
+        oracle.nnzh == 0 && continue
+        ExaModels._scalar_hess_via_hvp!(oracle, x, hess, T(obj_weight), cache, backend)
     end
     for (i, ev) in enumerate(m.evals)
         cache = m.eval_caches[i]
@@ -1251,6 +1263,16 @@ function ExaModels.hprod!(
             copyto!(m.work_nvar, delta)
             Hv .+= m.work_nvar
         end
+    end
+    for (i, oracle) in enumerate(m.scalar_oracles)
+        cache = m.scalar_oracle_caches[i]
+        oracle.hvp! === nothing && continue   # L-BFGS-only oracle
+        xin = ExaModels._oracle_input(oracle, x)
+        vin = ExaModels._oracle_input(oracle, v)
+        ExaModels._run_with_buf!(oracle, backend, cache.buf_nvar, cache.cpu_nvar) do b
+            oracle.hvp!(b, xin, vin)
+        end
+        Hv .+= obj_weight .* cache.buf_nvar
     end
     for (i, ev) in enumerate(m.evals)
         cache = m.eval_caches[i]
