@@ -55,8 +55,10 @@ include("simdfunction.jl")
 include("prettyprint.jl")
 include("gradient.jl")
 include("jacobian.jl")
+include("subexpr.jl")
 include("hessian.jl")
 include("nlp.jl")
+include("merge.jl")
 include("oracle.jl")
 include("utils.jl")
 include("tags.jl")
@@ -65,6 +67,7 @@ include("two_stage.jl")
 export ExaModel,
     ExaCore,
     Expression,
+    BufferedExpression,
     add_var,
     add_par,
     add_con,
