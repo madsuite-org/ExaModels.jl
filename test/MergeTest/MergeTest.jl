@@ -149,6 +149,55 @@ function _test_backend_matches_host(backend)
     end
 end
 
+# The core API is persistent: a later add on a core must not change models
+# already built from it. Merged families append by copy
+# (`_merged_append_itr`), which this testset locks in for both the lazy
+# (SegmentedItr) and the materialized (MergedRows, augmentation) iterator.
+# Branching two cores off one base is NOT covered: the bounds vectors
+# (y0/lcon/ucon) are grown in place by `_append_slot` on every add_con, so
+# sibling cores share bounds state. That predates merging (#294) and holds
+# for plain blocks too.
+function _test_core_persistence()
+    return @testset "appending to a family preserves earlier models" begin
+        c0 = ExaCore()
+        c0, x = add_var(c0, 10; start = 0.5)
+        c1, _ = add_con(c0, sin(x[i]) for i in 1:5; lcon = -2.0, ucon = 2.0)
+        c1, _ = add_obj(c1, x[1])
+        m1 = ExaModel(c1)
+        @test m1.meta.ncon == 5 && length(m1.cons[1].itr) == 5
+        # a later same-family add on the core must not grow m1's block
+        c2, _ = add_con(c1, sin(x[i]) for i in 6:10; lcon = -2.0, ucon = 2.0)
+        @test length(m1.cons[1].itr) == 5
+        g = zeros(m1.meta.ncon)
+        NLPModels.cons!(m1, fill(0.5, 10), g)
+        @test g ≈ fill(sin(0.5), 5)
+        m2 = ExaModel(c2)
+        @test m2.meta.ncon == 10 && length(m2.cons[1].itr) == 10
+        g2 = zeros(10)
+        NLPModels.cons!(m2, fill(0.5, 10), g2)
+        @test g2 ≈ fill(sin(0.5), 10)
+
+        # materialized path: same-type augmentations form a MergedRows family
+        d0 = ExaCore()
+        d0, z = add_var(d0, 10; start = 0.5)
+        d1, h = add_con(d0, z[i] + z[i+1] for i in 1:4; lcon = -2.0, ucon = 2.0, name = Val(:hpersist))
+        d1, _ = add_con!(d1, h, i => sin(z[i]) for i in 1:4)
+        d1, _ = add_obj(d1, z[1])
+        n1 = ExaModel(d1)
+        augi = findfirst(b -> b isa ExaModels.ConstraintAugmentation, Any[n1.cons...])
+        len1 = length(n1.cons[augi].itr)
+        d2, _ = add_con!(d1, h, i => sin(z[i+1]) for i in 1:4)   # same family: appends
+        @test length(n1.cons[augi].itr) == len1
+        gn = zeros(n1.meta.ncon)
+        NLPModels.cons!(n1, fill(0.5, 10), gn)
+        @test gn ≈ fill(1.0 + sin(0.5), 4)
+        n2 = ExaModel(d2)
+        gn2 = zeros(n2.meta.ncon)
+        NLPModels.cons!(n2, fill(0.5, 10), gn2)
+        @test gn2 ≈ fill(1.0 + 2 * sin(0.5), 4)
+    end
+end
+
 function runtests()
     @testset "Family merge" begin
         @testset "host derivatives against finite differences" begin
@@ -158,6 +207,8 @@ function runtests()
         @testset "matches host result (backend = $b)" for b in MERGE_BACKENDS
             b === nothing || _test_backend_matches_host(b)
         end
+
+        _test_core_persistence()
 
         @testset "cross-variable and coefficient hoisting" begin
             c = ExaCore()
