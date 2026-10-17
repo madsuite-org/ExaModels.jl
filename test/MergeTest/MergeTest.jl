@@ -9,8 +9,9 @@ const MERGE_BACKENDS = isdefined(Main, :BACKENDS) ? Main.BACKENDS : [nothing]
 
 # A model exercising every merge path: a range family over two variable
 # blocks plus a scalar-coefficient variant (lazy segmented path), a data-tuple
-# family (lazy path over arrays), a same-type augmentation pair (array path on
-# host, unmerged on device), a named block, and a non-mergeable singleton.
+# family (lazy path over arrays), a same-type augmentation pair (stored plain
+# on every backend — augmentations never merge), a named block, and a
+# non-mergeable singleton.
 function _build(backend)
     n = 64
     c = ExaCore(; backend)
@@ -152,7 +153,7 @@ end
 # The core API is persistent: a later add on a core must not change models
 # already built from it. Merged families append by copy
 # (`_merged_append_itr`), which this testset locks in for both the lazy
-# (SegmentedItr) and the materialized (MergedRows, augmentation) iterator.
+# (SegmentedItr) and the materialized (MergedRows, pair-headed) iterator.
 # Branching two cores off one base is NOT covered: the bounds vectors
 # (y0/lcon/ucon) are grown in place by `_append_slot` on every add_con, so
 # sibling cores share bounds state. That predates merging (#294) and holds
@@ -177,24 +178,28 @@ function _test_core_persistence()
         NLPModels.cons!(m2, fill(0.5, 10), g2)
         @test g2 ≈ fill(sin(0.5), 10)
 
-        # materialized path: same-type augmentations form a MergedRows family
+        # materialized path: pair-headed plain blocks (data-driven row targets)
+        # merge into MergedRows on the host. Augmentations (add_con!) never
+        # merge; they are stored plain on every backend.
         d0 = ExaCore()
         d0, z = add_var(d0, 10; start = 0.5)
-        d1, h = add_con(d0, z[i] + z[i + 1] for i in 1:4; lcon = -2.0, ucon = 2.0, name = Val(:hpersist))
-        d1, _ = add_con!(d1, h, i => sin(z[i]) for i in 1:4)
+        d1, _ = add_con(d0, (i => sin(z[i]) for i in 1:4); lcon = -2.0, ucon = 2.0)
         d1, _ = add_obj(d1, z[1])
         n1 = ExaModel(d1)
-        augi = findfirst(b -> b isa ExaModels.ConstraintAugmentation, Any[n1.cons...])
-        len1 = length(n1.cons[augi].itr)
-        d2, _ = add_con!(d1, h, i => sin(z[i + 1]) for i in 1:4)   # same family: appends
-        @test length(n1.cons[augi].itr) == len1
+        @test n1.cons[1].itr isa ExaModels.MergedRows
+        @test n1.meta.ncon == 4 && length(n1.cons[1].itr) == 4
+        # the same generator again is the same family (row targets are
+        # per-block: the second block's rows land at its own o0 base)
+        d2, _ = add_con(d1, (i => sin(z[i]) for i in 1:4); lcon = -2.0, ucon = 2.0)
+        @test length(n1.cons[1].itr) == 4
         gn = zeros(n1.meta.ncon)
         NLPModels.cons!(n1, fill(0.5, 10), gn)
-        @test gn ≈ fill(1.0 + sin(0.5), 4)
+        @test gn ≈ fill(sin(0.5), 4)
         n2 = ExaModel(d2)
-        gn2 = zeros(n2.meta.ncon)
+        @test n2.meta.ncon == 8 && length(n2.cons[1].itr) == 8
+        gn2 = zeros(8)
         NLPModels.cons!(n2, fill(0.5, 10), gn2)
-        @test gn2 ≈ fill(1.0 + 2 * sin(0.5), 4)
+        @test gn2 ≈ fill(sin(0.5), 8)
     end
 end
 
