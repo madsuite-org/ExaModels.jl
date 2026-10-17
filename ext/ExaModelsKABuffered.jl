@@ -156,6 +156,14 @@ function _lamgrad!(backend, y, (obj, objs...), x, θ, w)
     _lamgrad!(backend, y, objs, x, θ, w)
     _lamgrad1!(backend, y, obj, x, θ, w)
 end
+# long block tuples walk by loop, not recursion (see _LongTuple in nlp.jl)
+function _lamgrad!(backend, y, objs::ExaModels._LongTuple, x, θ, w)
+    blocks = Any[objs...]
+    for i in length(blocks):-1:1
+        _lamgrad1!(backend, y, blocks[i], x, θ, w)
+    end
+    return nothing
+end
 # a merged objective's gradient offsets live in its elements
 function _lamgrad1!(backend, y, obj, x, θ, w)
     isempty(obj.itr) && return nothing
@@ -171,6 +179,13 @@ _lamjac!(backend, y, ::Tuple{}, x, θ, yv) = nothing
 function _lamjac!(backend, y, (con, cons...), x, θ, yv)
     _lamjac!(backend, y, cons, x, θ, yv)
     _lamjac1!(backend, y, con, x, θ, yv)
+end
+function _lamjac!(backend, y, cons::ExaModels._LongTuple, x, θ, yv)
+    blocks = Any[cons...]
+    for i in length(blocks):-1:1
+        _lamjac1!(backend, y, blocks[i], x, θ, yv)
+    end
+    return nothing
 end
 _lamjac1!(backend, y, con, x, θ, yv) = nothing
 function _lamjac1!(backend, y, con::ExaModels.Constraint, x, θ, yv)
