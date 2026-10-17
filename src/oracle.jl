@@ -766,12 +766,21 @@ function _build_with_oracle(c::ExaCore; kwargs...)
 
     # Precompute scalar oracle caches. Their Hessian slots follow the vector
     # oracles in the NNZ layout (hess_off cursor continues from the loop above).
-    scalar_oracle_caches = ScalarOracleCache[]
-    for o in s_oracles
-        push!(scalar_oracle_caches,
-              _adapt_scalar_cache(_build_scalar_oracle_cache(o, hess_off), c.backend))
-        hess_off += o.nnzh
-    end
+    # Built as a comprehension (same cursor pattern as eval_caches) so the
+    # vector's eltype stays concrete: an abstract-eltype cache vector makes
+    # every grad!/hess_coord!/hprod! dispatch on the cache dynamically.
+    scalar_hess_cursor = hess_off
+    scalar_oracle_caches = [
+        begin
+                cache = _adapt_scalar_cache(
+                    _build_scalar_oracle_cache(s_oracles[i], scalar_hess_cursor),
+                    c.backend,
+                )
+                scalar_hess_cursor += s_oracles[i].nnzh
+                cache
+            end
+            for i in eachindex(s_oracles)
+    ]
 
     # Shared full-problem work buffers for explicit-jac fallback paths in
     # jprod_nln! / jtprod_nln! / hprod!.  Allocated even when no fallback path
