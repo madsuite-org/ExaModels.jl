@@ -812,8 +812,10 @@ function test_scalar_oracle_hessian(backend)
             nvar = 2,
             f = x_ -> x_[1]^2 * x_[2],
             grad! = (g, x_) -> (g[1] = 2x_[1] * x_[2]; g[2] = x_[1]^2),
-            hvp! = (Hv, x_, v) -> (Hv[1] = 2x_[2] * v[1] + 2x_[1] * v[2];
-                                   Hv[2] = 2x_[1] * v[1]),
+            hvp! = (Hv, x_, v) -> (
+                Hv[1] = 2x_[2] * v[1] + 2x_[1] * v[2];
+                Hv[2] = 2x_[1] * v[1]
+            ),
             hess_rows = [1, 2, 2], hess_cols = [1, 1, 2],
             adapt = Val(true),
         )

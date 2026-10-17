@@ -245,11 +245,13 @@ function ScalarNonlinearOracle(;
         end
     end
     if nnzh > 0 && hvp! === nothing
-        throw(ArgumentError(
-            "ScalarNonlinearOracle: declaring Hessian sparsity (hess_rows/hess_cols " *
-            "or nnzh > 0) requires the hvp! callback, which the Hessian values are " *
-            "recovered from. Omit the sparsity for a first-order (L-BFGS) oracle.",
-        ))
+        throw(
+            ArgumentError(
+                "ScalarNonlinearOracle: declaring Hessian sparsity (hess_rows/hess_cols " *
+                    "or nnzh > 0) requires the hvp! callback, which the Hessian values are " *
+                    "recovered from. Omit the sparsity for a first-order (L-BFGS) oracle.",
+            )
+        )
     end
     @assert length(hess_rows) == length(hess_cols) "hess_rows and hess_cols lengths must match"
     return ScalarNonlinearOracle(nvar, f, grad!, hvp!, nnzh, hess_rows, hess_cols, adapt)
@@ -797,13 +799,13 @@ function _build_with_oracle(c::ExaCore; kwargs...)
     scalar_hess_cursor = hess_off
     scalar_oracle_caches = [
         begin
-                cache = _adapt_scalar_cache(
-                    _build_scalar_oracle_cache(s_oracles[i], scalar_hess_cursor),
-                    c.backend,
-                )
-                scalar_hess_cursor += s_oracles[i].nnzh
-                cache
-            end
+            cache = _adapt_scalar_cache(
+                _build_scalar_oracle_cache(s_oracles[i], scalar_hess_cursor),
+                c.backend,
+            )
+            scalar_hess_cursor += s_oracles[i].nnzh
+            cache
+        end
             for i in eachindex(s_oracles)
     ]
 
