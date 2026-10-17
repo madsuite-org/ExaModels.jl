@@ -198,9 +198,9 @@ end
 # whatever block owns them. Same pattern as kerj_m in the KernelAbstractions
 # extension.
 function _lamjac1!(backend, y, con::ExaModels.Constraint{F, I}, x, θ, yv) where
-        {F, I <: AbstractVector{<:ExaModels.MergedRow}}
+    {F, I <: AbstractVector{<:ExaModels.MergedRow}}
     isempty(con.itr) && return nothing
-    kerjs_m(backend)(y, con.f, con.itr, x, θ, yv; ndrange = length(con.itr))
+    return kerjs_m(backend)(y, con.f, con.itr, x, θ, yv; ndrange = length(con.itr))
 end
 @kernel function kerjs_m(y1, @Const(f), @Const(itr), @Const(x), @Const(θ), @Const(adjs))
     I = @index(Global)

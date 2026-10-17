@@ -409,10 +409,10 @@ function _device_merged_plus_buffered(backend)
     function build(bk)
         c = ExaCore(concrete = Val(true), backend = bk)
         c, x = add_var(c, 10)
-        c, s = add_expr(c, (x[i]^2 + sin(x[i+1]) for i in 1:9); buffered = true)
+        c, s = add_expr(c, (x[i]^2 + sin(x[i + 1]) for i in 1:9); buffered = true)
         c, _ = add_obj(c, (s[i] * x[i] for i in 1:9))
-        c, _ = add_con(c, (s[i] + x[i+2]^2 for i in 1:8))      # consumer: stays plain
-        c, _ = add_con(c, (sin(x[i]) * x[i+1] for i in 1:9))   # mergeable family
+        c, _ = add_con(c, (s[i] + x[i + 2]^2 for i in 1:8))      # consumer: stays plain
+        c, _ = add_con(c, (sin(x[i]) * x[i + 1] for i in 1:9))   # mergeable family
         return ExaModel(c)
     end
     m0 = build(nothing)
@@ -438,7 +438,7 @@ function _device_merged_plus_buffered(backend)
     for (i, j, v) in zip(hr, hc, Array(hv))
         H1[i, j] += v
     end
-    @test H1 ≈ H0 rtol = 1e-13
+    return @test H1 ≈ H0 rtol = 1.0e-13
 end
 
 end # module
