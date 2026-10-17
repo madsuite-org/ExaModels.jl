@@ -1183,6 +1183,50 @@ function ExaModels.jtprod_nln!(
     return Jtv
 end
 
+# hprod! without y (objective-only): the SIMD objective part plus the
+# scalar-oracle hvp term, as in the host method.
+function ExaModels.hprod!(
+        m::ExaModels.ExaModelWithOracle{T, VT, E},
+        x::AbstractVector,
+        v::AbstractVector,
+        Hv::AbstractVector;
+        obj_weight = one(eltype(x)),
+    ) where {T, VT, N <: NamedTuple, E <: KAExtension{T, VT, N}}
+    fill!(Hv, zero(eltype(Hv)))
+    fill!(m.ext.prodhelper.hessbuffer, zero(eltype(Hv)))
+    _obj_hess_coord!(m.ext.backend, m.ext.prodhelper.hessbuffer, m.objs, x, m.θ, obj_weight)
+    let _n = length(m.ext.prodhelper.hessptri) - 1
+        _n > 0 && kersyspmv(m.ext.backend)(
+            Hv, v,
+            m.ext.prodhelper.hesssparsityi,
+            m.ext.prodhelper.hessbuffer,
+            m.ext.prodhelper.hessptri;
+            ndrange = _n,
+        )
+    end
+    let _n = length(m.ext.prodhelper.hessptrj) - 1
+        _n > 0 && kersyspmv2(m.ext.backend)(
+            Hv, v,
+            m.ext.prodhelper.hesssparsityj,
+            m.ext.prodhelper.hessbuffer,
+            m.ext.prodhelper.hessptrj;
+            ndrange = _n,
+        )
+    end
+    backend = m.ext.backend
+    for (i, oracle) in enumerate(m.scalar_oracles)
+        cache = m.scalar_oracle_caches[i]
+        oracle.hvp! === nothing && continue   # L-BFGS-only oracle
+        xin = ExaModels._oracle_input(oracle, x)
+        vin = ExaModels._oracle_input(oracle, v)
+        ExaModels._run_with_buf!(oracle, backend, cache.buf_nvar, cache.cpu_nvar) do b
+            oracle.hvp!(b, xin, vin)
+        end
+        Hv .+= obj_weight .* cache.buf_nvar
+    end
+    return Hv
+end
+
 function ExaModels.hprod!(
         m::ExaModels.ExaModelWithOracle{T, VT, E},
         x::AbstractVector,

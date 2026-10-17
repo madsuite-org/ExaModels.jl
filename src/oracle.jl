@@ -200,6 +200,12 @@ Callbacks:
 - `grad!(g, x)`:              fills g[1:nvar] = ∇f(x)
 - `hvp!(Hv, x, v) = nothing`: fills Hv[1:nvar] = ∇²f(x)·v  (optional; L-BFGS if absent)
 
+Second-order use: `hess_rows`/`hess_cols` declare the (lower-triangular,
+1-based) Hessian sparsity and require `hvp!` — the Hessian entries are
+recovered column by column from Hessian-vector products. With `hvp!` and no
+declared sparsity, a dense lower-triangular pattern is assumed. With neither,
+the oracle is first-order only.
+
 Register via `objective(core, oracle)`.
 """
 struct ScalarNonlinearOracle{F, G, H, A}
@@ -238,6 +244,14 @@ function ScalarNonlinearOracle(;
             end
         end
     end
+    if nnzh > 0 && hvp! === nothing
+        throw(ArgumentError(
+            "ScalarNonlinearOracle: declaring Hessian sparsity (hess_rows/hess_cols " *
+            "or nnzh > 0) requires the hvp! callback, which the Hessian values are " *
+            "recovered from. Omit the sparsity for a first-order (L-BFGS) oracle.",
+        ))
+    end
+    @assert length(hess_rows) == length(hess_cols) "hess_rows and hess_cols lengths must match"
     return ScalarNonlinearOracle(nvar, f, grad!, hvp!, nnzh, hess_rows, hess_cols, adapt)
 end
 
@@ -1277,8 +1291,31 @@ function _eval_hess_reconstruct_via_hvp!(ev::OracleEvaluator, xin, win, hess, ca
     return nothing
 end
 
-# hprod! without y (obj-only) is handled by the KA extension for GPU;
-# for CPU the nlp.jl AbstractExaModel fallback is used.
+# hprod! without y (objective-only): the SIMD objective part plus the
+# scalar-oracle hvp term. Vector oracles and evaluators contribute only
+# through constraint multipliers, so they have no objective-only term.
+function hprod!(
+        m::ExaModelWithOracle,
+        x::AbstractVector,
+        v::AbstractVector,
+        Hv::AbstractVector;
+        obj_weight = one(eltype(x)),
+    )
+    fill!(Hv, zero(eltype(Hv)))
+    _obj_hprod!(m.objs, x, m.θ, v, Hv, obj_weight)
+    backend = _oracle_backend(m)
+    for (i, oracle) in enumerate(m.scalar_oracles)
+        cache = m.scalar_oracle_caches[i]
+        oracle.hvp! === nothing && continue   # L-BFGS-only oracle
+        xin = _oracle_input(oracle, x)
+        vin = _oracle_input(oracle, v)
+        _run_with_buf!(oracle, backend, cache.buf_nvar, cache.cpu_nvar) do b
+            oracle.hvp!(b, xin, vin)
+        end
+        Hv .+= obj_weight .* cache.buf_nvar
+    end
+    return Hv
+end
 
 function hprod!(
         m::ExaModelWithOracle,
