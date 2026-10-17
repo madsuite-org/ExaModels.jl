@@ -38,3 +38,6 @@ sort!(array; kwargs...) = Base.sort!(array; kwargs...)
 
 # Placeholder for ExaModels.Optimizer
 global Optimizer
+
+# Placeholder for ExaModels.SIMDMode
+global SIMDMode
