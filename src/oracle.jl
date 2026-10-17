@@ -777,8 +777,13 @@ function _build_with_oracle(c::ExaCore; kwargs...)
     # jprod_nln! / jtprod_nln! / hprod!.  Allocated even when no fallback path
     # is exercised (one ncon-vector and one nvar-vector each, on device + CPU
     # shadow); cheap relative to the rest of the solve.
-    work_ncon = convert_array(zeros(total_ncon), c.backend)
-    work_nvar = convert_array(zeros(c.nvar), c.backend)
+    # zeros(T, ...), not zeros(...): the struct declares these fields ::VT,
+    # so an untyped zeros() makes them Vector{Float64} and the constructor
+    # then fails for every T != Float64 -- which broke precision-generic
+    # construction for ALL oracle-backed models, not just one problem.
+    TT = eltype(c.x0)
+    work_ncon = convert_array(zeros(TT, total_ncon), c.backend)
+    work_nvar = convert_array(zeros(TT, c.nvar), c.backend)
 
     return ExaModelWithOracle(
         c.obj,
@@ -1242,8 +1247,37 @@ function _eval_hess_reconstruct_via_hvp!(ev::OracleEvaluator, xin, win, hess, ca
     return nothing
 end
 
-# hprod! without y (obj-only) is handled by the KA extension for GPU;
-# for CPU the nlp.jl AbstractExaModel fallback is used.
+# The no-y (objective-only) forms MUST be defined here rather than inherited.
+# The AbstractExaModel fallback in nlp.jl accumulates only `m.objs`, the SIMD
+# objectives, and knows nothing of `m.scalar_oracles` -- so for a model whose
+# objective IS an oracle it returned EXACTLY ZERO. That is the worst kind of
+# wrong: a zero Hessian is a plausible answer (it is correct for a linear
+# objective), so nothing raises and a caller cannot tell. Measured before this
+# fix, on f(x) = x1^2 + x2^2 as a ScalarNonlinearOracle: hprod WITH y gave the
+# correct [2,2] while hprod and hess_coord WITHOUT y both gave [0,0].
+# Delegating to the y-taking methods with a zero multiplier keeps a single
+# implementation of the arithmetic.
+
+function hess_coord!(
+        m::ExaModelWithOracle,
+        x::AbstractVector,
+        hess::AbstractVector;
+        obj_weight = one(eltype(x)),
+    )
+    y = fill!(similar(x, m.meta.ncon), zero(eltype(x)))
+    return hess_coord!(m, x, y, hess; obj_weight)
+end
+
+function hprod!(
+        m::ExaModelWithOracle,
+        x::AbstractVector,
+        v::AbstractVector,
+        Hv::AbstractVector;
+        obj_weight = one(eltype(x)),
+    )
+    y = fill!(similar(x, m.meta.ncon), zero(eltype(x)))
+    return hprod!(m, x, y, v, Hv; obj_weight)
+end
 
 function hprod!(
         m::ExaModelWithOracle,
