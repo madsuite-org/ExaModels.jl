@@ -12,12 +12,12 @@ Performs dense gradient evaluation via the reverse pass on the computation (sub)
     nothing
 end
 @inline function drpass(d::D, y, adj) where {D<:AdjointNode1}
-    offset = drpass(d.inner, y, adj * d.y)
+    offset = drpass(d.inner, y, _amul(adj, d.y))
     nothing
 end
 @inline function drpass(d::D, y, adj) where {D<:AdjointNode2}
-    offset = drpass(d.inner1, y, adj * d.y1)
-    offset = drpass(d.inner2, y, adj * d.y2)
+    offset = drpass(d.inner1, y, _amul(adj, d.y1))
+    offset = drpass(d.inner2, y, _amul(adj, d.y2))
     nothing
 end
 @inline function drpass(d::D, y, adj) where {D<:AdjointNodeVar}
@@ -72,12 +72,12 @@ Performs dsparse gradient evaluation via the reverse pass on the computation (su
     return cnt
 end
 @inline function grpass(d::D, comp, y, o1, cnt, adj) where {D<:AdjointNode1}
-    cnt = grpass(d.inner, comp, y, o1, cnt, adj * d.y)
+    cnt = grpass(d.inner, comp, y, o1, cnt, _amul(adj, d.y))
     return cnt
 end
 @inline function grpass(d::D, comp, y, o1, cnt, adj) where {D<:AdjointNode2}
-    cnt = grpass(d.inner1, comp, y, o1, cnt, adj * d.y1)
-    cnt = grpass(d.inner2, comp, y, o1, cnt, adj * d.y2)
+    cnt = grpass(d.inner1, comp, y, o1, cnt, _amul(adj, d.y1))
+    cnt = grpass(d.inner2, comp, y, o1, cnt, _amul(adj, d.y2))
     return cnt
 end
 @inline function grpass(d::D, comp, y, o1, cnt, adj) where {D<:AdjointNodeVar}
@@ -115,7 +115,7 @@ end
     cnt::Tuple{<:Tuple,<:Tuple},
     adj,
 ) where {D<:AdjointNode1}
-    return grpass(d.inner, nothing, y, o1, cnt, adj * d.y)
+    return grpass(d.inner, nothing, y, o1, cnt, _amul(adj, d.y))
 end
 @inline function grpass(
     d::D,
@@ -125,8 +125,8 @@ end
     cnt::Tuple{<:Tuple,<:Tuple},
     adj,
 ) where {D<:AdjointNode2}
-    cnt = grpass(d.inner1, nothing, y, o1, cnt, adj * d.y1)
-    return grpass(d.inner2, nothing, y, o1, cnt, adj * d.y2)
+    cnt = grpass(d.inner1, nothing, y, o1, cnt, _amul(adj, d.y1))
+    return grpass(d.inner2, nothing, y, o1, cnt, _amul(adj, d.y2))
 end
 @inline function grpass(
     d::D,
