@@ -618,6 +618,7 @@ function runtests(; backends = Any[CPU()])
     for backend in backends
         @testset "Buffered subexpressions (device: $backend)" begin
             _device_tests(backend)
+            _device_merged_plus_buffered(backend)
         end
         @testset "add_reduce (device: $backend)" begin
             m0 = _red_ref_model()
@@ -675,6 +676,48 @@ function runtests(; backends = Any[CPU()])
             @test Array(hp1) ≈ hp0 rtol = 1e-12
         end
     end
+end
+
+# A buffered subexpression together with a plain mergeable constraint added
+# after the consumer: on device backends the plain block is family-merged from
+# its first add, so the λ-seed Jacobian pass of the Hessian elimination must
+# read the nonzero offsets from the MergedRow elements (kerjs_m). offset1(f, I)
+# is 0-based for a merged block and would land its seeds in the consumer's
+# cons_ext slots, corrupting the device Hessian but not the host one.
+function _device_merged_plus_buffered(backend)
+    function build(bk)
+        c = ExaCore(concrete = Val(true), backend = bk)
+        c, x = add_var(c, 10)
+        c, s = add_expr(c, (x[i]^2 + sin(x[i + 1]) for i in 1:9); buffered = true)
+        c, _ = add_obj(c, (s[i] * x[i] for i in 1:9))
+        c, _ = add_con(c, (s[i] + x[i + 2]^2 for i in 1:8))      # consumer: stays plain
+        c, _ = add_con(c, (sin(x[i]) * x[i + 1] for i in 1:9))   # mergeable family
+        return ExaModel(c)
+    end
+    m0 = build(nothing)
+    m1 = build(backend)
+    @test m1.meta.ncon == 17 == m0.meta.ncon
+    xh = [sin(3i) + 0.5 for i in 1:10]
+    xd = copyto!(similar(m1.meta.x0, 10), xh)
+    yh = [cos(2i) for i in 1:17]
+    yd = copyto!(similar(m1.meta.x0, 17), yh)
+    H0 = zeros(10, 10)
+    hr0 = zeros(Int, m0.meta.nnzh); hc0 = zeros(Int, m0.meta.nnzh)
+    NLPModels.hess_structure!(m0, hr0, hc0)
+    hv0 = zeros(m0.meta.nnzh)
+    NLPModels.hess_coord!(m0, xh, yh, hv0; obj_weight = 0.7)
+    for (i, j, v) in zip(hr0, hc0, hv0)
+        H0[i, j] += v
+    end
+    H1 = zeros(10, 10)
+    hr = zeros(Int, m1.meta.nnzh); hc = zeros(Int, m1.meta.nnzh)
+    NLPModels.hess_structure!(m1, hr, hc)
+    hv = fill!(similar(m1.meta.x0, m1.meta.nnzh), 0)
+    NLPModels.hess_coord!(m1, xd, yd, hv; obj_weight = 0.7)
+    for (i, j, v) in zip(hr, hc, Array(hv))
+        H1[i, j] += v
+    end
+    return @test H1 ≈ H0 rtol = 1.0e-13
 end
 
 end # module
