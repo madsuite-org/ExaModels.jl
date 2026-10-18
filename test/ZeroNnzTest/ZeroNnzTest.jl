@@ -42,16 +42,14 @@ function runtests()
                 NLPModels.hprod!(m, x, v, Hv)
                 @test all(iszero, Array(Hv))
 
-                # The host `getptr` maps an empty sparsity to one segment, so
-                # the compressed wrapper is checked on device backends only.
-                if backend !== nothing
-                    cm = ExaModels.CompressedNLPModel(m)
-                    @test cm.meta.nnzh == 0
-                    J = fill!(similar(m.meta.x0, cm.meta.nnzj), 0)
-                    NLPModels.jac_coord!(cm, x, J)
-                    @test sum(Array(J)) ≈ 6
-                    NLPModels.hess_coord!(cm, x, y, similar(m.meta.x0, 0))
-                end
+                cm = ExaModels.CompressedNLPModel(m)
+                @test cm.meta.nnzh == 0
+                J = fill!(similar(m.meta.x0, cm.meta.nnzj), 0)
+                NLPModels.jac_coord!(cm, x, J)
+                @test sum(Array(J)) ≈ 6
+                hr = similar(m.meta.x0, Int, 0)
+                NLPModels.hess_structure!(cm, hr, similar(hr))
+                NLPModels.hess_coord!(cm, x, y, similar(m.meta.x0, 0))
 
                 m = _unconstrained_model(backend)
                 @test m.meta.nnzj == 0
@@ -63,16 +61,14 @@ function runtests()
                 NLPModels.jtprod_nln!(m, x, Jv, Jtv)
                 @test all(iszero, Array(Jtv))
 
-                if backend !== nothing
-                    cm = ExaModels.CompressedNLPModel(m)
-                    @test cm.meta.nnzj == 0
-                    NLPModels.jac_coord!(cm, x, similar(m.meta.x0, 0))
-                    r = similar(m.meta.x0, Int, 0)
-                    NLPModels.jac_structure!(cm, r, similar(r))
-                    H = fill!(similar(m.meta.x0, cm.meta.nnzh), 0)
-                    NLPModels.hess_coord!(cm, x, similar(m.meta.x0, 0), H)
-                    @test Array(H) ≈ fill(2, 4)
-                end
+                cm = ExaModels.CompressedNLPModel(m)
+                @test cm.meta.nnzj == 0
+                NLPModels.jac_coord!(cm, x, similar(m.meta.x0, 0))
+                r = similar(m.meta.x0, Int, 0)
+                NLPModels.jac_structure!(cm, r, similar(r))
+                H = fill!(similar(m.meta.x0, cm.meta.nnzh), 0)
+                NLPModels.hess_coord!(cm, x, similar(m.meta.x0, 0), H)
+                @test Array(H) ≈ fill(2, 4)
             end
         end
     end

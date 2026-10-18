@@ -444,6 +444,7 @@ struct CompressedNLPModel{
 end
 
 function getptr(backend::Nothing, array; cmp = (x, y) -> x != y)
+    isempty(array) && return [1]
     return push!(
         pushfirst!(findall(cmp.(@view(array[1:(end-1)]), @view(array[2:end]))) .+= 1, 1),
         length(array) + 1,
