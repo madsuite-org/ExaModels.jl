@@ -234,9 +234,9 @@ into consumer tree types; see issue #331).
 
 Derivatives need no kernels either: the stage's one-level Jacobian is the
 constant `w`, so the build-time elimination consumes it like any other stage,
-and the μ·∇v∇vᵀ curvature of each slot is expanded at build into index
-programs over pairs of its (constant-weight) sources — see the `q*` program
-families in [`SubexprHess`](@ref).
+and the μ·∇v∇vᵀ curvature of each slot is accumulated in x-space from the
+slot's resolved gradient, with one Hessian-index table per distinct x-support
+— see the `rk_*`/`pat_*` fields of [`SubexprHess`](@ref).
 
 # Fields
 - `offset::Int`: θ offset; slot `j` lives at `θ[offset + j]`
@@ -892,20 +892,20 @@ struct SubexprHess{T}
     hmul_src::Vector{Int}
     hmul_a::Vector{Int}
     hmul_c::Vector{T}
-    # q programs (reduce stages): μ·∇v∇vᵀ with constant ∇v, expanded at build
-    # into `target += coef * abuf2[j]` over source-coordinate pairs.
-    lvl_qh::Vector{UnitRange{Int}}
-    qh_dst::Vector{Int}        # hess[dst] += coef * abuf2[j]   (x, x pairs)
-    qh_j::Vector{Int}
-    qh_c::Vector{T}
-    lvl_qc::Vector{UnitRange{Int}}
-    qc_dst::Vector{Int}        # C[dst] += coef * abuf2[j]      (mixed / distinct-slot pairs)
-    qc_j::Vector{Int}
-    qc_c::Vector{T}
-    lvl_qa::Vector{UnitRange{Int}}
-    qa_dst::Vector{Int}        # abuf2[dst] += coef * abuf2[j]  (same-slot pairs)
-    qa_j::Vector{Int}
-    qa_c::Vector{T}
+    # Reduce-slot curvature μ·∇v∇vᵀ, with ∇v resolved to x-columns (the
+    # SubexprJac `res` entries of the slot).  Each slot lists its resolved
+    # entries in ascending x-column order; slots with the same x-support share
+    # one table of Hessian destinations over the lower-triangle pairs of that
+    # support, so build storage scales with the distinct supports, not with
+    # the number of slots or of source pairs.
+    rk_slot::Vector{Int}       # θ-slot whose μ seed (abuf2) scales the term
+    rk_ptr::Vector{Int}        # CSR into rk_res, one segment per slot
+    rk_res::Vector{Int}        # SubexprJac.res indices, ascending x-column
+    rk_pat::Vector{Int}        # support table of each slot
+    pat_ptr::Vector{Int}       # CSR into pat_dst / pat_a / pat_b
+    pat_dst::Vector{Int}       # hess[dst] += μ * res[seg[a]] * res[seg[b]]
+    pat_a::Vector{Int}         # positions within the slot's rk_res segment
+    pat_b::Vector{Int}
     hess_copy_dst::Vector{Int} # hess[dst] += hess_ext[src]  (direct xx)
     hess_copy_src::Vector{Int}
     rows::Vector{Int}
@@ -913,7 +913,7 @@ struct SubexprHess{T}
     vals::Vector{T}            # scratch for COO-based hprod
 end
 
-_build_subexpr_hess(::Type{T}, stages::Tuple{}, objs, cons, nnzh_ext, localrows, nθ) where {T} =
+_build_subexpr_hess(::Type{T}, stages::Tuple{}, objs, cons, nnzh_ext, localrows, resolved, nθ) where {T} =
     nothing
 
 # Extended-space structure of one stage's replay Hessian (host blocks), written
@@ -939,7 +939,7 @@ function _stage_hess_structure!(::Type{T}, erows, ecols, s::SubexprStage, base) 
 end
 _stage_hess_structure!(::Type{T}, erows, ecols, s::SubexprReduceStage, base) where {T} = nothing
 
-function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, localrows, nθ) where {T}
+function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, localrows, resolved, nθ) where {T}
     objs = _host_blocks(objs)
     cons = _host_blocks(cons)
     ordered = reverse(collect(Any, _host_blocks(stages)))   # oldest first: levels 1..nlv
@@ -986,11 +986,9 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, loc
     cmulL = [NTuple{3,Int}[] for _ in 1:nlv]
     amulL = [NTuple{3,Int}[] for _ in 1:nlv]
     hmulL = [Tuple{Int,Int,Int,T}[] for _ in 1:nlv]
-    # q programs: μ·∇v∇vᵀ of a reduce slot, expanded at build over unordered
-    # pairs of its weight-folded sources — `target += coef · abuf2[slot]`.
-    qhL = [Tuple{Int,Int,T}[] for _ in 1:nlv]   # target hess
-    qcL = [Tuple{Int,Int,T}[] for _ in 1:nlv]   # target C (strictly older pair)
-    qaL = [Tuple{Int,Int,T}[] for _ in 1:nlv]   # target abuf2 (same older slot)
+    rk_slot = Int[]; rk_ptr = Int[1]; rk_res = Int[]; rk_pat = Int[]
+    pat_ptr = Int[1]; pat_dst = Int[]; pat_a = Int[]; pat_b = Int[]
+    pats = Dict{Vector{Int},Int}()
     hess_copy_dst = Int[]; hess_copy_src = Int[]
 
     # Seed: classify every extended entry.
@@ -1015,35 +1013,37 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, loc
 
     nores = Tuple{Int,Int}[]
     cmul_phL = Int[]
-    # μ·∇v∇vᵀ expansion for one reduce slot family.  ∇v is constant (the
-    # weight-folded source coefficients), so each unordered coordinate pair
-    # becomes one `target += (wₐ·w_b) · abuf2[slot]` program; the pair value is
-    # the MATRIX entry counted once, matching the C/amul conventions (a
-    # same-coordinate pair is the plain diagonal wₐ², no doubling).
-    _emit_reduce_q!(::Type{T}, s::SubexprStage, l, muactive, localrows, qh, qc, qa, emit, getC!, lvlof, normp) where {T} = nothing
-    function _emit_reduce_q!(::Type{T}, s::SubexprReduceStage, l, muactive, localrows, qh, qc, qa, emit, getC!, lvlof, normp) where {T}
-        wmap = Dict{Int,T}()
+    # μ·∇v∇vᵀ of one reduce stage's slots, written straight into x-space from
+    # each slot's resolved gradient.  It must not be lowered through C by
+    # pairing the slot's sources: slots with disjoint sources never share those
+    # pairs, so every slot summing k element slots would cost O(k²) build
+    # entries of its own, whereas slots with one x-support share one table.
+    # The pair value is the MATRIX entry counted once (a diagonal pair is the
+    # plain square, no doubling), matching `emit`.
+    _emit_reduce_rank1!(s::SubexprStage, muactive) = nothing
+    function _emit_reduce_rank1!(s::SubexprReduceStage, muactive)
         for j = 1:s.n
             slot = s.offset + j
             muactive[slot] || continue
-            empty!(wmap)
-            for m = s.ptr[j]:(s.ptr[j+1]-1)
-                wmap[s.src[m]] = get(wmap, s.src[m], zero(T)) + T(s.w[m])
-            end
-            ks = collect(keys(wmap))
-            for a = 1:length(ks), b = a:length(ks)
-                ξa, ξb = ks[a], ks[b]
-                cf = wmap[ξa] * wmap[ξb]
-                if ξa > 0 && ξb > 0
-                    push!(qh, (emit(ξa, ξb), slot, cf))
-                elseif ξa < 0 && ξa == ξb
-                    push!(qa, (-ξa, slot, cf))
-                    muactive[-ξa] = true
-                else
-                    np = normp(ξa, ξb)
-                    push!(qc, (getC!(np, max(lvlof(np[1]), lvlof(np[2]))), slot, cf))
+            lst = sort(get(resolved, slot, nores); by = first)
+            isempty(lst) && continue
+            key = first.(lst)
+            q = get!(pats, key) do
+                k = length(key)
+                for a = 1:k, b = 1:a
+                    push!(pat_dst, emit(key[a], key[b]))
+                    push!(pat_a, a)
+                    push!(pat_b, b)
                 end
+                push!(pat_ptr, length(pat_dst) + 1)
+                length(pat_ptr) - 1
             end
+            push!(rk_slot, slot)
+            for (_, r) in lst
+                push!(rk_res, r)
+            end
+            push!(rk_ptr, length(rk_res) + 1)
+            push!(rk_pat, q)
         end
         return nothing
     end
@@ -1053,12 +1053,9 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, loc
     for l in nlv:-1:1
         # μ·∇v∇vᵀ of this level's reduce slots (if any): by the time level l is
         # reached, every writer of abuf2[slot] for a level-l slot has been
-        # emitted (consumer/stage seeds at classification, amul and q targets
-        # from newer levels), so `muactive` is final for this level's slots.
-        _emit_reduce_q!(
-            T, ordered[l], l, muactive, localrows,
-            qhL[l], qcL[l], qaL[l], emit, getC!, lvlof, normp,
-        )
+        # emitted (consumer/stage seeds at classification, amul targets from
+        # newer levels), so `muactive` is final for this level's slots.
+        _emit_reduce_rank1!(ordered[l], muactive)
         d = entries[l]
         expand(p, cp) = begin
             ξexp, oth = lvlof(p[1]) == l ? (p[1], p[2]) : (p[2], p[1])
@@ -1091,9 +1088,6 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, loc
     lvl_cmul = UnitRange{Int}[]; cmul_ph = Int[]; cmul_dst = Int[]; cmul_src = Int[]; cmul_a = Int[]
     lvl_amul = UnitRange{Int}[]; amul_dst = Int[]; amul_src = Int[]; amul_a = Int[]
     lvl_hmul = UnitRange{Int}[]; hmul_dst = Int[]; hmul_src = Int[]; hmul_a = Int[]; hmul_c = T[]
-    lvl_qh = UnitRange{Int}[]; qh_dst = Int[]; qh_j = Int[]; qh_c = T[]
-    lvl_qc = UnitRange{Int}[]; qc_dst = Int[]; qc_j = Int[]; qc_c = T[]
-    lvl_qa = UnitRange{Int}[]; qa_dst = Int[]; qa_j = Int[]; qa_c = T[]
     for l in nlv:-1:1
         n0 = length(ccopy_dst)
         for (dst, s) in ccopyL[l]
@@ -1116,21 +1110,6 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, loc
             push!(hmul_dst, dst); push!(hmul_src, s); push!(hmul_a, a); push!(hmul_c, cf)
         end
         push!(lvl_hmul, (n0+1):length(hmul_dst))
-        n0 = length(qh_dst)
-        for (dst, j, cf) in qhL[l]
-            push!(qh_dst, dst); push!(qh_j, j); push!(qh_c, cf)
-        end
-        push!(lvl_qh, (n0+1):length(qh_dst))
-        n0 = length(qc_dst)
-        for (dst, j, cf) in qcL[l]
-            push!(qc_dst, dst); push!(qc_j, j); push!(qc_c, cf)
-        end
-        push!(lvl_qc, (n0+1):length(qc_dst))
-        n0 = length(qa_dst)
-        for (dst, j, cf) in qaL[l]
-            push!(qa_dst, dst); push!(qa_j, j); push!(qa_c, cf)
-        end
-        push!(lvl_qa, (n0+1):length(qa_dst))
     end
     reverse!(stage_o2)   # match the newest-first stage tuple order
 
@@ -1156,18 +1135,14 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, loc
         hmul_src,
         hmul_a,
         hmul_c,
-        lvl_qh,
-        qh_dst,
-        qh_j,
-        qh_c,
-        lvl_qc,
-        qc_dst,
-        qc_j,
-        qc_c,
-        lvl_qa,
-        qa_dst,
-        qa_j,
-        qa_c,
+        rk_slot,
+        rk_ptr,
+        rk_res,
+        rk_pat,
+        pat_ptr,
+        pat_dst,
+        pat_a,
+        pat_b,
         hess_copy_dst,
         hess_copy_src,
         rows,
@@ -1187,17 +1162,6 @@ _hess_seq!(stages::Tuple{}, i, sh, sj, t::HessTarget, hess, x, θ) = nothing
     C = sh.C
     ext = sh.hess_ext
     sx = sj.stage_ext
-    # q programs: this level's μ seeds are complete (only consumers, newer
-    # replays, and newer levels' amul/qa programs write them — all done).
-    @inbounds for m in sh.lvl_qh[i]
-        hess[sh.qh_dst[m]] += sh.qh_c[m] * t.abuf2[sh.qh_j[m]]
-    end
-    @inbounds for m in sh.lvl_qc[i]
-        C[sh.qc_dst[m]] += sh.qc_c[m] * t.abuf2[sh.qc_j[m]]
-    end
-    @inbounds for m in sh.lvl_qa[i]
-        t.abuf2[sh.qa_dst[m]] += sh.qa_c[m] * t.abuf2[sh.qa_j[m]]
-    end
     @inbounds for m in sh.lvl_ccopy[i]
         C[sh.ccopy_dst[m]] += ext[sh.ccopy_src[m]]
     end
@@ -1214,9 +1178,27 @@ _hess_seq!(stages::Tuple{}, i, sh, sj, t::HessTarget, hess, x, θ) = nothing
     return nothing
 end
 
+# Reduce-slot curvature μ·∇v∇vᵀ in x-space.  Runs after the sweep: a slot's μ
+# seed is final once its level is reached, and the targets are x-space
+# entries no later program reads.  A zero μ skips the slot, so a switched-off
+# slot contributes nothing even where its resolved gradient is not finite.
+function _hess_rank1!(sh::SubexprHess, res, abuf2, hess)
+    for k in eachindex(sh.rk_slot)
+        μ = abuf2[sh.rk_slot[k]]
+        iszero(μ) && continue
+        base = sh.rk_ptr[k] - 1
+        q = sh.rk_pat[k]
+        for e = sh.pat_ptr[q]:(sh.pat_ptr[q+1]-1)
+            hess[sh.pat_dst[e]] +=
+                μ * res[sh.rk_res[base+sh.pat_a[e]]] * res[sh.rk_res[base+sh.pat_b[e]]]
+        end
+    end
+    return nothing
+end
+
 # Stage replay with the accumulated (λ, μ) seeds.  A reduce stage replays
 # nothing (zero extended-space curvature); it only chains its λ seeds one level
-# down with its constant weights — the μ side is covered by the q programs.
+# down with its constant weights — the μ side is the x-space rank-1 term.
 @inline function _stage_replay!(s::SubexprStage, off, t::HessTarget, x, θ)
     step = s.f.o2step
     for k in eachindex(s.itr)
@@ -1260,7 +1242,11 @@ function _hess_coord_subexpr!(
     y,
 )
     _sync_subexprs!(stages, x, θ)
-    _fill_stage_jac!(sj, stages, x, θ)
+    if isempty(sh.rk_slot)
+        _fill_stage_jac!(sj, stages, x, θ)
+    else
+        _resolve_stage_jac!(sj, stages, x, θ)
+    end
     fill!(abuf, zero(eltype(abuf)))
     fill!(sh.abuf2, zero(eltype(sh.abuf2)))
     fill!(sh.hess_ext, zero(eltype(sh.hess_ext)))
@@ -1270,6 +1256,7 @@ function _hess_coord_subexpr!(
     _obj_hess_coord!(objs, x, θ, t, obj_weight)
     y === nothing || _con_hess_coord!(cons, x, θ, y, t, obj_weight)
     _hess_seq!(stages, 1, sh, sj, t, hess, x, θ)
+    _hess_rank1!(sh, sj.res, t.abuf2, hess)
     @inbounds for m in eachindex(sh.hess_copy_dst)
         hess[sh.hess_copy_dst[m]] += sh.hess_ext[sh.hess_copy_src[m]]
     end

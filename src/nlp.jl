@@ -839,7 +839,7 @@ function ExaModel(c::ExaCore{T, VT, B, S, V, P, O, C, R, Tuple{}, Tuple{}, Tuple
         "ExaModel(c; prod = true) is not yet supported with buffered subexpressions",
     )
     sjac, resolved, localrows = _build_subexpr_jac(T, c.subexprs, c.cons, c.nnzj)
-    shess = _build_subexpr_hess(T, c.subexprs, c.obj, c.cons, c.nnzh, localrows, length(c.θ))
+    shess = _build_subexpr_hess(T, c.subexprs, c.obj, c.cons, c.nnzh, localrows, resolved, length(c.θ))
     ska = build_subexpr_ka(c, sjac, shess, c.nvar)
     return ExaModel(
         c.name,
