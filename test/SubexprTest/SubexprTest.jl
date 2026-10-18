@@ -584,6 +584,9 @@ function runtests(; backends = Any[CPU()])
         @test_throws ArgumentError add_reduce(c, 2, [1 => p[1] * s[1]])
         @test_throws ArgumentError add_reduce(c, 2, [3 => s[1]])
         @test_throws DimensionMismatch add_reduce(c, 2, [1 => s[1]]; init = [1.0])
+        @test_throws ArgumentError add_reduce(c, 2, [x[1] => s[1]])
+        @test_throws ArgumentError add_reduce(c, 2, [1 => s[1] / x[2]])
+        @test occursin("buffered reduction", sprint(show, v))
     end
 
     @testset "add_reduce (solver round-trip)" begin

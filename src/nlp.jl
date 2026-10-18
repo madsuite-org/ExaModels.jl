@@ -94,6 +94,17 @@ struct BufferedExpression{S, F, T}
     f::F           # the generator function (kept for display)
     tag::T
 end
+# A reduction handle (see `add_reduce`) carries no generator body.
+function Base.show(io::IO, s::BufferedExpression{S, Nothing}) where {S}
+    return print(
+        io,
+        """
+        Subexpression (buffered reduction)
+
+          s ∈ R^{$(join(size(s.size), " × "))}
+        """,
+    )
+end
 function Base.show(io::IO, s::BufferedExpression)
     expr = try
         _expr_string(s.f(DataSource()))

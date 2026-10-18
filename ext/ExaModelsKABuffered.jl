@@ -141,7 +141,7 @@ end
     )
     I = @index(Global)
     acc = zero(eltype(y))
-    for j in ptr[I]:(ptr[I + 1] - 1)
+    @inbounds for j in ptr[I]:(ptr[I + 1] - 1)
         q = pat[j]
         ea = a[j]
         eb = b[j]
@@ -153,7 +153,7 @@ end
             acc += ifelse(iszero(μ), zero(v), v)
         end
     end
-    y[dstu[I]] += acc
+    @inbounds y[dstu[I]] += acc
 end
 
 _run!(backend, s::SegRank1, y, res, abuf2) =
