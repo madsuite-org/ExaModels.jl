@@ -29,6 +29,7 @@ include("MergeTest/MergeTest.jl")
 # include("OptimalControlTest/OptimalControlTest.jl")
 include("OracleTest/OracleTest.jl")
 include("SubexprTest/SubexprTest.jl")
+include("ZeroNnzTest/ZeroNnzTest.jl")
 
 @testset verbose = true "ExaModels test" begin
     @info "Running Argument Test"
@@ -74,6 +75,9 @@ include("SubexprTest/SubexprTest.jl")
     SubexprTest.runtests(
         backends = unique(Any[SubexprTest.CPU(); [b for b in BACKENDS if b !== nothing]]),
     )
+
+    @info "Running Zero-Nonzero Test"
+    ZeroNnzTest.runtests()
 end
 
 # Force full GC before Julia exits so that OpenCL/PoCL objects are finalized

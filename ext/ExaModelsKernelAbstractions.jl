@@ -390,14 +390,16 @@ function ExaModels.jprod_nln!(
     fill!(Jv, zero(eltype(Jv)))
     fill!(m.ext.prodhelper.jacbuffer, zero(eltype(Jv)))
     _jac_coord!(m.ext.backend, m.ext.prodhelper.jacbuffer, m.cons, x, m.θ)
-    kerspmv(m.ext.backend)(
-        Jv,
-        v,
-        m.ext.prodhelper.jacsparsityi,
-        m.ext.prodhelper.jacbuffer,
-        m.ext.prodhelper.jacptri,
-        ndrange = length(m.ext.prodhelper.jacptri) - 1,
-    )
+    let _n = length(m.ext.prodhelper.jacptri) - 1
+        _n > 0 && kerspmv(m.ext.backend)(
+            Jv,
+            v,
+            m.ext.prodhelper.jacsparsityi,
+            m.ext.prodhelper.jacbuffer,
+            m.ext.prodhelper.jacptri,
+            ndrange = _n,
+        )
+    end
     return Jv
 end
 function ExaModels.jtprod_nln!(
@@ -413,14 +415,16 @@ function ExaModels.jtprod_nln!(
     fill!(Jtv, zero(eltype(Jtv)))
     fill!(m.ext.prodhelper.jacbuffer, zero(eltype(Jtv)))
     _jac_coord!(m.ext.backend, m.ext.prodhelper.jacbuffer, m.cons, x, m.θ)
-    kerspmv2(m.ext.backend)(
-        Jtv,
-        v,
-        m.ext.prodhelper.jacsparsityj,
-        m.ext.prodhelper.jacbuffer,
-        m.ext.prodhelper.jacptrj,
-        ndrange = length(m.ext.prodhelper.jacptrj) - 1,
-    )
+    let _n = length(m.ext.prodhelper.jacptrj) - 1
+        _n > 0 && kerspmv2(m.ext.backend)(
+            Jtv,
+            v,
+            m.ext.prodhelper.jacsparsityj,
+            m.ext.prodhelper.jacbuffer,
+            m.ext.prodhelper.jacptrj,
+            ndrange = _n,
+        )
+    end
     return Jtv
 end
 function ExaModels.hprod!(
@@ -444,22 +448,26 @@ function ExaModels.hprod!(
 
     _obj_hess_coord!(m.ext.backend, m.ext.prodhelper.hessbuffer, m.objs, x, m.θ, obj_weight)
     _con_hess_coord!(m.ext.backend, m.ext.prodhelper.hessbuffer, m.cons, x, m.θ, y)
-    kersyspmv(m.ext.backend)(
-        Hv,
-        v,
-        m.ext.prodhelper.hesssparsityi,
-        m.ext.prodhelper.hessbuffer,
-        m.ext.prodhelper.hessptri,
-        ndrange = length(m.ext.prodhelper.hessptri) - 1,
-    )
-    kersyspmv2(m.ext.backend)(
-        Hv,
-        v,
-        m.ext.prodhelper.hesssparsityj,
-        m.ext.prodhelper.hessbuffer,
-        m.ext.prodhelper.hessptrj,
-        ndrange = length(m.ext.prodhelper.hessptrj) - 1,
-    )
+    let _n = length(m.ext.prodhelper.hessptri) - 1
+        _n > 0 && kersyspmv(m.ext.backend)(
+            Hv,
+            v,
+            m.ext.prodhelper.hesssparsityi,
+            m.ext.prodhelper.hessbuffer,
+            m.ext.prodhelper.hessptri,
+            ndrange = _n,
+        )
+    end
+    let _n = length(m.ext.prodhelper.hessptrj) - 1
+        _n > 0 && kersyspmv2(m.ext.backend)(
+            Hv,
+            v,
+            m.ext.prodhelper.hesssparsityj,
+            m.ext.prodhelper.hessbuffer,
+            m.ext.prodhelper.hessptrj,
+            ndrange = _n,
+        )
+    end
 
     return Hv
 end
@@ -482,26 +490,32 @@ function ExaModels.hprod!(
     fill!(m.ext.prodhelper.hessbuffer, zero(eltype(Hv)))
 
     _obj_hess_coord!(m.ext.backend, m.ext.prodhelper.hessbuffer, m.objs, x, m.θ, obj_weight)
-    kersyspmv(m.ext.backend)(
-        Hv,
-        v,
-        m.ext.prodhelper.hesssparsityi,
-        m.ext.prodhelper.hessbuffer,
-        m.ext.prodhelper.hessptri,
-        ndrange = length(m.ext.prodhelper.hessptri) - 1,
-    )
-    kersyspmv2(m.ext.backend)(
-        Hv,
-        v,
-        m.ext.prodhelper.hesssparsityj,
-        m.ext.prodhelper.hessbuffer,
-        m.ext.prodhelper.hessptrj,
-        ndrange = length(m.ext.prodhelper.hessptrj) - 1,
-    )
+    let _n = length(m.ext.prodhelper.hessptri) - 1
+        _n > 0 && kersyspmv(m.ext.backend)(
+            Hv,
+            v,
+            m.ext.prodhelper.hesssparsityi,
+            m.ext.prodhelper.hessbuffer,
+            m.ext.prodhelper.hessptri,
+            ndrange = _n,
+        )
+    end
+    let _n = length(m.ext.prodhelper.hessptrj) - 1
+        _n > 0 && kersyspmv2(m.ext.backend)(
+            Hv,
+            v,
+            m.ext.prodhelper.hesssparsityj,
+            m.ext.prodhelper.hessbuffer,
+            m.ext.prodhelper.hessptrj,
+            ndrange = _n,
+        )
+    end
 
     return Hv
 end
 
+# Callers launch the product kernels only over a non-empty range:
+# KernelAbstractions cannot size a launch with `ndrange = 0`.
 @kernel function kerspmv(y, @Const(x), @Const(coord), @Const(V), @Const(ptr))
     idx = @index(Global)
     @inbounds for l = ptr[idx]:(ptr[idx+1]-1)
@@ -1317,7 +1331,7 @@ end
 
 function ExaModels._compress!(V, buffer, ptr, sparsity, backend)
     fill!(V, zero(eltype(V)))
-    ker_compress!(backend)(V, buffer, ptr, sparsity; ndrange = length(ptr) - 1)
+    length(ptr) > 1 && ker_compress!(backend)(V, buffer, ptr, sparsity; ndrange = length(ptr) - 1)
 end
 
 @kernel function ker_compress!(V, @Const(buffer), @Const(ptr), @Const(sparsity))
@@ -1328,7 +1342,7 @@ end
 end
 
 function ExaModels._structure!(I, J, ptr, sparsity, backend)
-    ker_structure!(backend)(I, J, ptr, sparsity, ndrange = length(ptr) - 1)
+    length(ptr) > 1 && ker_structure!(backend)(I, J, ptr, sparsity, ndrange = length(ptr) - 1)
 end
 
 @kernel function ker_structure!(I, J, @Const(ptr), @Const(sparsity))
@@ -1338,7 +1352,7 @@ end
 
 function ExaModels.get_compressed_sparsity(nnz, Ibuffer, Jbuffer, backend)
     sparsity = similar(Ibuffer, Tuple{Tuple{Int,Int},Int}, nnz)
-    ker_get_compressed_sparsity(backend)(sparsity, Ibuffer, Jbuffer; ndrange = nnz)
+    nnz > 0 && ker_get_compressed_sparsity(backend)(sparsity, Ibuffer, Jbuffer; ndrange = nnz)
     return sparsity
 end
 @kernel function ker_get_compressed_sparsity(sparsity, @Const(I), @Const(J))

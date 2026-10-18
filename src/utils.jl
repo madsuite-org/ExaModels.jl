@@ -473,13 +473,13 @@ function CompressedNLPModel(m)
     backend = getbackend(m)
 
     jsparsity = get_compressed_sparsity(nnzj, Ibuffer, Jbuffer, backend)
-    sort!(jsparsity; lt = (a, b) -> a[1] < b[1])
+    isempty(jsparsity) || sort!(jsparsity; lt = (a, b) -> a[1] < b[1])
     jptr = getptr(backend, jsparsity; cmp = (a, b) -> first(a) != first(b))
 
     NLPModels.hess_structure!(m, Ibuffer, Jbuffer)
 
     hsparsity = get_compressed_sparsity(nnzh, Ibuffer, Jbuffer, backend)
-    sort!(hsparsity; lt = (a, b) -> a[1] < b[1])
+    isempty(hsparsity) || sort!(hsparsity; lt = (a, b) -> a[1] < b[1])
     hptr = getptr(backend, hsparsity; cmp = (a, b) -> first(a) != first(b))
 
 
