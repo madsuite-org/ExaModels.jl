@@ -73,12 +73,13 @@ end
 # Reduction model: e[i] = x[i]^2 + sin(x[i+1]) buffered, then a ragged weighted
 # reduction with variable terms and per-slot init:
 #   v[j] = init[j] + 2 e[j] + 3 e[j+1] + 0.5 x[j]  (j = 1:4)
-#   v[1] += 4 e[4] + 0.25 x[5];  v[3] -= e[1]
+#   v[1] += 4 e[4] + 0.25 x[5];  v[2] += 0.5 e[3] twice;  v[3] -= e[1]
 # consumed nonlinearly by the objective and constraints.
 _red_elt(x, i) = x[i]^2 + sin(x[i + 1])
 function _red_vexpr(x, j)
     base = 1.5 + 2.0 * _red_elt(x, j) + 3.0 * _red_elt(x, j + 1) + 0.5 * x[j]
     return j == 1 ? base + 4.0 * _red_elt(x, 4) + 0.25 * x[5] :
+        j == 2 ? base + 1.0 * _red_elt(x, 3) :
         j == 3 ? base - 1.0 * _red_elt(x, 1) : base
 end
 
@@ -104,7 +105,7 @@ function _red_core(backend)
     pairs = vcat(
         [j => 2.0 * e[j] for j in 1:4],
         [j => 3.0 * e[j + 1] for j in 1:4],
-        [1 => 4.0 * e[4], 3 => -1.0 * e[1]],
+        [1 => 4.0 * e[4], 3 => -1.0 * e[1], 2 => 0.5 * e[3], 2 => 0.5 * e[3]],
         [j => 0.5 * x[j] for j in 1:4],
         [1 => 0.25 * x[5]],
     )

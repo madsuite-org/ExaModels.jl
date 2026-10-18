@@ -869,7 +869,7 @@ function ExaModel(c::ExaCore{T, VT, B, S, V, P, O, C, R, Tuple{}, Tuple{}, Tuple
         "ExaModel(c; prod = true) is not yet supported with buffered subexpressions",
     )
     sjac, resolved, localrows = _build_subexpr_jac(T, c.subexprs, c.cons, c.nnzj)
-    shess = _build_subexpr_hess(T, c.subexprs, c.obj, c.cons, c.nnzh, localrows, length(c.θ))
+    shess = _build_subexpr_hess(T, c.subexprs, c.obj, c.cons, c.nnzh, localrows, resolved, length(c.θ))
     ska = build_subexpr_ka(c, sjac, shess, c.nvar)
     return ExaModel(
         c.name,
@@ -2231,6 +2231,12 @@ function add_reduce(
     for p in pairs
         p isa Pair || throw(
             ArgumentError("add_reduce expects `index => term` pairs; got $(typeof(p))"),
+        )
+        first(p) isa Integer || throw(
+            ArgumentError(
+                "add_reduce destination indices must be data values, not " *
+                    "symbolic expressions; got $(typeof(first(p)))",
+            ),
         )
         j = Int(first(p))
         1 <= j <= nn ||
