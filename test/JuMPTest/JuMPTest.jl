@@ -5,6 +5,7 @@ using Test
 import ExaModels
 import Ipopt
 import JuMP
+import MadNLP
 using JuMP: MOI
 import NLPModels
 import NLPModelsIpopt
@@ -123,6 +124,27 @@ function test_no_constraints_e2etest()
     @test length(em.objs) == 1
     @test em.objs[1].f.f isa
         ExaModels.Node1{typeof(sin), <:ExaModels.Var{<:ExaModels.DataIndexed}}
+    return
+end
+
+function test_madnlp_status()
+    # `madnlp(::AbstractNLPModel)` returns a `MadNLP.Status` enum and not a
+    # SolverCore `Symbol`
+    model = JuMP.Model(() -> ExaModels.Optimizer(MadNLP.madnlp))
+    JuMP.set_attribute(model, "print_level", MadNLP.ERROR)
+    JuMP.@variable(model, x)
+    JuMP.@objective(model, Min, (x - 1)^2)
+    JuMP.optimize!(model)
+    @test JuMP.termination_status(model) == MOI.LOCALLY_SOLVED
+    @test JuMP.primal_status(model) == MOI.FEASIBLE_POINT
+    @test JuMP.dual_status(model) == MOI.FEASIBLE_POINT
+    @test JuMP.raw_status(model) == "SOLVE_SUCCEEDED"
+    @test JuMP.value(x) ≈ 1 atol = 1e-6
+    JuMP.@constraint(model, x^2 == -1)
+    JuMP.optimize!(model)
+    @test JuMP.termination_status(model) == MOI.LOCALLY_INFEASIBLE
+    @test JuMP.primal_status(model) == MOI.INFEASIBLE_POINT
+    @test JuMP.raw_status(model) == "INFEASIBLE_PROBLEM_DETECTED"
     return
 end
 
