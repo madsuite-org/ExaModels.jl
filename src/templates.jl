@@ -11,8 +11,28 @@ replace_float_64_by_32(x::Float64) = Float32(x)
 replace_float_64_by_32(x::Tuple) = map(replace_float_64_by_32, x)
 replace_float_64_by_32(x::NamedTuple) = map(replace_float_64_by_32, x)
 replace_float_64_by_32(x::AbstractArray{Float64}) = Float32.(x)
-replace_float_64_by_32(x::AbstractArray) = replace_float_64_by_32.(x)
-@inline replace_float_64_by_32(x::T) where {T} = _rebuild_float_32(x, Val(fieldcount(T)))
+replace_float_64_by_32(x::AbstractArray{T}) where {T} =
+    _contains_float64(T) ? replace_float_64_by_32.(x) : x
+@inline replace_float_64_by_32(x::T) where {T} =
+    _contains_float64(T) ? _rebuild_float_32(x, Val(fieldcount(T))) : x
+
+# Whether a Float64 can occur anywhere inside a value of type `T`. Values of
+# Float64-free types are returned as they are: there is nothing to rewrite, and
+# the rebuild is not a safe no-op for them. On Julia 1.13.2 the broadcast of
+# the struct rebuild over an array of nested isbits structs returns corrupt
+# elements (the scalar call is right, the broadcast is not; 1.12 is right on
+# both), measured 2026-10-19 on an M1 Air with the test suite's I1/I2 index
+# structs: it was the augmentation iterators of luksan_struct arriving on the
+# device as garbage that took the metal CI leg red on 1.13.
+_contains_float64(::Type{Float64}) = true
+_contains_float64(::Type{<:AbstractArray{T}}) where {T} = _contains_float64(T)
+_contains_float64(::Type{T}) where {T <: Tuple} = any(_contains_float64, fieldtypes(T))
+_contains_float64(::Type{<:NamedTuple{names, T}}) where {names, T} = _contains_float64(T)
+function _contains_float64(::Type{T}) where {T}
+    isconcretetype(T) || return true      # abstract or unknown: rewrite to be safe
+    isprimitivetype(T) && return false
+    return any(_contains_float64, fieldtypes(T))
+end
 @inline _rebuild_float_32(x, ::Val{0}) = x
 @inline function _rebuild_float_32(x::T, ::Val{N}) where {T, N}
     # Rebuild via the type's unparameterized constructor (T.name.wrapper), so a
