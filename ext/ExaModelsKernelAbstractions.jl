@@ -2,6 +2,7 @@ module ExaModelsKernelAbstractions
 
 import Adapt
 import ExaModels: ExaModels, NLPModels
+import ExaModels: _LongTuple
 import KernelAbstractions: KernelAbstractions, @kernel, @index, @Const, synchronize, CPU
 
 function getitr(gen::UnitRange{Int64})
@@ -196,6 +197,18 @@ function _conaug_structure!(T, backend, (con, cons...), sparsity)
     con isa ExaModels.ConstraintAugmentation && !isempty(con.itr) &&
         kers(backend)(sparsity, con.f, con.itr, con.oa, con.dims; ndrange = length(con.itr))
 end
+# From 33 blocks on, the `_LongTuple` methods walk the block tuple by loop
+# (one dynamic call per block) instead of by recursion, which inference stops
+# specializing at that length; same order, same per-block work (see nlp.jl).
+function _conaug_structure!(T, backend, cons::_LongTuple, sparsity)
+    blocks = Any[cons...]
+    for i in length(blocks):-1:1
+        con = blocks[i]
+        con isa ExaModels.ConstraintAugmentation && !isempty(con.itr) &&
+            kers(backend)(sparsity, con.f, con.itr, con.oa, con.dims; ndrange = length(con.itr))
+    end
+    return nothing
+end
 @kernel function kers(sparsity, @Const(f), @Const(itr), @Const(oa), @Const(dims))
     I = @index(Global)
     @inbounds sparsity[oa+I] = (ExaModels.offset0(f, itr, I, dims), oa + I)
@@ -207,6 +220,13 @@ _grad_structure!(T, backend, ::Tuple{}, gsparsity) = nothing
 function _grad_structure!(T, backend, (obj, objs...), gsparsity)
     _grad_structure!(T, backend, objs, gsparsity)
     ExaModels.sgradient!(backend, gsparsity, obj, ExaModels.NaNSource{T}(), ExaModels.NaNSource{T}(), T(NaN))
+end
+function _grad_structure!(T, backend, objs::_LongTuple, gsparsity)
+    blocks = Any[objs...]
+    for i in length(blocks):-1:1
+        ExaModels.sgradient!(backend, gsparsity, blocks[i], ExaModels.NaNSource{T}(), ExaModels.NaNSource{T}(), T(NaN))
+    end
+    return nothing
 end
 
 function ExaModels.jac_structure!(
@@ -225,6 +245,13 @@ _jac_structure!(T, backend, ::Tuple{}, rows, cols) = nothing
 function _jac_structure!(T, backend, (con, cons...), rows, cols)
     _jac_structure!(T, backend, cons, rows, cols)
     ExaModels.sjacobian!(backend, rows, cols, con, ExaModels.NaNSource{T}(), ExaModels.NaNSource{T}(), T(NaN))
+end
+function _jac_structure!(T, backend, cons::_LongTuple, rows, cols)
+    blocks = Any[cons...]
+    for i in length(blocks):-1:1
+        ExaModels.sjacobian!(backend, rows, cols, blocks[i], ExaModels.NaNSource{T}(), ExaModels.NaNSource{T}(), T(NaN))
+    end
+    return nothing
 end
 
 
@@ -252,6 +279,20 @@ function _con_hess_structure!(T, backend, (con, cons...), rows, cols)
     _con_hess_structure!(T, backend, cons, rows, cols)
     ExaModels.shessian!(backend, rows, cols, con, ExaModels.NaNSource{T}(), ExaModels.NaNSource{T}(), T(NaN), T(NaN))
 end
+function _obj_hess_structure!(T, backend, objs::_LongTuple, rows, cols)
+    blocks = Any[objs...]
+    for i in length(blocks):-1:1
+        ExaModels.shessian!(backend, rows, cols, blocks[i], ExaModels.NaNSource{T}(), ExaModels.NaNSource{T}(), T(NaN), T(NaN))
+    end
+    return nothing
+end
+function _con_hess_structure!(T, backend, cons::_LongTuple, rows, cols)
+    blocks = Any[cons...]
+    for i in length(blocks):-1:1
+        ExaModels.shessian!(backend, rows, cols, blocks[i], ExaModels.NaNSource{T}(), ExaModels.NaNSource{T}(), T(NaN), T(NaN))
+    end
+    return nothing
+end
 
 
 _ska(m::ExaModels.ExaModel) = m.ska
@@ -276,6 +317,16 @@ function _obj(backend, objbuffer, (obj, objs...), x, θ)
     if !isempty(obj.itr)
         kerf(backend)(objbuffer, obj.f, obj.itr, x, θ; ndrange = length(obj.itr))
     end
+end
+function _obj(backend, objbuffer, objs::_LongTuple, x, θ)
+    blocks = Any[objs...]
+    for i in length(blocks):-1:1
+        obj = blocks[i]
+        if !isempty(obj.itr)
+            kerf(backend)(objbuffer, obj.f, obj.itr, x, θ; ndrange = length(obj.itr))
+        end
+    end
+    return nothing
 end
 
 function ExaModels.cons_nln!(
@@ -305,6 +356,16 @@ function _cons_nln!(backend, y, (con, cons...), x, θ)
         kerf(backend)(y, con.f, con.itr, x, θ; ndrange = length(con.itr))
     end
 end
+function _cons_nln!(backend, y, cons::_LongTuple, x, θ)
+    blocks = Any[cons...]
+    for i in length(blocks):-1:1
+        con = blocks[i]
+        if con isa ExaModels.Constraint && !isempty(con.itr)
+            kerf(backend)(y, con.f, con.itr, x, θ; ndrange = length(con.itr))
+        end
+    end
+    return nothing
+end
 
 
 
@@ -314,6 +375,16 @@ function _conaugs!(backend, y, (con, cons...), x, θ)
     if con isa ExaModels.ConstraintAugmentation && !isempty(con.itr)
         kerf2(backend)(y, con.f, con.itr, x, θ, con.oa; ndrange = length(con.itr))
     end
+end
+function _conaugs!(backend, y, cons::_LongTuple, x, θ)
+    blocks = Any[cons...]
+    for i in length(blocks):-1:1
+        con = blocks[i]
+        if con isa ExaModels.ConstraintAugmentation && !isempty(con.itr)
+            kerf2(backend)(y, con.f, con.itr, x, θ, con.oa; ndrange = length(con.itr))
+        end
+    end
+    return nothing
 end
 
 function ExaModels.grad!(
@@ -344,6 +415,13 @@ function _grad!(backend, y, (obj, objs...), x, θ)
     _grad!(backend, y, objs, x, θ)
     ExaModels.sgradient!(backend, y, obj, x, θ, one(eltype(y)))
 end
+function _grad!(backend, y, objs::_LongTuple, x, θ)
+    blocks = Any[objs...]
+    for i in length(blocks):-1:1
+        ExaModels.sgradient!(backend, y, blocks[i], x, θ, one(eltype(y)))
+    end
+    return nothing
+end
 
 function ExaModels.jac_coord!(
     m::ExaModels.AbstractExaModel{T,VT,E},
@@ -359,6 +437,13 @@ _jac_coord!(backend, y, ::Tuple{}, x, θ) = nothing
 function _jac_coord!(backend, y, (con, cons...), x, θ)
     _jac_coord!(backend, y, cons, x, θ)
     ExaModels.sjacobian!(backend, y, nothing, con, x, θ, one(eltype(y)))
+end
+function _jac_coord!(backend, y, cons::_LongTuple, x, θ)
+    blocks = Any[cons...]
+    for i in length(blocks):-1:1
+        ExaModels.sjacobian!(backend, y, nothing, blocks[i], x, θ, one(eltype(y)))
+    end
+    return nothing
 end
 
 function ExaModels.jprod_nln!(
@@ -582,10 +667,24 @@ function _obj_hess_coord!(backend, hess, (obj, objs...), x, θ, obj_weight)
     _obj_hess_coord!(backend, hess, objs, x, θ, obj_weight)
     ExaModels.shessian!(backend, hess, nothing, obj, x, θ, obj_weight, zero(eltype(hess)))
 end
+function _obj_hess_coord!(backend, hess, objs::_LongTuple, x, θ, obj_weight)
+    blocks = Any[objs...]
+    for i in length(blocks):-1:1
+        ExaModels.shessian!(backend, hess, nothing, blocks[i], x, θ, obj_weight, zero(eltype(hess)))
+    end
+    return nothing
+end
 _con_hess_coord!(backend, hess, ::Tuple{}, x, θ, y) = nothing
 function _con_hess_coord!(backend, hess, (con, cons...), x, θ, y)
     _con_hess_coord!(backend, hess, cons, x, θ, y)
     ExaModels.shessian!(backend, hess, nothing, con, x, θ, y, zero(eltype(hess)))
+end
+function _con_hess_coord!(backend, hess, cons::_LongTuple, x, θ, y)
+    blocks = Any[cons...]
+    for i in length(blocks):-1:1
+        ExaModels.shessian!(backend, hess, nothing, blocks[i], x, θ, y, zero(eltype(hess)))
+    end
+    return nothing
 end
 
 

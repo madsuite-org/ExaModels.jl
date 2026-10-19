@@ -2,6 +2,7 @@ module ADTest
 
 using ExaModels
 using Test, ForwardDiff, SpecialFunctions
+import NLPModels
 
 const FUNCTIONS = [
     ("basic-functions-:+", x -> +(x[1])),
@@ -321,6 +322,30 @@ function verify_derivative_tables()
             end
         end
     end
+    @testset "bselect" begin
+        @test ExaModels.bselect(0.0, Inf) == 0.0
+        @test ExaModels.bselect(0.0, NaN) == 0.0
+        @test ExaModels.bselect(1.0, 3.5) == 3.5
+        # Blend a live branch with an inactive branch whose value is -Inf at
+        # the evaluation point: the blend must stay finite and carry the live
+        # branch's derivatives. The 0/1 step factor is built from sign, whose
+        # registered derivative is zero.
+        step(t) = (sign(sign(t) + 0.5) + 1) * 0.5   # 1 iff t >= 0 (ties exact)
+        c = ExaModels.ExaCore(Float64)
+        c, x = ExaModels.add_var(c, 2; start = [2.0, 0.0])
+        c, _ = ExaModels.add_obj(
+            c,
+            ExaModels.bselect(step(-x[d.i+1]), x[d.i]^2) +
+            ExaModels.bselect(1.0 - step(-x[d.i+1]), log(x[d.i+1])) for
+            d in [(i = 1,)]
+        )
+        m = ExaModels.ExaModel(c)
+        x0 = [2.0, 0.0]
+        @test NLPModels.obj(m, x0) == 4.0
+        g = NLPModels.grad(m, x0)
+        @test g[1] == 4.0 && g[2] == 0.0
+    end
+
     return @testset "Bivariate derivative tables" begin
         for (fname, df1, df2, ddf11, ddf12, ddf22) in ExaModels._BIVARIATES
             f = getfield(Base, fname)

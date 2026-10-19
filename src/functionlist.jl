@@ -78,8 +78,31 @@ const _BIVARIATES = [
     (:hypot, (x1, x2) -> x1 / hypot(x1, x2), (x1, x2) -> x2 / hypot(x1, x2), (x1, x2) -> (-(x1^2) + hypot(x1, x2)^2) / (hypot(x1, x2)^3), (x1, x2) -> (-x1 * x2) / (hypot(x1, x2)^3), (x1, x2) -> (-(x2^2) + hypot(x1, x2)^2) / (hypot(x1, x2)^3)),
     (:max, (x1, x2) -> ifelse(x1 > x2, one(x1), zero(x1)), (x1, x2) -> ifelse(x1 > x2, zero(x1), one(x1)), (x1, x2) -> zero(x1), (x1, x2) -> zero(x1), (x1, x2) -> zero(x1)),
     (:min, (x1, x2) -> ifelse(x1 < x2, one(x1), zero(x1)), (x1, x2) -> ifelse(x1 < x2, zero(x1), one(x1)), (x1, x2) -> zero(x1), (x1, x2) -> zero(x1), (x1, x2) -> zero(x1)),
+    (:mod, (x1, x2) -> one(x1), (x1, x2) -> -floor(x1 / x2), (x1, x2) -> zero(x1), (x1, x2) -> zero(x1), (x1, x2) -> zero(x1)),
 ]
 
 for (fname, df1, df2, ddf11, ddf12, ddf22) in _BIVARIATES
     @eval @register_bivariate(Base.$fname, $df1, $df2, $ddf11, $ddf12, $ddf22)
 end
+
+"""
+    bselect(s, x)
+
+Branch-selecting multiplication: `s * x`, except that a zero selector
+annihilates `x` entirely — `bselect(0, x) == 0` even when `x` is `Inf` or
+`NaN`. Intended for blending conditional branches, with `s` a 0/1 indicator
+built from zero-derivative primitives such as `sign`: the value and the
+derivatives of an inactive branch cannot poison the blend, so
+`bselect(s, a) + bselect(1 - s, b)` reproduces branch-selected values and
+derivatives exactly (`d/ds` is defined as 0, `d/dx = s`).
+"""
+bselect(s::Real, x::Real) = ifelse(iszero(s), zero(x), s * x)
+
+@register_bivariate(
+    bselect,
+    (s, x) -> zero(s),
+    (s, x) -> s,
+    (s, x) -> zero(s),
+    (s, x) -> zero(s),
+    (s, x) -> zero(s),
+)

@@ -26,12 +26,12 @@ Performs sparse jacobian evaluation via the reverse pass on the computation (sub
     return cnt
 end
 @inline function jrpass(d::D, comp, i, y1, y2, o1, cnt, adj) where {D<:AdjointNode1}
-    cnt = jrpass(d.inner, comp, i, y1, y2, o1, cnt, adj * d.y)
+    cnt = jrpass(d.inner, comp, i, y1, y2, o1, cnt, _amul(adj, d.y))
     return cnt
 end
 @inline function jrpass(d::D, comp, i, y1, y2, o1, cnt, adj) where {D<:AdjointNode2}
-    cnt = jrpass(d.inner1, comp, i, y1, y2, o1, cnt, adj * d.y1)
-    cnt = jrpass(d.inner2, comp, i, y1, y2, o1, cnt, adj * d.y2)
+    cnt = jrpass(d.inner1, comp, i, y1, y2, o1, cnt, _amul(adj, d.y1))
+    cnt = jrpass(d.inner2, comp, i, y1, y2, o1, cnt, _amul(adj, d.y2))
     return cnt
 end
 @inline function jrpass(d::D, comp, i, y1, y2, o1, cnt, adj) where {D<:AdjointNodeVar}

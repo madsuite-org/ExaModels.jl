@@ -617,3 +617,17 @@ end
 # An `ArgLeaf` does not survive instantiation: it *becomes* the scalar, leaving
 # a graph indistinguishable from one built with concrete sizes.
 @inline instantiate(n::ArgLeaf, a::Vararg{Any,N}) where {N} = instantiate(getfield(n, :a), a...)
+
+"""
+    _amul(a, b)
+
+Adjoint-propagation product: `a * b`, except a zero adjoint `a` annihilates
+`b` entirely (branchless select, so `_amul(0, Inf) == 0`). Keeps reverse-mode
+sweeps finite on subtrees that a zero adjoint has switched off — e.g. the
+inactive branch of a `bselect` blend whose local partials are infinite —
+without perturbing any live path.
+"""
+@inline function _amul(a, b)
+    p = a * b
+    return ifelse(iszero(a), zero(p), p)
+end
