@@ -65,7 +65,12 @@ jobs:
   cpu:
     strategy:
       matrix:
-        julia-version: ['1', 'lts']
+        # '1' is pinned to 1.12 on the self-hosted legs: on Julia 1.13 the
+        # OpenCL.jl add in this environment fails at Pkg.add with
+        # "Unknown package: SPIRVIntrinsics" (OpenCL.jl 0.10.12; the same add
+        # passes on 1.12). The hosted legs keep the floating '1' as the
+        # early warning; unpin once OpenCL.jl resolves on 1.13.
+        julia-version: ['1.12', 'lts']
         julia-arch: [x64]
         os: [ubuntu-latest]
     runs-on: ['self-hosted', 'shin-compute']
@@ -93,17 +98,17 @@ jobs:
       # OpenCL extension lines are exercised here and nowhere on the hosted
       # runners, and one instrumented leg is enough for the report.
       run: |
-        julia --startup-file=no --color=yes ${{ matrix.julia-version == '1' && '--code-coverage=user' || '' }} --project=./test -e '
+        julia --startup-file=no --color=yes ${{ matrix.julia-version == '1.12' && '--code-coverage=user' || '' }} --project=./test -e '
           push!(ARGS, "EXAMODELS_NO_TEST_CPU")
           push!(ARGS, "EXAMODELS_TEST_KA")
           push!(ARGS, "EXAMODELS_TEST_POCL")
           include("test/runtests.jl")'
     - uses: julia-actions/julia-processcoverage@v1
-      if: matrix.julia-version == '1'
+      if: matrix.julia-version == '1.12'
       with:
         directories: src,ext
     - uses: codecov/codecov-action@v5
-      if: matrix.julia-version == '1'
+      if: matrix.julia-version == '1.12'
       with:
         files: lcov.info
         flags: cpu
@@ -115,7 +120,12 @@ jobs:
   gpu:
     strategy:
       matrix:
-        julia-version: ['1', 'lts']
+        # '1' is pinned to 1.12 on the self-hosted legs: on Julia 1.13 the
+        # OpenCL.jl add in this environment fails at Pkg.add with
+        # "Unknown package: SPIRVIntrinsics" (OpenCL.jl 0.10.12; the same add
+        # passes on 1.12). The hosted legs keep the floating '1' as the
+        # early warning; unpin once OpenCL.jl resolves on 1.13.
+        julia-version: ['1.12', 'lts']
         julia-arch: [x64]
         os: [ubuntu-latest]
         backend: ['cuda', 'amdgpu', 'oneapi']
@@ -163,16 +173,16 @@ jobs:
       # device paths of the KernelAbstractions extension; the other backends
       # walk the same extension lines and need no second instrumented run.
       run: |
-        julia --startup-file=no --color=yes ${{ matrix.julia-version == '1' && matrix.backend == 'cuda' && '--code-coverage=user' || '' }} --project=./test -e '
+        julia --startup-file=no --color=yes ${{ matrix.julia-version == '1.12' && matrix.backend == 'cuda' && '--code-coverage=user' || '' }} --project=./test -e '
           push!(ARGS, "EXAMODELS_NO_TEST_CPU")
           push!(ARGS, "EXAMODELS_TEST_" * uppercase("${{ matrix.backend }}"))
           include("test/runtests.jl")'
     - uses: julia-actions/julia-processcoverage@v1
-      if: matrix.julia-version == '1' && matrix.backend == 'cuda'
+      if: matrix.julia-version == '1.12' && matrix.backend == 'cuda'
       with:
         directories: src,ext
     - uses: codecov/codecov-action@v5
-      if: matrix.julia-version == '1' && matrix.backend == 'cuda'
+      if: matrix.julia-version == '1.12' && matrix.backend == 'cuda'
       with:
         files: lcov.info
         flags: gpu-${{ matrix.backend }}
@@ -184,7 +194,12 @@ jobs:
   metal:
     strategy:
       matrix:
-        julia-version: ['1', 'lts']
+        # '1' is pinned to 1.12 on the self-hosted legs: on Julia 1.13 the
+        # OpenCL.jl add in this environment fails at Pkg.add with
+        # "Unknown package: SPIRVIntrinsics" (OpenCL.jl 0.10.12; the same add
+        # passes on 1.12). The hosted legs keep the floating '1' as the
+        # early warning; unpin once OpenCL.jl resolves on 1.13.
+        julia-version: ['1.12', 'lts']
         julia-arch: [aarch64]
         os: [macos-latest]
         backend: ['metal']
