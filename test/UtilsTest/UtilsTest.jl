@@ -22,6 +22,16 @@ struct _RFTestNetwork{T}
     coefs::NTuple{3, T}
 end
 
+# Float64-free nested isbits index structs (the shape of the NLPTest luksan_struct
+# iterator): these must pass through replace_float_64_by_32 unchanged, also
+# when broadcast over an array.
+struct _RFTestI2
+    i::Tuple{Int, Int}
+end
+struct _RFTestI1
+    i::_RFTestI2
+end
+
 function runtests()
     @testset "Utils tests" begin
         m, ~ = _exa_luksan_vlcek_model(nothing, 3)
@@ -82,6 +92,22 @@ function runtests()
 
             # Identity on type with no Float64 anywhere
             @test ExaModels.replace_float_64_by_32((1, 2, 3)) === (1, 2, 3)
+
+            # Nested isbits structs without Float64: returned as they are, element
+            # by element, whether the array method or a broadcast is used. On
+            # Julia 1.13.2 the broadcast of the struct rebuild returned corrupt
+            # elements for exactly this shape (the luksan_struct iterator), which
+            # the Float64-free short-circuit now avoids.
+            idx = [_RFTestI1(_RFTestI2((i, j))) for i in 1:3, j in 1:2]
+            @test ExaModels._contains_float64(_RFTestI1) === false
+            @test ExaModels._contains_float64(_RFTestBus{Float64}) === true
+            @test ExaModels._contains_float64(_RFTestBus{Float32}) === false
+            @test ExaModels.replace_float_64_by_32(idx) === idx
+            @test ExaModels.replace_float_64_by_32.(idx) == idx
+            @test all(ExaModels.replace_float_64_by_32(x) === x for x in idx)
+            sl = idx[1:(end - 1), :]
+            @test ExaModels.replace_float_64_by_32(sl) == sl
+            @test ExaModels.replace_float_64_by_32.(sl)[1] === _RFTestI1(_RFTestI2((1, 1)))
         end
     end
 end
