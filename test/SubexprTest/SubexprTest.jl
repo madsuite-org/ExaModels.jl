@@ -119,6 +119,17 @@ function _device_tests(backend)
         i != j && (H1[j, i] += v)
     end
     @test H1 ≈ _dense_hess(m0, xh, yh; obj_weight = 0.7) rtol = 1e-12
+
+    pvh = [sin(5i) + 0.25 for i in 1:10]
+    pvd = copyto!(similar(m1.meta.x0, 10), pvh)
+    hp0 = zeros(10)
+    hp1 = fill!(similar(m1.meta.x0, 10), 0)
+    NLPModels.hprod!(m0, xh, yh, pvh, hp0; obj_weight = 0.7)
+    NLPModels.hprod!(m1, xd, yd, pvd, hp1; obj_weight = 0.7)
+    @test Array(hp1) ≈ hp0 rtol = 1e-12
+    NLPModels.hprod!(m0, xh, pvh, hp0)
+    NLPModels.hprod!(m1, xd, pvd, hp1)
+    @test Array(hp1) ≈ hp0 rtol = 1e-12
 end
 
 function runtests(; backends = Any[CPU()])
