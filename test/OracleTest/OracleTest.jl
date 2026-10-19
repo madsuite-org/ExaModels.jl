@@ -805,6 +805,10 @@ end
 # fill every block (the scalar-oracle block used to be allocated but never
 # written), on the host and on every device backend.
 function test_scalar_oracle_hessian(backend)
+    # Float64 only: oracle models cannot yet be built with T = Float32 on the
+    # host (the oracle caches and work buffers are allocated as Float64, and the
+    # ExaModelWithOracle fields require VT). The device legs still exercise the
+    # obj_weight -> T conversion in the KA overrides, which Metal requires.
     return @testset "scalar-oracle Hessian assembly" begin
         c = ExaCore(Float64; backend = backend)
         c, x = add_var(c, 2; start = [1.0, 2.0])

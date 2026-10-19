@@ -1222,7 +1222,7 @@ function ExaModels.hprod!(
         ExaModels._run_with_buf!(oracle, backend, cache.buf_nvar, cache.cpu_nvar) do b
             oracle.hvp!(b, xin, vin)
         end
-        Hv .+= obj_weight .* cache.buf_nvar
+        Hv .+= T(obj_weight) .* cache.buf_nvar
     end
     return Hv
 end
@@ -1316,7 +1316,7 @@ function ExaModels.hprod!(
         ExaModels._run_with_buf!(oracle, backend, cache.buf_nvar, cache.cpu_nvar) do b
             oracle.hvp!(b, xin, vin)
         end
-        Hv .+= obj_weight .* cache.buf_nvar
+        Hv .+= T(obj_weight) .* cache.buf_nvar
     end
     for (i, ev) in enumerate(m.evals)
         cache = m.eval_caches[i]
