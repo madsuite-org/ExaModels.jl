@@ -42,6 +42,22 @@ import NLPModels:
     cons_nln!,
     jtprod_nln!,
     jprod_nln!
+import NLPModelsExtensions:
+    ParametricNLPModelMeta,
+    get_par_meta,
+    get_npar,
+    get_par,
+    set_par!,
+    jac_par_structure!,
+    jac_par_coord!,
+    jac_par_dense!,
+    jprod_par!,
+    jtprod_par!,
+    hess_par_structure!,
+    hess_par_coord!,
+    hess_par_dense!,
+    hprod_par!,
+    htprod_par!
 import SolverCore
 import Printf
 
