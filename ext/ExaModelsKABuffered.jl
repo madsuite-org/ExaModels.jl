@@ -187,8 +187,7 @@ function _lamjac!(backend, y, cons::ExaModels._LongTuple, x, θ, yv)
     end
     return nothing
 end
-_lamjac1!(backend, y, con, x, θ, yv) = nothing
-function _lamjac1!(backend, y, con::ExaModels.Constraint, x, θ, yv)
+function _lamjac1!(backend, y, con, x, θ, yv)
     isempty(con.itr) && return nothing
     kerjs(backend)(y, con.f, con.itr, x, θ, yv, ExaModels._constraint_dims(con); ndrange = length(con.itr))
 end
