@@ -911,6 +911,26 @@ function ExaModels.jac_coord!(
     return jac
 end
 
+# Objective-only hess_coord!: the SIMD objective part plus the scalar-oracle
+# Hessians (see the host method in oracle.jl). Needed here as well because the
+# AbstractExaModel KA override above would otherwise be ambiguous with it.
+function ExaModels.hess_coord!(
+        m::ExaModels.ExaModelWithOracle{T, VT, E},
+        x::AbstractVector,
+        hess::AbstractVector;
+        obj_weight = one(T),
+    ) where {T, VT, E <: KAExtension}
+    fill!(hess, zero(eltype(hess)))
+    _obj_hess_coord!(m.ext.backend, hess, m.objs, x, m.θ, T(obj_weight))
+    backend = m.ext.backend
+    for (i, oracle) in enumerate(m.scalar_oracles)
+        cache = m.scalar_oracle_caches[i]
+        oracle.nnzh == 0 && continue
+        ExaModels._scalar_hess!(oracle, x, hess, T(obj_weight), cache, backend)
+    end
+    return hess
+end
+
 function ExaModels.hess_coord!(
         m::ExaModels.ExaModelWithOracle{T, VT, E},
         x::AbstractVector,
@@ -939,7 +959,7 @@ function ExaModels.hess_coord!(
     for (i, oracle) in enumerate(m.scalar_oracles)
         cache = m.scalar_oracle_caches[i]
         oracle.nnzh == 0 && continue
-        ExaModels._scalar_hess_via_hvp!(oracle, x, hess, T(obj_weight), cache, backend)
+        ExaModels._scalar_hess!(oracle, x, hess, T(obj_weight), cache, backend)
     end
     for (i, ev) in enumerate(m.evals)
         cache = m.eval_caches[i]
