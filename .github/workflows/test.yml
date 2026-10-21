@@ -28,6 +28,13 @@ jobs:
         with:
           version: ${{ matrix.julia-version }}
       - uses: julia-actions/cache@v3
+      - name: MOI
+        shell: julia --project=@. {0}
+        run: |
+          using Pkg
+          Pkg.add([
+              PackageSpec(name="MathOptInterface", rev="bl/linearity"),
+          ])
       - uses: julia-actions/julia-buildpkg@latest
       - name: Run tests
         env:
