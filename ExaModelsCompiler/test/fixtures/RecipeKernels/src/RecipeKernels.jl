@@ -16,7 +16,7 @@ recompiles, whereas a closure carries a gensym that is not.
 """
 module RecipeKernels
 
-export alternating, offsets, doubled_args, parsed_args, table2d, datant
+export alternating, offsets, doubled_args, parsed_args, table2d, datant, summary_writer
 
 "Alternating starting point — the shape a per-index start generator takes."
 @inline alternating(i) = isodd(i) ? -1.2 : 1.0
@@ -50,5 +50,23 @@ datant(n) = (
     v_start = fill(0.5, 3 * n),
     tab = [(i, j, 0.5 + i) for i in 1:n, j in 1:3],
 )
+
+"A solution writer for the writer surface: records what it was handed, so the
+test can check every argument crossed the boundary."
+function summary_writer(out::AbstractString, arg, model, x, y, zl, zu;
+                        objective::Float64 = NaN, status::AbstractString = "")
+    # `open(f, path, mode)` splats its arguments, which `--trim=safe` refuses.
+    io = open(out, "w")
+    try
+        # One string: a long `println` argument list is a `Vararg` call trim cannot resolve.
+        words = (string(arg), string(model.meta.nvar), string(length(x)), string(sum(x)),
+                 string(length(y)), string(sum(y)), string(sum(zl)), string(sum(zu)),
+                 string(objective), String(status))
+        println(io, join(words, ' '))
+    finally
+        close(io)
+    end
+    return out
+end
 
 end # module
