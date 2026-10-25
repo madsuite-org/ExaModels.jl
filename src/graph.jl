@@ -140,9 +140,17 @@ struct Var{I} <: AbstractNode
 end
 
 struct ParameterSource <: AbstractNode end
-struct ParameterNode{I} <: AbstractNode
+"""
+    ParameterNode{I, S} <: AbstractNode
+
+A leaf node representing the `i`-th parameter.
+
+`S` flags whether the sensitivity should be calculated for this parameter block.
+"""
+struct ParameterNode{I,S} <: AbstractNode
     i::I
 end
+@inline ParameterNode(i::I, ::Val{S} = Val(false)) where {I,S} = ParameterNode{I,S}(i)
 
 """
     ArgLeaf{A} <: AbstractNode
@@ -254,7 +262,7 @@ end
 @inline _reindexed_access(inner, J::Symbol) = getproperty(inner, J)
 @inline _reindexed_access(inner, J) = getindex(inner, J)
 @inline _reindex(n::Var, i) = Var(_reindex(getfield(n, :i), i))
-@inline _reindex(n::ParameterNode, i) = ParameterNode(_reindex(getfield(n, :i), i))
+@inline _reindex(n::ParameterNode{I,S}, i) where {I,S} = ParameterNode(_reindex(getfield(n, :i), i), Val(S))
 @inline function _reindex(n::Node1{F}, i) where {F}
     # Julia synthesises no partially-parameterised constructor, so the child
     # types are given explicitly; they are known here, so this stays static.
@@ -494,6 +502,35 @@ end
     @inbounds SecondAdjointNodeVar(i, x.inner[i])
 
 
+"""
+    ParameterAdjointSource{VT}
+
+Parameter vector that turns a `sensitivity = Val(true)` [`ParameterNode`](@ref) into an
+[`AdjointNodeVar`](@ref) or [`SecondAdjointNodeVar`](@ref) leaf at index `i + offset`.
+
+# Fields
+- `inner::VT`: parameter vector
+- `offset::Int`: leaf index offset
+"""
+struct ParameterAdjointSource{VT}
+    inner::VT
+    offset::Int
+end
+@inline Base.getindex(s::ParameterAdjointSource, i) = @inbounds s.inner[i]
+Base.eltype(::Type{ParameterAdjointSource{VT}}) where {VT} = eltype(VT)
+
+_leaf(::AdjointNodeSource) = AdjointNodeVar
+_leaf(::SecondAdjointNodeSource) = SecondAdjointNodeVar
+
+@inline function (v::ParameterNode{I,true})(i, x, θ::ParameterAdjointSource) where {I<:AbstractNode}
+    j = v.i(i, x, θ)
+    @inbounds _leaf(x)(j + θ.offset, θ.inner[j])
+end
+@inline (v::ParameterNode{I,true})(i, x, θ::ParameterAdjointSource) where {I} =
+    @inbounds _leaf(x)(v.i + θ.offset, θ.inner[v.i])
+@inline (v::ParameterNode{I,true})(::Identity, x, θ::ParameterAdjointSource) where {I<:AbstractNode} = x[v]
+@inline (v::ParameterNode{I,true})(::Identity, x, θ::ParameterAdjointSource) where {I<:Real} = x[v]
+
 @inline (v::Null{Nothing})(i, x::V, θ) where {T,V<:AbstractVector{T}} = zero(T)
 @inline (v::Null{N})(i, x::V, θ) where {N,T,V<:AbstractVector{T}} = T(v.value)
 @inline (v::Null{Nothing})(i, x::AdjointNodeSource{T}, θ) where {T} = AdjointNull(zero(eltype(T)))
@@ -594,9 +631,9 @@ end
     i = instantiate(n.i, a...)
     return Var{typeof(i)}(i)
 end
-@inline function instantiate(n::ParameterNode{I}, a::Vararg{Any,N}) where {I, N}
+@inline function instantiate(n::ParameterNode{I,S}, a::Vararg{Any,N}) where {I, S, N}
     i = instantiate(n.i, a...)
-    return ParameterNode{typeof(i)}(i)
+    return ParameterNode(i, Val(S))
 end
 @inline function instantiate(n::Node1{F,I}, a::Vararg{Any,N}) where {F,I, N}
     i = instantiate(n.inner, a...)

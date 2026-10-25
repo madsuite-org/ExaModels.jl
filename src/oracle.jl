@@ -655,10 +655,11 @@ The constraint ordering is:
 
 and analogously for the Jacobian and Hessian nonzero arrays.
 """
-struct ExaModelWithOracle{T, VT, E, O, C, S, R, IC, SO, SC, EV, EC} <: AbstractExaModel{T, VT, E}
+struct ExaModelWithOracle{T, VT, E, O, C, S, R, IC, SO, SC, EV, EC, P} <: AbstractExaModel{T, VT, E}
     objs::O                          # same as ExaModel
     cons::C                          # same as ExaModel (SIMD constraints only)
     θ::VT                            # same as ExaModel
+    pars::P
     meta::NLPModels.NLPModelMeta{T, VT}
     counters::NLPModels.Counters
     ext::E
@@ -820,6 +821,7 @@ function _build_with_oracle(c::ExaCore; kwargs...)
         c.obj,
         c.cons,
         copy(c.θ),   # each model owns its parameters — see nlp.jl
+        c.par,
         meta,
         NLPModels.Counters(),
         build_extension(c; kwargs...),
