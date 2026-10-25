@@ -12,7 +12,7 @@ function _nested_model(; buffered = false)
     c, x = add_var(c, 10)
     c, s = add_expr(c, (x[i]^2 + sin(x[i + 1]) for i in 1:9); buffered)
     c, t = add_expr(c, (s[i] * s[i + 1] + x[i] for i in 1:8); buffered)
-    c, _ = add_obj(c, (exp(t[i] / 100) * t[i] + cos(x[i]) for i in 1:8))
+    c, _ = add_obj(c, (exp(t[i] / 100.0) * t[i] + cos(x[i]) for i in 1:8))
     c, _ = add_con(c, (t[i] + x[i + 2]^2 for i in 1:8))
     return ExaModel(c)
 end
@@ -89,7 +89,7 @@ function _red_ref_model()
     c = ExaCore(concrete = Val(true))
     c, x = add_var(c, 6)
     for j in 1:4
-        c, _ = add_obj(c, (_red_vexpr(x, j)^2 + exp(_red_vexpr(x, j) / 10) for _ in 1:1))
+        c, _ = add_obj(c, (_red_vexpr(x, j)^2 + exp(_red_vexpr(x, j) / 10.0) for _ in 1:1))
     end
     for j in 1:4
         c, _ = add_con(c, (_red_vexpr(x, j) * x[j + 1] + x[j]^2 for _ in 1:1))
@@ -110,11 +110,84 @@ function _red_core(backend)
         [1 => 0.25 * x[5]],
     )
     c, v = add_reduce(c, 4, pairs; init = 1.5)
-    c, _ = add_obj(c, (v[j]^2 + exp(v[j] / 10) for j in 1:4))
+    c, _ = add_obj(c, (v[j]^2 + exp(v[j] / 10.0) for j in 1:4))
     c, _ = add_con(c, (v[j] * x[j + 1] + x[j]^2 for j in 1:4))
     return c
 end
 _red_model() = ExaModel(_red_core(nothing))
+
+# Chained reductions interleaved with traced stages, in both directions
+# (reduce over stage slots, stage over reduce slots, reduce over reduce +
+# stage + variable); ragged, so it has no inlined reference.
+function _red_chain_core(backend)
+    c = backend === nothing ? ExaCore(concrete = Val(true)) :
+        ExaCore(concrete = Val(true), backend = backend)
+    c, x = add_var(c, 6)
+    c, e = add_expr(c, (x[i]^2 + sin(x[i + 1]) for i in 1:5); buffered = true)
+    c, r1 = add_reduce(
+        c, 3, vcat(
+            [j => 2.0 * e[j] for j in 1:3],
+            [j => -0.5 * e[j + 2] for j in 1:3],
+            [2 => 0.3 * x[6]]
+        ); init = [0.1, 0.2, 0.3]
+    )
+    c, t = add_expr(c, (r1[i] * r1[i + 1] + exp(r1[i] / 10.0) for i in 1:2); buffered = true)
+    c, r2 = add_reduce(
+        c, 2, vcat(
+            [j => 1.5 * t[j] for j in 1:2],
+            [j => 0.25 * r1[j] for j in 1:2],
+            [1 => 0.5 * x[1]]
+        )
+    )
+    c, _ = add_obj(c, (r2[j]^2 + cos(r2[j]) for j in 1:2))
+    c, _ = add_con(c, (r2[j] * x[j + 1] + r1[j]^2 for j in 1:2))
+    return c
+end
+
+# Device comparisons: a Float32 backend (Metal) gets the Float32 AD tolerance.
+_dev_rtol(m) = eltype(m.meta.x0) === Float32 ? 1.0e-4 : 1.0e-13
+
+# Device model `m1` against the host model `m0` of the same problem, every
+# evaluation entry point through second order.
+function _device_vs_host(m0, m1, xh, yh; obj_weight = 0.7)
+    tol = _dev_rtol(m1)
+    nv, nc = m0.meta.nvar, m0.meta.ncon
+    xd = copyto!(similar(m1.meta.x0, nv), xh)
+    yd = copyto!(similar(m1.meta.x0, nc), yh)
+    @test NLPModels.obj(m1, xd) ≈ NLPModels.obj(m0, xh) rtol = tol
+    c0 = zeros(nc)
+    cd = fill!(similar(m1.meta.x0, nc), 0)
+    NLPModels.cons_nln!(m0, xh, c0)
+    NLPModels.cons_nln!(m1, xd, cd)
+    @test Array(cd) ≈ c0 rtol = tol
+    g0 = zeros(nv)
+    gd = fill!(similar(m1.meta.x0, nv), 0)
+    NLPModels.grad!(m0, xh, g0)
+    NLPModels.grad!(m1, xd, gd)
+    @test Array(gd) ≈ g0 rtol = tol
+    r = zeros(Int, m1.meta.nnzj)
+    cl = zeros(Int, m1.meta.nnzj)
+    NLPModels.jac_structure!(m1, r, cl)
+    vd = fill!(similar(m1.meta.x0, m1.meta.nnzj), 0)
+    NLPModels.jac_coord!(m1, xd, vd)
+    J1 = zeros(nc, nv)
+    for (i, j, v) in zip(r, cl, Array(vd))
+        J1[i, j] += v
+    end
+    @test J1 ≈ _dense_jac(m0, xh) rtol = tol
+    hr = zeros(Int, m1.meta.nnzh)
+    hc = zeros(Int, m1.meta.nnzh)
+    NLPModels.hess_structure!(m1, hr, hc)
+    hv = fill!(similar(m1.meta.x0, m1.meta.nnzh), 0)
+    NLPModels.hess_coord!(m1, xd, yd, hv; obj_weight)
+    H1 = zeros(nv, nv)
+    for (i, j, v) in zip(hr, hc, Array(hv))
+        H1[i, j] += v
+        i != j && (H1[j, i] += v)
+    end
+    @test H1 ≈ _dense_hess(m0, xh, yh; obj_weight) rtol = 10tol
+    return nothing
+end
 
 # Device-backend comparison: the same nested model built on a KA backend must
 # match the host inlined reference for every evaluation entry point.
@@ -124,26 +197,27 @@ function _device_tests(backend)
     c, x = add_var(c, 10)
     c, s = add_expr(c, (x[i]^2 + sin(x[i + 1]) for i in 1:9); buffered = true)
     c, t = add_expr(c, (s[i] * s[i + 1] + x[i] for i in 1:8); buffered = true)
-    c, _ = add_obj(c, (exp(t[i] / 100) * t[i] + cos(x[i]) for i in 1:8))
+    c, _ = add_obj(c, (exp(t[i] / 100.0) * t[i] + cos(x[i]) for i in 1:8))
     c, _ = add_con(c, (t[i] + x[i + 2]^2 for i in 1:8))
     m1 = ExaModel(c)
+    tol = _dev_rtol(m1)
 
     xh = [sin(3i) + 0.5 for i in 1:10]
     xd = copyto!(similar(m1.meta.x0, 10), xh)
 
-    @test NLPModels.obj(m1, xd) ≈ NLPModels.obj(m0, xh) rtol = 1.0e-13
+    @test NLPModels.obj(m1, xd) ≈ NLPModels.obj(m0, xh) rtol = tol
 
     g0 = zeros(8)
     gd = fill!(similar(m1.meta.x0, 8), 0)
     NLPModels.cons_nln!(m0, xh, g0)
     NLPModels.cons_nln!(m1, xd, gd)
-    @test Array(gd) ≈ g0 rtol = 1.0e-13
+    @test Array(gd) ≈ g0 rtol = tol
 
     d0 = zeros(10)
     dd = fill!(similar(m1.meta.x0, 10), 0)
     NLPModels.grad!(m0, xh, d0)
     NLPModels.grad!(m1, xd, dd)
-    @test Array(dd) ≈ d0 rtol = 1.0e-13
+    @test Array(dd) ≈ d0 rtol = tol
 
     r = zeros(Int, m1.meta.nnzj); cl = zeros(Int, m1.meta.nnzj)
     NLPModels.jac_structure!(m1, r, cl)
@@ -153,7 +227,7 @@ function _device_tests(backend)
     for (i, j, v) in zip(r, cl, Array(vd))
         J1[i, j] += v
     end
-    @test J1 ≈ _dense_jac(m0, xh) rtol = 1.0e-13
+    @test J1 ≈ _dense_jac(m0, xh) rtol = tol
 
     yh = [cos(2i) for i in 1:8]
     yd = copyto!(similar(m1.meta.x0, 8), yh)
@@ -166,7 +240,7 @@ function _device_tests(backend)
         H1[i, j] += v
         i != j && (H1[j, i] += v)
     end
-    return @test H1 ≈ _dense_hess(m0, xh, yh; obj_weight = 0.7) rtol = 1.0e-12
+    return @test H1 ≈ _dense_hess(m0, xh, yh; obj_weight = 0.7) rtol = 10tol
 end
 
 function runtests(; backends = Any[CPU()])
@@ -480,32 +554,11 @@ function runtests(; backends = Any[CPU()])
         @test Hv1 ≈ Hv0 rtol = 1.0e-13
     end
 
-    # Chained reductions interleaved with traced stages, in both directions
-    # (reduce over stage slots, stage over reduce slots, reduce over reduce +
-    # stage + variable).  No inlined reference is possible (ragged), so check
-    # against finite differences.
+    # The chained fixture has no inlined reference, so check against finite
+    # differences on the host; the device loop below compares each backend
+    # against this host model.
     @testset "add_reduce (chained, FD)" begin
-        c = ExaCore(concrete = Val(true))
-        c, x = add_var(c, 6)
-        c, e = add_expr(c, (x[i]^2 + sin(x[i + 1]) for i in 1:5); buffered = true)
-        c, r1 = add_reduce(
-            c, 3, vcat(
-                [j => 2.0 * e[j] for j in 1:3],
-                [j => -0.5 * e[j + 2] for j in 1:3],
-                [2 => 0.3 * x[6]]
-            ); init = [0.1, 0.2, 0.3]
-        )
-        c, t = add_expr(c, (r1[i] * r1[i + 1] + exp(r1[i] / 10) for i in 1:2); buffered = true)
-        c, r2 = add_reduce(
-            c, 2, vcat(
-                [j => 1.5 * t[j] for j in 1:2],
-                [j => 0.25 * r1[j] for j in 1:2],
-                [1 => 0.5 * x[1]]
-            )
-        )
-        c, _ = add_obj(c, (r2[j]^2 + cos(r2[j]) for j in 1:2))
-        c, _ = add_con(c, (r2[j] * x[j + 1] + r1[j]^2 for j in 1:2))
-        m = ExaModel(c)
+        m = ExaModel(_red_chain_core(nothing))
 
         xv = [0.2 + 0.07i for i in 1:6]
         yv = [1.3, -0.8]
@@ -587,6 +640,13 @@ function runtests(; backends = Any[CPU()])
         @test_throws ArgumentError add_reduce(c, 2, [x[1] => s[1]])
         @test_throws ArgumentError add_reduce(c, 2, [1 => s[1] / x[2]])
         @test occursin("buffered reduction", sprint(show, v))
+
+        # a sum node (exa_sum, or sum(... for ...) inside the macros) is affine
+        c, u = add_reduce(c, 1, [1 => exa_sum(k -> 2.0 * s[k], Val(1:3)) - 1.0])
+        c, _ = add_obj(c, (u[1]^2 for _ in 1:1))
+        mu = ExaModel(c)
+        u1 = 2.0 * (xv[1]^2 + xv[2]^2 + xv[3]^2) - 1.0
+        @test NLPModels.obj(mu, xv) ≈ v1^2 + v2^2 + u1^2 rtol = 1.0e-14
     end
 
     @testset "add_reduce (solver round-trip)" begin
@@ -625,47 +685,16 @@ function runtests(; backends = Any[CPU()])
             _device_tests(backend)
         end
         @testset "add_reduce (device: $backend)" begin
-            m0 = _red_ref_model()
-            m1 = ExaModel(_red_core(backend))
-            xh = [0.3 + 0.1i for i in 1:6]
-            xd = copyto!(similar(m1.meta.x0, 6), xh)
-            yh = [1.0, -2.0, 0.5, 3.0]
-            yd = copyto!(similar(m1.meta.x0, 4), yh)
-
-            @test NLPModels.obj(m1, xd) ≈ NLPModels.obj(m0, xh) rtol = 1.0e-13
-
-            g0 = zeros(4)
-            gd = fill!(similar(m1.meta.x0, 4), 0)
-            NLPModels.cons_nln!(m0, xh, g0)
-            NLPModels.cons_nln!(m1, xd, gd)
-            @test Array(gd) ≈ g0 rtol = 1.0e-13
-
-            d0 = zeros(6)
-            dd = fill!(similar(m1.meta.x0, 6), 0)
-            NLPModels.grad!(m0, xh, d0)
-            NLPModels.grad!(m1, xd, dd)
-            @test Array(dd) ≈ d0 rtol = 1.0e-13
-
-            r = zeros(Int, m1.meta.nnzj); cl = zeros(Int, m1.meta.nnzj)
-            NLPModels.jac_structure!(m1, r, cl)
-            vd = fill!(similar(m1.meta.x0, m1.meta.nnzj), 0)
-            NLPModels.jac_coord!(m1, xd, vd)
-            J1 = zeros(4, 6)
-            for (i, j, v) in zip(r, cl, Array(vd))
-                J1[i, j] += v
-            end
-            @test J1 ≈ _dense_jac(m0, xh) rtol = 1.0e-13
-
-            hr = zeros(Int, m1.meta.nnzh); hc = zeros(Int, m1.meta.nnzh)
-            NLPModels.hess_structure!(m1, hr, hc)
-            hv = fill!(similar(m1.meta.x0, m1.meta.nnzh), 0)
-            NLPModels.hess_coord!(m1, xd, yd, hv; obj_weight = 0.7)
-            H1 = zeros(6, 6)
-            for (i, j, v) in zip(hr, hc, Array(hv))
-                H1[i, j] += v
-                i != j && (H1[j, i] += v)
-            end
-            @test H1 ≈ _dense_hess(m0, xh, yh; obj_weight = 0.7) rtol = 1.0e-12
+            _device_vs_host(
+                _red_ref_model(), ExaModel(_red_core(backend)),
+                [0.3 + 0.1i for i in 1:6], [1.0, -2.0, 0.5, 3.0],
+            )
+        end
+        @testset "add_reduce (device chained: $backend)" begin
+            _device_vs_host(
+                ExaModel(_red_chain_core(nothing)), ExaModel(_red_chain_core(backend)),
+                [0.2 + 0.07i for i in 1:6], [1.3, -0.8],
+            )
         end
     end
     return

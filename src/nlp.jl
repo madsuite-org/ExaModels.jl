@@ -2134,6 +2134,12 @@ _reduce_term!(tj, ts, tw, initv, j, ex::Var, coef) = throw(
             "(the variable index of every term must be known at build time)",
     ),
 )
+function _reduce_term!(tj, ts, tw, initv, j, ex::SumNode, coef)
+    for inner in ex.inners
+        _reduce_term!(tj, ts, tw, initv, j, inner, coef)
+    end
+    return nothing
+end
 function _reduce_term!(tj, ts, tw, initv, j, ex::Node1{F}, coef) where {F}
     F === typeof(-) && return _reduce_term!(tj, ts, tw, initv, j, ex.inner, -coef)
     F === typeof(+) && return _reduce_term!(tj, ts, tw, initv, j, ex.inner, coef)
@@ -2194,7 +2200,8 @@ variables: a [`BufferedExpression`](@ref) `r` of length `n` with
 
 where `pairs` iterates `j => term` and each `term` is an affine combination
 with constant coefficients of already-created buffered subexpression elements
-(`s[k]`) and variables (`x[i]`); plain numbers fold into the constant part.
+(`s[k]`) and variables (`x[i]`), including sums of such terms written with
+[`exa_sum`](@ref); plain numbers fold into the constant part.
 `init` is a scalar or a length-`n` vector of constants.  Indices must be data
 values (every term's structure is resolved at build time).
 
