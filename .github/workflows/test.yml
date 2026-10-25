@@ -76,16 +76,18 @@ jobs:
       uses: julia-actions/setup-julia@latest
       with:
         version: ${{ matrix.julia-version }}
+    # The backend packages are added in the same resolution as the package
+    # and its test deps, before develop/instantiate: a later Pkg.add that
+    # moves an indirect dependency fails on Julia 1.13.2 with "Unknown
+    # package: <dep>" (Pkg.jl #4866), which took every self-hosted leg red.
     - name: Setup tests
       run: |
         julia --startup-file=no --color=yes --project=./test -e '
           using Pkg
           Pkg.Registry.update()
+          Pkg.add(["OpenCL", "pocl_jll"])
           Pkg.develop(path=".")
           Pkg.instantiate()'
-    - name: Add OpenCL.jl to test environment
-      run: |
-        julia --startup-file=no --project=test -e 'using Pkg; Pkg.add(["OpenCL", "pocl_jll"])'
     - name: Run tests
       env:
         EXAMODELS_SKIP_AOT: "1"
@@ -137,25 +139,18 @@ jobs:
       uses: julia-actions/setup-julia@latest
       with:
         version: ${{ matrix.julia-version }}
+    # The backend packages are added in the same resolution as the package
+    # and its test deps, before develop/instantiate: a later Pkg.add that
+    # moves an indirect dependency fails on Julia 1.13.2 with "Unknown
+    # package: <dep>" (Pkg.jl #4866), which took every self-hosted leg red.
     - name: Setup tests
       run: |
         julia --startup-file=no --color=yes --project=./test -e '
           using Pkg
           Pkg.Registry.update()
+          Pkg.add("${{ matrix.backend == 'cuda' && 'CUDA' || matrix.backend == 'amdgpu' && 'AMDGPU' || 'oneAPI' }}")
           Pkg.develop(path=".")
           Pkg.instantiate()'
-    - name: Add AMDGPU.jl to test environment
-      if: matrix.backend == 'amdgpu'
-      run: |
-        julia --startup-file=no --project=test -e 'using Pkg; Pkg.add("AMDGPU")'
-    - name: Add CUDA.jl to test environment
-      if: matrix.backend == 'cuda'
-      run: |
-        julia --startup-file=no --project=test -e 'using Pkg; Pkg.add("CUDA")'
-    - name: Add oneAPI.jl to test environment
-      if: matrix.backend == 'oneapi'
-      run: |
-        julia --startup-file=no --project=test -e 'using Pkg; Pkg.add("oneAPI")'
     - name: Run tests
       env:
         EXAMODELS_SKIP_AOT: "1"
@@ -196,16 +191,18 @@ jobs:
         uses: julia-actions/setup-julia@latest
         with:
           version: ${{ matrix.julia-version }}
+      # The backend packages are added in the same resolution as the package
+      # and its test deps, before develop/instantiate: a later Pkg.add that
+      # moves an indirect dependency fails on Julia 1.13.2 with "Unknown
+      # package: <dep>" (Pkg.jl #4866), which took every self-hosted leg red.
       - name: Setup tests
         run: |
           julia --startup-file=no --color=yes --project=./test -e '
             using Pkg
             Pkg.Registry.update()
+            Pkg.add("Metal")
             Pkg.develop(path=".")
             Pkg.instantiate()'
-      - name: Add Metal.jl to test environment
-        run: |
-          julia --startup-file=no --project=test -e 'using Pkg; Pkg.add("Metal")'
       - name: Show platform info
         run: |
           uname -a
@@ -258,8 +255,8 @@ jobs:
       - name: Instantiate
         working-directory: benchmark
         run: |
-          julia --startup-file=no --project=main    -e 'using Pkg; Pkg.Registry.update(); Pkg.instantiate(); Pkg.add("CUDA")'
-          julia --startup-file=no --project=current -e 'using Pkg; Pkg.Registry.update(); Pkg.instantiate(); Pkg.add("CUDA")'
+          julia --startup-file=no --project=main    -e 'using Pkg; Pkg.Registry.update(); Pkg.add("CUDA"); Pkg.instantiate()'
+          julia --startup-file=no --project=current -e 'using Pkg; Pkg.Registry.update(); Pkg.add("CUDA"); Pkg.instantiate()'
       - name: Run benchmark (main)
         working-directory: benchmark
         run: julia --startup-file=no runbenchmark.jl main cuda
@@ -283,8 +280,8 @@ jobs:
       - name: Instantiate
         working-directory: benchmark
         run: |
-          julia --startup-file=no --project=main    -e 'using Pkg; Pkg.Registry.update(); Pkg.instantiate(); Pkg.add("AMDGPU")'
-          julia --startup-file=no --project=current -e 'using Pkg; Pkg.Registry.update(); Pkg.instantiate(); Pkg.add("AMDGPU")'
+          julia --startup-file=no --project=main    -e 'using Pkg; Pkg.Registry.update(); Pkg.add("AMDGPU"); Pkg.instantiate()'
+          julia --startup-file=no --project=current -e 'using Pkg; Pkg.Registry.update(); Pkg.add("AMDGPU"); Pkg.instantiate()'
       - name: Run benchmark (main)
         working-directory: benchmark
         run: julia --startup-file=no runbenchmark.jl main amdgpu
@@ -312,8 +309,8 @@ jobs:
       - name: Instantiate
         working-directory: benchmark
         run: |
-          julia --startup-file=no --project=main    -e 'using Pkg; Pkg.Registry.update(); Pkg.instantiate(); Pkg.add("oneAPI")'
-          julia --startup-file=no --project=current -e 'using Pkg; Pkg.Registry.update(); Pkg.instantiate(); Pkg.add("oneAPI")'
+          julia --startup-file=no --project=main    -e 'using Pkg; Pkg.Registry.update(); Pkg.add("oneAPI"); Pkg.instantiate()'
+          julia --startup-file=no --project=current -e 'using Pkg; Pkg.Registry.update(); Pkg.add("oneAPI"); Pkg.instantiate()'
       - name: Run benchmark (main)
         working-directory: benchmark
         run: julia --startup-file=no runbenchmark.jl main oneapi
