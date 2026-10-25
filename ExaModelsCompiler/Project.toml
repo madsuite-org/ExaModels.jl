@@ -1,6 +1,6 @@
 name = "ExaModelsCompiler"
 uuid = "3d1e9a26-5b74-4f0c-9a2b-7c8f4e11d3a7"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Sungho Shin <sushin@mit.edu>"]
 
 [deps]
