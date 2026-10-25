@@ -90,14 +90,26 @@ export compile_library, compile_all
 # saves a UUIDs dependency.
 const _GEN_UUID = "b41c7e02-9f3d-4a58-8e6c-2d0f5a7c9b13"
 
+# A solution writer carried into the library: a package-owned function the
+# library calls by name (`call`, spelled `Pkg.fun`) to write a solution of one
+# instance to a file, exported as `<prefix>_write_<name>`.
+struct Writer
+    name::String
+    call::String
+    fun::Any
+end
+
 # One model's compiled form: its prefix, its concretized core, the example value
-# whose types `juliac` needs, and how `<prefix>_new(n)` rebuilds it (`field`).
+# whose types `juliac` needs, how `<prefix>_new(n)` rebuilds it (`field`), and
+# its solution writers.
 struct ModelSpec
     prefix::String
     core::Any
     arg::Any
     field::Any
+    writers::Vector{Writer}
 end
+ModelSpec(prefix, core, arg, field) = ModelSpec(prefix, core, arg, field, Writer[])
 
 """
     compile_library(out, core, args...; prefix = basename(out), trim = "safe",
@@ -226,6 +238,28 @@ n-goes-to-an-argument-function: the two are indistinguishable to a consumer
 takes and cannot say what shape they are; `P_argtype` is the other half of
 that pair, and a consumer handed only a library path needs both.
 
+## Solution writers
+
+`writers = (:name => f, ...)` compiles functions that write a solution of an
+instance to a file, for a model with an argument function.  Each `f` is a named
+function a package owns, called as
+
+    f(out::String, arg, model, x, y, zl, zu; objective::Float64, status::String)
+
+where `arg` is the value the instance's argument function was called with (a
+case-file path, say), `model` the instance, and `x`, `y`, `zl`, `zu` the primal solution,
+constraint multipliers and bound multipliers.  The library exports, per writer,
+
+    int P_write_<name>(int id, const char *out, const double *x, const double *y,
+                       const double *zl, const double *zu, double objective,
+                       const char *status)
+
+returning `0` on success, `1` for a bad id, and `2` if the writer threw; plus
+`P_nwriters()` and `P_writer_name(k, buf, cap)` (0-based `k`, the copy-out
+convention) so a consumer can discover them.  Every model exports the latter
+two, reporting `0` writers when it has none.  Each writer is called once on the
+example instance before compiling.
+
 ## Several models in one library
 
 Give `:name => core` pairs instead of a single core to put more than one model
@@ -240,8 +274,9 @@ function compile_library(
     bundle::Bool = false,
     verbose::Bool = false,
     argfun = nothing,
+    writers = (),
 )
-    spec = _model_spec(prefix, core, argfun, args)
+    spec = _with_writers(_model_spec(prefix, core, argfun, args), writers)
     r = _compile([spec], out, prefix, trim, bundle, verbose)
     # One model keeps the singular field it has always returned.
     return (; libpath = r.libpath, outdir = r.outdir, prefix = spec.prefix)
@@ -283,6 +318,9 @@ Each model gets whichever instantiation surface its examples call for, exactly
 as in the single-model form: `P_new(n)` for one integer, the schema + builder
 ABI for anything else, per prefix — the surfaces coexist freely in one
 library.
+
+`writers` gives each model's solution writers by model name,
+`writers = (:acp => (:matpower => f,), ...)`; see the single-model form.
 """
 function compile_library(
     out::AbstractString,
@@ -290,12 +328,23 @@ function compile_library(
     trim::AbstractString = "safe",
     bundle::Bool = false,
     verbose::Bool = false,
+    writers = (),
 )
     isempty(models) && throw(ArgumentError("give at least one `:name => core` model"))
     specs = ModelSpec[
         _model_spec(String(name), _core_and_args(name, value)...) for (name, value) in models
     ]
     _check_distinct(specs)
+    names = Set(first.(models))
+    for (name, _) in writers
+        Symbol(name) in names || throw(ArgumentError(
+            "`writers` names a model `$name` that is not in this library; it has " *
+            "$(sort(collect(names)))"))
+    end
+    specs = ModelSpec[
+        _with_writers(s, (ws for (name, ws) in writers if Symbol(name) == Symbol(s.prefix))...)
+        for s in specs
+    ]
     # The FILE is named after `out`; the models are named by their symbols.
     r = _compile(specs, out, _default_out_prefix(out), trim, bundle, verbose)
     return (; libpath = r.libpath, outdir = r.outdir, prefixes = [s.prefix for s in specs])
@@ -351,6 +400,28 @@ function _check_distinct(specs::Vector{ModelSpec})
     return specs
 end
 
+# Attach solution writers to a model, validated the way an argument function is:
+# a named function a package owns, under a name that can be part of a C symbol.
+_with_writers(s::ModelSpec) = s
+function _with_writers(s::ModelSpec, writers)
+    isempty(writers) && return s
+    s.field isa UserArgs || throw(ArgumentError(
+        "`$(s.prefix)`: solution writers need a model with an argument function " *
+        "— the writer is handed the value that function was called with."))
+    out = Writer[]
+    for w in writers
+        w isa Pair && first(w) isa Union{Symbol, AbstractString} && last(w) isa Function ||
+            throw(ArgumentError(
+                "`$(s.prefix)`: a writer is `:name => function`, got $(repr(w))"))
+        name = String(first(w))
+        _check_prefix(name)
+        any(x -> x.name == name, out) && throw(ArgumentError(
+            "`$(s.prefix)`: two writers are both named `$name`"))
+        push!(out, Writer(name, _argfun_call(s.prefix, last(w); what = "a writer"), last(w)))
+    end
+    return ModelSpec(s.prefix, s.core, s.arg, s.field, out)
+end
+
 # The per-model validation both entry points share. Everything here is checked
 # BEFORE any code generation, so a bad model is reported in the caller's process
 # rather than as a compile error in a generated file nobody is looking at.
@@ -384,7 +455,7 @@ function _model_spec(prefix::AbstractString, core::ExaModels.ExaCore, argfun, ar
                 "`ExaModel(core, ...)`. Got a $(typeof(arg)); wrap it, as `(data,)`.",
             ),
         )
-        return ModelSpec(String(prefix), core, arg, UserArgs{kind}(_argfun_call(prefix, argfun), argfun))
+        return ModelSpec(String(prefix), core, arg, UserArgs{kind}(_argfun_call(prefix, argfun), argfun, only(args)))
     end
     if isempty(args)
         # No examples means a FIXED model: the core has no placeholders and is
@@ -450,6 +521,7 @@ function _compile(specs::Vector{ModelSpec}, out, libname, trim, bundle, verbose)
         end
         verbose && @info "compile_library: core instantiates" prefix = s.prefix nvar =
             probe.meta.nvar ncon = probe.meta.ncon
+        _probe_writers(s, probe)
     end
 
     appdir = _generate_app(specs, libname)
@@ -459,6 +531,26 @@ function _compile(specs::Vector{ModelSpec}, out, libname, trim, bundle, verbose)
     return _drive_juliac(appdir, libname, outdir, trim, bundle, verbose)
 end
 
+
+# Each writer runs once on the example instance, at its starting point, so a
+# writer that cannot handle this model fails here rather than at run time.
+function _probe_writers(s::ModelSpec, probe)
+    isempty(s.writers) && return
+    nv, nc = probe.meta.nvar, probe.meta.ncon
+    for w in s.writers
+        out = tempname()
+        try
+            w.fun(out, s.field.example, probe, copy(probe.meta.x0), zeros(nc), zeros(nv), zeros(nv);
+                  objective = NaN, status = "probe")
+        catch err
+            throw(ArgumentError(
+                "`$(s.prefix)`: writer `$(w.name)` failed on the example instance: " *
+                sprint(showerror, err)))
+        finally
+            rm(out; force = true)
+        end
+    end
+end
 
 # A core built in the default (non-concrete) mode accumulates its blocks in
 # `Vector{Any}` rather than in its own type. That is what makes model
@@ -841,6 +933,7 @@ function _generate_app(specs::Vector{ModelSpec}, libname::AbstractString)
         srcs = s.field isa UserArgs ?
             (_core_packages(s.core)..., _core_packages_of(typeof(_argfun_of(s)))...) :
             _core_packages(s.core)
+        srcs = (srcs..., (p for w in s.writers for p in _core_packages_of(typeof(w.fun)))...)
         for p in srcs
             any(q -> q.uuid == p.uuid, pkgs) || push!(pkgs, p)
         end
@@ -909,6 +1002,7 @@ struct FixedModel end
 struct UserArgs{K}
     call::String
     fun::Any
+    example::Any     # the function's example argument, for probing writers
 end
 
 # The function itself, for the package walk. Stored alongside the spelling
@@ -970,7 +1064,7 @@ end
 # `argfun` spelled as source. It must be a named function a package owns: the
 # generated library names it, so an anonymous function or a closure has nothing
 # to name, and would also defeat the static resolution above.
-function _argfun_call(prefix, f)
+function _argfun_call(prefix, f; what = "`argfun`")
     m = parentmodule(f)
     n = nameof(f)
     own = try
@@ -989,7 +1083,7 @@ function _argfun_call(prefix, f)
     ok = own !== nothing && own.name == string(nameof(m))
     ok || throw(
         ArgumentError(
-            "`$prefix`: `argfun` must be a named function defined at the top " *
+            "`$prefix`: $what must be a named function defined at the top " *
             "level of a PACKAGE — the generated library calls it by name, from " *
             "another process, so a function defined in a script, the REPL, or " *
             "a package extension cannot be reached. Got $(repr(f)) in module " *
@@ -1086,6 +1180,9 @@ _argtype_source(p::AbstractString, field) = """
 # buffer, so the library never holds a pointer it does not own.
 function _instantiation_source(p::AbstractString, u::UserArgs{:str})
     return """
+    # The argument each instance was built from, by id, for the writers.
+    const ARGIN_$p = String[]
+
     Base.@ccallable function $(p)_nargs()::Cint
         return Cint(1)
     end
@@ -1102,6 +1199,7 @@ $(_argtype_source(p, u))
         try
             s = unsafe_string(s_ptr)
             push!(MODELS_$p, ExaModels.ExaModel(CORE_$p, $(u.call)(s)...; check = Val(false)))
+            push!(ARGIN_$p, s)
             return Cint(length(MODELS_$p))
         catch
             return Cint(0)
@@ -1112,6 +1210,8 @@ end
 
 function _instantiation_source(p::AbstractString, u::UserArgs{:int})
     return """
+    const ARGIN_$p = Int[]
+
     Base.@ccallable function $(p)_nargs()::Cint
         return Cint(1)
     end
@@ -1120,6 +1220,7 @@ $(_argtype_source(p, u))
     Base.@ccallable function $(p)_new(n::Cint)::Cint
         try
             push!(MODELS_$p, ExaModels.ExaModel(CORE_$p, $(u.call)(Int(n))...; check = Val(false)))
+            push!(ARGIN_$p, Int(n))
             return Cint(length(MODELS_$p))
         catch
             return Cint(0)
@@ -1536,6 +1637,69 @@ $par_arms            return Cint(1)
 """
 end
 
+# ── A model's solution writers ───────────────────────────────────────────────
+#
+# Each writer is called by name, so `--trim=safe` resolves it statically; the
+# solution is copied out of the caller's buffers before the call.
+function _writers_source(p::AbstractString, writers::Vector{Writer})
+    names = join((
+        """    const WNAME_$(p)_$(i) = Vector{UInt8}($(repr(w.name)))\n"""
+        for (i, w) in enumerate(writers)
+    ))
+    name_arms = join((
+        """
+        if k == Cint($(i - 1))
+            b = WNAME_$(p)_$(i)
+            n = length(b)
+            m = min(Int(cap), n)
+            if m > 0 && buf != Ptr{UInt8}(0)
+                GC.@preserve b unsafe_copyto!(buf, pointer(b), m)
+            end
+            return Cint(n)
+        end
+"""
+        for (i, _) in enumerate(writers)
+    ))
+    entries = join((
+        """
+    Base.@ccallable function $(p)_write_$(w.name)(
+        id::Cint, out::Ptr{Cchar}, x::Ptr{Cdouble}, y::Ptr{Cdouble},
+        zl::Ptr{Cdouble}, zu::Ptr{Cdouble}, objective::Cdouble, status::Ptr{Cchar},
+    )::Cint
+        _valid_$p(id) || return Cint(1)
+        try
+            m = MODELS_$p[Int(id)]
+            nv = Int(m.meta.nvar)
+            nc = Int(m.meta.ncon)
+            st = status == Ptr{Cchar}(0) ? "" : unsafe_string(status)
+            $(w.call)(
+                unsafe_string(out), ARGIN_$p[Int(id)], m,
+                copy(unsafe_wrap(Array, x, nv)), copy(unsafe_wrap(Array, y, nc)),
+                copy(unsafe_wrap(Array, zl, nv)), copy(unsafe_wrap(Array, zu, nv));
+                objective = Float64(objective), status = st,
+            )
+            return Cint(0)
+        catch
+            return Cint(2)
+        end
+    end
+"""
+        for w in writers
+    ))
+    return """
+    # ── solution writers of `$p` ─────────────────────────────────────────────
+$names
+    Base.@ccallable function $(p)_nwriters()::Cint
+        return Cint($(length(writers)))
+    end
+
+    # The k-th writer's name (0-based), by the copy-out convention.
+    Base.@ccallable function $(p)_writer_name(k::Cint, buf::Ptr{UInt8}, cap::Cint)::Cint
+$name_arms        return Cint(-1)
+    end
+$entries"""
+end
+
 function _model_source(s::ModelSpec)
     p = s.prefix
     # A builder spec's example is the whole tuple of values, splatted back the
@@ -1561,6 +1725,7 @@ function _model_source(s::ModelSpec)
 
 $(_instantiation_source(p, s.field))
 $(_layout_source(p, s.core))
+$(_writers_source(p, s.writers))
     Base.@ccallable function $(p)_nvar(id::Cint)::Cint
         _valid_$p(id) || return Cint(-1)
         return Cint(MODELS_$p[Int(id)].meta.nvar)

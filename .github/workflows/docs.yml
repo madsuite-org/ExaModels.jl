@@ -13,7 +13,7 @@ jobs:
       labels: [self-hosted, gpu, cuda, examodels]
     steps:
       - uses: actions/checkout@v2
-      - uses: julia-actions/setup-julia@latest
+      - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
       - name: Install dependencies
