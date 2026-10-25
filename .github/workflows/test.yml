@@ -24,7 +24,7 @@ jobs:
         os: [ubuntu-latest,windows-latest]
     steps:
       - uses: actions/checkout@v2
-      - uses: julia-actions/setup-julia@latest
+      - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.julia-version }}
       - uses: julia-actions/cache@v3
@@ -73,7 +73,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v2
     - name: Setup Julia
-      uses: julia-actions/setup-julia@latest
+      uses: julia-actions/setup-julia@v3
       with:
         version: ${{ matrix.julia-version }}
     # The backend packages are added in the same resolution as the package
@@ -136,7 +136,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v2
     - name: Setup Julia
-      uses: julia-actions/setup-julia@latest
+      uses: julia-actions/setup-julia@v3
       with:
         version: ${{ matrix.julia-version }}
     # The backend packages are added in the same resolution as the package
@@ -188,7 +188,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       - name: Setup Julia
-        uses: julia-actions/setup-julia@latest
+        uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.julia-version }}
       # The backend packages are added in the same resolution as the package
@@ -221,7 +221,7 @@ jobs:
     runs-on: ['self-hosted', 'shin-compute']
     steps:
       - uses: actions/checkout@v4
-      - uses: julia-actions/setup-julia@latest
+      - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
       - name: Instantiate
@@ -249,7 +249,7 @@ jobs:
       CUDA_MPS_PIPE_DIRECTORY: /tmp/no-mps-${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
-      - uses: julia-actions/setup-julia@latest
+      - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
       - name: Instantiate
@@ -274,7 +274,7 @@ jobs:
     runs-on: ['self-hosted', 'gpu', 'amdgpu', 'shin-compute']
     steps:
       - uses: actions/checkout@v4
-      - uses: julia-actions/setup-julia@latest
+      - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
       - name: Instantiate
@@ -303,7 +303,7 @@ jobs:
       IGC_EnableDPEmulation: '1'
     steps:
       - uses: actions/checkout@v4
-      - uses: julia-actions/setup-julia@latest
+      - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
       - name: Instantiate
@@ -328,7 +328,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: julia-actions/setup-julia@latest
+      - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
       - name: Instantiate
@@ -378,7 +378,7 @@ jobs:
           repository: madsuite-org/cnlpmodels-py
           ref: master
           path: cnlpmodels-py
-      - uses: julia-actions/setup-julia@latest
+      - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
       # No julia-actions/cache here: both legs are self-hosted with
