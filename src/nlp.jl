@@ -1976,11 +1976,9 @@ variables or constraints are added to the problem.
 ## Keyword Arguments
 - `name`: When given as `Val(:name)`, registers the subexpression in `core` for later retrieval as `core.name` or `model.name`. See [`@add_expr`](@ref) for the idiomatic named interface.
 - `tag` : User-defined metadata attached to the expression.
-- `buffered`: evaluate the subexpression once per row into a θ-backed stage
-  buffer instead of splicing its tree at every reference site; the remedy
-  for deeply nested or widely referenced subexpressions.
 - `lift`: introduce the subexpression as a variable pinned by a defining
-  equality constraint (adds rows and columns; 1-D iterators only).
+  equality constraint (adds rows and columns; 1-D iterators only). Takes
+  precedence over `buffered`, which is ignored when `lift = true`.
 - `start`: starting point for the lifted variable when `lift = true`.
 - `buffered`: When `true` (or `Val(true)`), returns a [`BufferedExpression`](@ref):
   each element is evaluated once per model evaluation into a dedicated buffer
@@ -2302,6 +2300,24 @@ function add_reduce(
     )
 end
 
+# A model's blocks live in a tuple, and every evaluation walks it by dispatch
+# recursion. Past 32 blocks inference stops specializing that recursion (the
+# same cliff `Base.Any32` exists for): each level is dynamically dispatched
+# and re-splats the remaining blocks, so one walk costs quadratic in the block
+# count. The `_LongTuple` methods below take over from 33 blocks on: they
+# materialize the blocks once per walk with `Any[t...]` (the splat is linear
+# and boxes each block once, where indexing the tuple itself re-boxes per
+# access and stays quadratic, measured either way at 64-256 blocks) and then
+# pay one dynamic call per block, in the same (last-to-first) order. Short
+# tuples keep the fully static recursive methods, which `juliac --trim=safe`
+# compilation relies on.
+const _LongTuple = Tuple{
+    Any, Any, Any, Any, Any, Any, Any, Any, Any, Any, Any,
+    Any, Any, Any, Any, Any, Any, Any, Any, Any, Any, Any,
+    Any, Any, Any, Any, Any, Any, Any, Any, Any, Any, Any,
+    Vararg{Any},
+}
+
 function jac_structure!(m::AbstractExaModel{T}, rows::AbstractVector, cols::AbstractVector) where {T}
     _jac_structure_impl!(m, _subexprs(m), rows, cols)
     return rows, cols
@@ -2319,6 +2335,13 @@ _jac_structure!(T, cons::Tuple{}, rows, cols) = nothing
 @inline function _jac_structure!(T, cons::Tuple, rows, cols)
     _jac_structure!(T, Base.tail(cons), rows, cols)
     return sjacobian!(rows, cols, first(cons), NaNSource{T}(), NaNSource{T}(), T(NaN))
+end
+function _jac_structure!(T, cons::_LongTuple, rows, cols)
+    blocks = Any[cons...]
+    for i in length(blocks):-1:1
+        sjacobian!(rows, cols, blocks[i], NaNSource{T}(), NaNSource{T}(), T(NaN))
+    end
+    return
 end
 
 function hess_structure!(m::AbstractExaModel{T}, rows::AbstractVector, cols::AbstractVector) where {T}
@@ -2342,11 +2365,25 @@ _obj_hess_structure!(T, objs::Tuple{}, rows, cols) = nothing
     _obj_hess_structure!(T, Base.tail(objs), rows, cols)
     return shessian!(rows, cols, first(objs), NaNSource{T}(), NaNSource{T}(), T(NaN), T(NaN))
 end
+function _obj_hess_structure!(T, objs::_LongTuple, rows, cols)
+    blocks = Any[objs...]
+    for i in length(blocks):-1:1
+        shessian!(rows, cols, blocks[i], NaNSource{T}(), NaNSource{T}(), T(NaN), T(NaN))
+    end
+    return
+end
 
 _con_hess_structure!(T, cons::Tuple{}, rows, cols) = nothing
 @inline function _con_hess_structure!(T, cons::Tuple, rows, cols)
     _con_hess_structure!(T, Base.tail(cons), rows, cols)
     return shessian!(rows, cols, first(cons), NaNSource{T}(), NaNSource{T}(), T(NaN), T(NaN))
+end
+function _con_hess_structure!(T, cons::_LongTuple, rows, cols)
+    blocks = Any[cons...]
+    for i in length(blocks):-1:1
+        shessian!(rows, cols, blocks[i], NaNSource{T}(), NaNSource{T}(), T(NaN), T(NaN))
+    end
+    return
 end
 
 # Buffered-subexpression access: only ExaModel carries stages (oracle models
@@ -2369,6 +2406,24 @@ end
 
 @inline _obj(obj::Tuple{}, x, θ) = zero(eltype(x))
 
+# `_obj_block` keeps the row loop compiled per block type, so the dynamic
+# long-tuple walk pays one dynamic call per block, not per row.
+@inline function _obj_block(obj, x, θ)
+    s = zero(eltype(x))
+    for i in obj.itr
+        s += obj.f(i, x, θ)
+    end
+    return s
+end
+function _obj(objs::_LongTuple, x, θ)
+    s = zero(eltype(x))
+    blocks = Any[objs...]
+    for i in length(blocks):-1:1
+        s += _obj_block(blocks[i], x, θ)
+    end
+    return s
+end
+
 function cons_nln!(m::AbstractExaModel, x::AbstractVector, g::AbstractVector)
     fill!(g, zero(eltype(g)))
     _sync_subexprs!(_subexprs(m), x, m.θ)
@@ -2381,6 +2436,13 @@ end
     return _cons_rows!(g, first(cons), x, θ)
 end
 _cons_nln!(cons::Tuple{}, x, θ, g) = nothing
+function _cons_nln!(cons::_LongTuple, x, θ, g)
+    blocks = Any[cons...]
+    for i in length(blocks):-1:1
+        _cons_rows!(g, blocks[i], x, θ)
+    end
+    return nothing
+end
 
 # per-block row loop; merged segmented blocks override this (merge.jl)
 @inline function _cons_rows!(g, con, x, θ)
@@ -2412,6 +2474,13 @@ end
     return gradient!(f, first(objs), x, θ, one(eltype(f)))
 end
 _grad!(objs::Tuple{}, x, θ, f) = nothing
+function _grad!(objs::_LongTuple, x, θ, f)
+    blocks = Any[objs...]
+    for i in length(blocks):-1:1
+        gradient!(f, blocks[i], x, θ, one(eltype(f)))
+    end
+    return nothing
+end
 
 function jac_coord!(m::AbstractExaModel, x::AbstractVector, jac::AbstractVector)
     _jac_coord_impl!(m, _subexprs(m), x, jac)
@@ -2433,6 +2502,13 @@ _jac_coord!(cons::Tuple{}, x, θ, jac) = nothing
 @inline function _jac_coord!(cons::Tuple, x, θ, jac)
     _jac_coord!(Base.tail(cons), x, θ, jac)
     return sjacobian!(jac, nothing, first(cons), x, θ, one(eltype(jac)))
+end
+function _jac_coord!(cons::_LongTuple, x, θ, jac)
+    blocks = Any[cons...]
+    for i in length(blocks):-1:1
+        sjacobian!(jac, nothing, blocks[i], x, θ, one(eltype(jac)))
+    end
+    return nothing
 end
 
 function jprod_nln!(m::AbstractExaModel, x::AbstractVector, v::AbstractVector, Jv::AbstractVector)
@@ -2459,6 +2535,13 @@ _jprod_nln!(cons::Tuple{}, x, θ, v, Jv) = nothing
     _jprod_nln!(Base.tail(cons), x, θ, v, Jv)
     return sjacobian!((Jv, v), nothing, first(cons), x, θ, one(eltype(Jv)))
 end
+function _jprod_nln!(cons::_LongTuple, x, θ, v, Jv)
+    blocks = Any[cons...]
+    for i in length(blocks):-1:1
+        sjacobian!((Jv, v), nothing, blocks[i], x, θ, one(eltype(Jv)))
+    end
+    return nothing
+end
 
 function jtprod_nln!(m::AbstractExaModel, x::AbstractVector, v::AbstractVector, Jtv::AbstractVector)
     _jtprod_impl!(m, _subexprs(m), x, v, Jtv)
@@ -2483,6 +2566,13 @@ _jtprod_nln!(cons::Tuple{}, x, θ, v, Jtv) = nothing
 @inline function _jtprod_nln!(cons::Tuple, x, θ, v, Jtv)
     _jtprod_nln!(Base.tail(cons), x, θ, v, Jtv)
     return sjacobian!(nothing, (Jtv, v), first(cons), x, θ, one(eltype(Jtv)))
+end
+function _jtprod_nln!(cons::_LongTuple, x, θ, v, Jtv)
+    blocks = Any[cons...]
+    for i in length(blocks):-1:1
+        sjacobian!(nothing, (Jtv, v), blocks[i], x, θ, one(eltype(Jtv)))
+    end
+    return nothing
 end
 
 function hess_coord!(
@@ -2534,11 +2624,25 @@ _obj_hess_coord!(objs::Tuple{}, x, θ, hess, obj_weight) = nothing
     _obj_hess_coord!(Base.tail(objs), x, θ, hess, obj_weight)
     return shessian!(hess, nothing, first(objs), x, θ, obj_weight, zero(eltype(hess)))
 end
+function _obj_hess_coord!(objs::_LongTuple, x, θ, hess, obj_weight)
+    blocks = Any[objs...]
+    for i in length(blocks):-1:1
+        shessian!(hess, nothing, blocks[i], x, θ, obj_weight, zero(eltype(hess)))
+    end
+    return nothing
+end
 
 _con_hess_coord!(cons::Tuple{}, x, θ, y, hess, obj_weight) = nothing
 @inline function _con_hess_coord!(cons::Tuple, x, θ, y, hess, obj_weight)
     _con_hess_coord!(Base.tail(cons), x, θ, y, hess, obj_weight)
     return shessian!(hess, nothing, first(cons), x, θ, y, zero(eltype(hess)))
+end
+function _con_hess_coord!(cons::_LongTuple, x, θ, y, hess, obj_weight)
+    blocks = Any[cons...]
+    for i in length(blocks):-1:1
+        shessian!(hess, nothing, blocks[i], x, θ, y, zero(eltype(hess)))
+    end
+    return nothing
 end
 
 function hprod!(
@@ -2594,11 +2698,25 @@ _obj_hprod!(objs::Tuple{}, x, θ, v, Hv, obj_weight) = nothing
     _obj_hprod!(Base.tail(objs), x, θ, v, Hv, obj_weight)
     return shessian!((Hv, v), nothing, first(objs), x, θ, obj_weight, zero(eltype(Hv)))
 end
+function _obj_hprod!(objs::_LongTuple, x, θ, v, Hv, obj_weight)
+    blocks = Any[objs...]
+    for i in length(blocks):-1:1
+        shessian!((Hv, v), nothing, blocks[i], x, θ, obj_weight, zero(eltype(Hv)))
+    end
+    return nothing
+end
 
 _con_hprod!(cons::Tuple{}, x, θ, y, v, Hv, obj_weight) = nothing
 @inline function _con_hprod!(cons::Tuple, x, θ, y, v, Hv, obj_weight)
     _con_hprod!(Base.tail(cons), x, θ, y, v, Hv, obj_weight)
     return shessian!((Hv, v), nothing, first(cons), x, θ, y, zero(eltype(Hv)))
+end
+function _con_hprod!(cons::_LongTuple, x, θ, y, v, Hv, obj_weight)
+    blocks = Any[cons...]
+    for i in length(blocks):-1:1
+        shessian!((Hv, v), nothing, blocks[i], x, θ, y, zero(eltype(Hv)))
+    end
+    return nothing
 end
 
 @inbounds @inline offset0(a, i) = offset0(a.f, i)

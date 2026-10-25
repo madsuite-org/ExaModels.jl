@@ -26,6 +26,7 @@ include("GetterSetterTest/GetterSetterTest.jl")
 include("PrettyPrintTest.jl")
 include("ConcreteModeTest.jl")
 include("MergeTest/MergeTest.jl")
+include("LongTupleTest/LongTupleTest.jl")
 # include("OptimalControlTest/OptimalControlTest.jl")
 include("OracleTest/OracleTest.jl")
 include("SubexprTest/SubexprTest.jl")
@@ -63,6 +64,9 @@ include("SubexprTest/SubexprTest.jl")
 
     @info "Running Merge Test"
     MergeTest.runtests()
+
+    @info "Running Long Tuple Test"
+    LongTupleTest.runtests()
 
     # @info "Running OptimalControl Test"
     # OptimalControlTest.runtests()

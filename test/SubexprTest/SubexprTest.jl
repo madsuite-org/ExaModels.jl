@@ -197,6 +197,9 @@ function _device_tests(backend)
     c, x = add_var(c, 10)
     c, s = add_expr(c, (x[i]^2 + sin(x[i + 1]) for i in 1:9); buffered = true)
     c, t = add_expr(c, (s[i] * s[i + 1] + x[i] for i in 1:8); buffered = true)
+    # 100.0, not 100: the `/` derivative rule evaluates `1 / x2`, which for an Int
+    # divisor is Int / Int = Float64 and does not compile on Metal (same fixture
+    # as the host model above, so the two stay comparable)
     c, _ = add_obj(c, (exp(t[i] / 100.0) * t[i] + cos(x[i]) for i in 1:8))
     c, _ = add_con(c, (t[i] + x[i + 2]^2 for i in 1:8))
     m1 = ExaModel(c)
@@ -683,6 +686,7 @@ function runtests(; backends = Any[CPU()])
     for backend in backends
         @testset "Buffered subexpressions (device: $backend)" begin
             _device_tests(backend)
+            _device_merged_plus_buffered(backend)
         end
         @testset "add_reduce (device: $backend)" begin
             _device_vs_host(
@@ -698,6 +702,48 @@ function runtests(; backends = Any[CPU()])
         end
     end
     return
+end
+
+# A buffered subexpression together with a plain mergeable constraint added
+# after the consumer: on device backends the plain block is family-merged from
+# its first add, so the λ-seed Jacobian pass of the Hessian elimination must
+# read the nonzero offsets from the MergedRow elements (kerjs_m). The generic
+# kernel's offset1(f, I) wrote them into the consumer's cons_ext slots, giving
+# a wrong device Hessian while the host was right.
+function _device_merged_plus_buffered(backend)
+    function build(bk)
+        c = ExaCore(concrete = Val(true), backend = bk)
+        c, x = add_var(c, 10)
+        c, s = add_expr(c, (x[i]^2 + sin(x[i + 1]) for i in 1:9); buffered = true)
+        c, _ = add_obj(c, (s[i] * x[i] for i in 1:9))
+        c, _ = add_con(c, (s[i] + x[i + 2]^2 for i in 1:8))      # consumer: stays plain
+        c, _ = add_con(c, (sin(x[i]) * x[i + 1] for i in 1:9))   # mergeable family
+        return ExaModel(c)
+    end
+    m0 = build(nothing)
+    m1 = build(backend)
+    @test m1.meta.ncon == 17 == m0.meta.ncon
+    xh = [sin(3i) + 0.5 for i in 1:10]
+    xd = copyto!(similar(m1.meta.x0, 10), xh)
+    yh = [cos(2i) for i in 1:17]
+    yd = copyto!(similar(m1.meta.x0, 17), yh)
+    H0 = zeros(10, 10)
+    hr0 = zeros(Int, m0.meta.nnzh); hc0 = zeros(Int, m0.meta.nnzh)
+    NLPModels.hess_structure!(m0, hr0, hc0)
+    hv0 = zeros(m0.meta.nnzh)
+    NLPModels.hess_coord!(m0, xh, yh, hv0; obj_weight = 0.7)
+    for (i, j, v) in zip(hr0, hc0, hv0)
+        H0[i, j] += v
+    end
+    H1 = zeros(10, 10)
+    hr = zeros(Int, m1.meta.nnzh); hc = zeros(Int, m1.meta.nnzh)
+    NLPModels.hess_structure!(m1, hr, hc)
+    hv = fill!(similar(m1.meta.x0, m1.meta.nnzh), 0)
+    NLPModels.hess_coord!(m1, xd, yd, hv; obj_weight = 0.7)
+    for (i, j, v) in zip(hr, hc, Array(hv))
+        H1[i, j] += v
+    end
+    return @test H1 ≈ H0 rtol = (eltype(m1.meta.x0) == Float32 ? 1.0e-4 : 1.0e-13)
 end
 
 end # module

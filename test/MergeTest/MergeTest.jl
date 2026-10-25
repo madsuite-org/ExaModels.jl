@@ -9,8 +9,9 @@ const MERGE_BACKENDS = isdefined(Main, :BACKENDS) ? Main.BACKENDS : [nothing]
 
 # A model exercising every merge path: a range family over two variable
 # blocks plus a scalar-coefficient variant (lazy segmented path), a data-tuple
-# family (lazy path over arrays), a same-type augmentation pair (array path on
-# host, unmerged on device), a named block, and a non-mergeable singleton.
+# family (lazy path over arrays), a same-type augmentation pair (stored plain
+# on every backend — augmentations never merge), a named block, and a
+# non-mergeable singleton.
 function _build(backend)
     n = 64
     c = ExaCore(; backend)
@@ -40,8 +41,8 @@ function _build(backend)
 end
 
 function _evalall(m)
-    x0 = copy(m.meta.x0) .+ 0.01
-    T = eltype(x0)
+    T = eltype(m.meta.x0)
+    x0 = copy(m.meta.x0) .+ T(0.01)   # a Float64 literal would promote a Float32 device vector
     g = fill!(similar(x0), zero(T))
     cv = fill!(similar(x0, m.meta.ncon), zero(T))
     jv = fill!(similar(x0, m.meta.nnzj), zero(T))
@@ -137,12 +138,15 @@ function _test_host_derivatives()
 end
 
 function _test_backend_matches_host(backend)
-    rb = _evalall(ExaModel(_build(backend)))
+    mb = ExaModel(_build(backend))
+    # Float32 backends (Metal) carry ~1e-7 roundoff per operation
+    tight, loose = eltype(mb.meta.x0) == Float32 ? (1.0e-4, 1.0e-4) : (1.0e-12, 1.0e-10)
+    rb = _evalall(mb)
     rh = _evalall(ExaModel(_build(nothing)))
-    @test rb[1] ≈ rh[1] rtol = 1.0e-12
+    @test rb[1] ≈ rh[1] rtol = tight
     for k in (2, 3, 6, 9)                       # grad, cons, jac vals, hess vals
-        @test sum(rb[k]) ≈ sum(rh[k]) rtol = 1.0e-10
-        @test maximum(abs, rb[k]) ≈ maximum(abs, rh[k]) rtol = 1.0e-10
+        @test sum(rb[k]) ≈ sum(rh[k]) rtol = loose
+        @test maximum(abs, rb[k]) ≈ maximum(abs, rh[k]) rtol = loose
     end
     for k in (4, 5, 7, 8)                       # sparsity coordinates
         @test sort(rb[k]) == sort(rh[k])
@@ -150,8 +154,89 @@ function _test_backend_matches_host(backend)
     return
 end
 
+# The core API is persistent: a later add on a core must not change models
+# already built from it. Merged families append by copy
+# (`_merged_append_itr`), which this testset locks in for both the lazy
+# (SegmentedItr) and the materialized (MergedRows, pair-headed) iterator.
+# Branching two cores off one base is NOT covered: the bounds vectors
+# (y0/lcon/ucon) are grown in place by `_append_slot` on every add_con, so
+# sibling cores share bounds state. That predates merging (#294) and holds
+# for plain blocks too.
+function _test_core_persistence()
+    return @testset "appending to a family preserves earlier models" begin
+        c0 = ExaCore()
+        c0, x = add_var(c0, 10; start = 0.5)
+        c1, _ = add_con(c0, sin(x[i]) for i in 1:5; lcon = -2.0, ucon = 2.0)
+        c1, _ = add_obj(c1, x[1])
+        m1 = ExaModel(c1)
+        @test m1.meta.ncon == 5 && length(m1.cons[1].itr) == 5
+        # a later same-family add on the core must not grow m1's block
+        c2, _ = add_con(c1, sin(x[i]) for i in 6:10; lcon = -2.0, ucon = 2.0)
+        @test length(m1.cons[1].itr) == 5
+        g = zeros(m1.meta.ncon)
+        NLPModels.cons!(m1, fill(0.5, 10), g)
+        @test g ≈ fill(sin(0.5), 5)
+        m2 = ExaModel(c2)
+        @test m2.meta.ncon == 10 && length(m2.cons[1].itr) == 10
+        g2 = zeros(10)
+        NLPModels.cons!(m2, fill(0.5, 10), g2)
+        @test g2 ≈ fill(sin(0.5), 10)
+
+        # materialized path: pair-headed plain blocks (data-driven row targets)
+        # merge into MergedRows on the host. Augmentations (add_con!) never
+        # merge; they are stored plain on every backend.
+        d0 = ExaCore()
+        d0, z = add_var(d0, 10; start = 0.5)
+        d1, _ = add_con(d0, (i => sin(z[i]) for i in 1:4); lcon = -2.0, ucon = 2.0)
+        d1, _ = add_obj(d1, z[1])
+        n1 = ExaModel(d1)
+        @test n1.cons[1].itr isa ExaModels.MergedRows
+        @test n1.meta.ncon == 4 && length(n1.cons[1].itr) == 4
+        # the same generator again is the same family (row targets are
+        # per-block: the second block's rows land at its own o0 base)
+        d2, _ = add_con(d1, (i => sin(z[i]) for i in 1:4); lcon = -2.0, ucon = 2.0)
+        @test length(n1.cons[1].itr) == 4
+        gn = zeros(n1.meta.ncon)
+        NLPModels.cons!(n1, fill(0.5, 10), gn)
+        @test gn ≈ fill(sin(0.5), 4)
+        n2 = ExaModel(d2)
+        @test n2.meta.ncon == 8 && length(n2.cons[1].itr) == 8
+        gn2 = zeros(8)
+        NLPModels.cons!(n2, fill(0.5, 10), gn2)
+        @test gn2 ≈ fill(sin(0.5), 8)
+    end
+end
+
+# Backends without Float64 (Metal) upload merged rows through
+# `replace_float_64_by_32`. The generic struct rebuild cannot reconstruct a
+# `MergedRow` (an empty Float-slot tuple leaves its `T` undetermined), so it
+# used to hand the row back unchanged with the Float64 still inside `d`; on
+# Julia 1.13.2 the rebuild segfaulted instead. Host-only check of the
+# dedicated method.
+function _test_merged_row_float32_rewrite()
+    c = ExaCore()
+    c, x = add_var(c, 4)
+    data = [(i, 0.5 * i) for i in 1:4]
+    c, _ = add_con(c, x[d[1]] * d[2] + x[1] for d in data)
+    m = ExaModel(c)
+    itr = m.cons[1].itr
+    @test itr isa ExaModels.SegmentedItr
+    rows = [itr[i] for i in 1:length(itr)]
+    @test ExaModels._contains_float64(eltype(rows))          # the fixture does carry a Float64
+    K, S = eltype(rows).parameters[1], eltype(rows).parameters[2]
+    r2 = ExaModels.replace_float_64_by_32.(rows)
+    @test !ExaModels._contains_float64(eltype(r2))
+    @test eltype(r2) <: ExaModels.MergedRow{K, S, Float32}   # K, S kept; T rewritten, not Union{}
+    @test r2[1].d === (1, 0.5f0)
+    @test r2[2].d === (2, 1.0f0)
+    return @test r2[1].iv == rows[1].iv && r2[1].o0 == rows[1].o0 && r2[1].o1 == rows[1].o1 && r2[1].o2 == rows[1].o2
+end
+
 function runtests()
     return @testset "Family merge" begin
+        @testset "merged rows rewrite Float64 to Float32" begin
+            _test_merged_row_float32_rewrite()
+        end
         @testset "host derivatives against finite differences" begin
             _test_host_derivatives()
         end
@@ -159,6 +244,8 @@ function runtests()
         @testset "matches host result (backend = $b)" for b in MERGE_BACKENDS
             b === nothing || _test_backend_matches_host(b)
         end
+
+        _test_core_persistence()
 
         @testset "cross-variable and coefficient hoisting" begin
             c = ExaCore()

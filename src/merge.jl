@@ -48,6 +48,24 @@ const _MROW_IV = 4  # field position of `iv` in MergedRow
 const _MROW_FV = 5  # field position of `fv` in MergedRow
 const _MROW_D = 6  # field position of `d` in MergedRow
 
+# Float64 -> Float32 rewrite for backends without Float64 (Metal). The generic
+# struct rebuild in templates.jl cannot reconstruct a MergedRow: with no Float
+# slots (S = 0) the empty `fv` tuple leaves `T` undetermined for the default
+# constructor, so the rebuild fell back to returning the row unchanged and the
+# Float64 inside `d` reached the device upload (metal lts leg of #329); and on
+# Julia 1.13.2 the generic rebuild segfaults in `getfield` during the
+# broadcast over these rows (reproduced on x86 Linux, no Metal involved). The
+# parameters are written out, so neither path is taken.
+function replace_float_64_by_32(r::MergedRow{K, S, T, D}) where {K, S, T, D}
+    fv = map(replace_float_64_by_32, getfield(r, :fv))
+    d = replace_float_64_by_32(getfield(r, :d))
+    return MergedRow{K, S, _f32type(T), typeof(d)}(
+        getfield(r, :o0), getfield(r, :o1), getfield(r, :o2), getfield(r, :iv), fv, d,
+    )
+end
+_f32type(::Type{Float64}) = Float32
+_f32type(::Type{T}) where {T} = T
+
 # ── merged iterators ─────────────────────────────────────────────────────────
 
 struct MergedSeg{K, S, T, I}
@@ -63,11 +81,11 @@ end
     SegmentedItr{K, D, I, RF}
 
 Lazy merged iterator for affine-offset families: one `MergedSeg` per source
-block, the original iterators kept alive (a `UnitRange` stays a `UnitRange`),
-rows materialized on demand.  `rep` is the first block's `SIMDFunction`, the
-layout key for later arrivals.  The containers are mutable inside an
-immutable struct: appending a segment changes no types, so the core's type
-is stable as a family grows.
+block (holding the iterator `_adapt_gen` produced for it), rows materialized
+on demand.  `rep` is the first block's `SIMDFunction`, the layout key for
+later arrivals.  Appending copies the segment containers (`_merged_append_itr`)
+so earlier cores and models keep the iterator they had; the copy changes no
+types, so the core's type is stable as a family grows.
 """
 struct SegmentedItr{K, S, T, D, I, RF} <: AbstractVector{MergedRow{K, S, T, D}}
     rep::RF
@@ -97,8 +115,9 @@ end
     MergedRows{K, D, RF}
 
 Materialized merged iterator, used for augmentation families (their row
-targets are data-driven, not affine) and for device finalization.  Rows are
-appended in place as the family grows.
+targets are data-driven, not affine) and for device finalization.  Growing a
+family copies the row vector (`_merged_append_itr`), so earlier cores and
+models keep the rows they had.
 """
 struct MergedRows{K, S, T, D, RF} <: AbstractVector{MergedRow{K, S, T, D}}
     rep::RF
@@ -382,26 +401,38 @@ end
     )
 end
 
+# Copy-on-append: the core API is persistent, so the previous core — and any
+# model already built from it — must keep the iterator it had. Appending in
+# place would grow their block past the meta they were built with (out-of-
+# bounds writes under @inbounds), and two cores branched off one base would
+# see each other's segments. The copy is O(#segments) per add, so the cost
+# still scales with the number of blocks, and the iterator's type does not
+# change, so the core's type stays stable as a family grows.
 @inline function _merged_append_itr(m::SegmentedItr, prev, f, pars, dims, tag, ivs, fvt)
-    push!(m.segs, eltype(m.segs)(pars, f.o0, f.o1, f.o2, ivs, fvt))
+    segs = copy(m.segs)
+    offs = copy(m.offs)
+    push!(segs, eltype(segs)(pars, f.o0, f.o1, f.o2, ivs, fvt))
     newlen = length(pars)
-    push!(m.offs, m.offs[end] + newlen)
-    m.seglen[] = (m.seglen[] == newlen) ? newlen : 0
-    return _rewrap(prev, prev.f, m, m.offs[end], tag)
+    push!(offs, offs[end] + newlen)
+    seglen = Ref((m.seglen[] == newlen) ? newlen : 0)
+    m2 = typeof(m)(m.rep, segs, offs, seglen, m.o1step, m.o2step)
+    return _rewrap(prev, prev.f, m2, offs[end], tag)
 end
 @inline function _merged_append_itr(m::MergedRows, prev, f, pars, dims, tag, ivs, fvt)
     mf = prev.f
     o0s = _row_o0s(f, pars, dims)
     itrc = collect(pars)
+    rows = copy(m.rows)
     for r in eachindex(itrc)
         push!(
-            m.rows, eltype(m.rows)(
+            rows, eltype(rows)(
                 o0s[r], f.o1 + mf.o1step * (r - 1),
                 f.o2 + mf.o2step * (r - 1), ivs, fvt, itrc[r]
             )
         )
     end
-    return _rewrap(prev, prev.f, m, length(m.rows), tag)
+    m2 = typeof(m)(m.rep, rows)
+    return _rewrap(prev, prev.f, m2, length(rows), tag)
 end
 
 # ── the merge entry point used by _add_con / _add_con! ───────────────────────
