@@ -123,7 +123,7 @@ function _device_tests(backend)
         H1[i, j] += v
         i != j && (H1[j, i] += v)
     end
-    @test H1 ≈ _dense_hess(m0, xh, yh; obj_weight = 0.7) rtol = 1e-12
+    @test H1 ≈ _dense_hess(m0, xh, yh; obj_weight = 0.7) rtol = rt
 end
 
 function runtests(; backends = Any[CPU()])
