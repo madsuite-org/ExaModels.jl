@@ -43,8 +43,8 @@ function _build(backend)
 end
 
 function _evalall(m)
-    x0 = copy(m.meta.x0) .+ 0.01
-    T = eltype(x0)
+    T = eltype(m.meta.x0)
+    x0 = copy(m.meta.x0) .+ T(0.01)   # a Float64 literal would promote a Float32 device vector
     g = fill!(similar(x0), zero(T))
     cv = fill!(similar(x0, m.meta.ncon), zero(T))
     jv = fill!(similar(x0, m.meta.nnzj), zero(T))
@@ -162,12 +162,15 @@ function _test_host()
 end
 
 function _test_backend_matches_host(backend)
-    rb = _evalall(ExaModel(_build(backend)))
+    mb = ExaModel(_build(backend))
+    # Float32 backends (Metal) carry ~1e-7 roundoff per operation
+    tight, loose = eltype(mb.meta.x0) == Float32 ? (1.0e-4, 1.0e-4) : (1.0e-12, 1.0e-10)
+    rb = _evalall(mb)
     rh = _evalall(ExaModel(_build(nothing)))
-    @test rb[1] ≈ rh[1] rtol = 1.0e-12
+    @test rb[1] ≈ rh[1] rtol = tight
     for k in (2, 3, 6, 9)                       # grad, cons, jac vals, hess vals
-        @test sum(rb[k]) ≈ sum(rh[k]) rtol = 1.0e-10
-        @test maximum(abs, rb[k]) ≈ maximum(abs, rh[k]) rtol = 1.0e-10
+        @test sum(rb[k]) ≈ sum(rh[k]) rtol = loose
+        @test maximum(abs, rb[k]) ≈ maximum(abs, rh[k]) rtol = loose
     end
     for k in (4, 5, 7, 8)                       # sparsity coordinates
         @test sort(rb[k]) == sort(rh[k])

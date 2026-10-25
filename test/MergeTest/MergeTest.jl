@@ -41,8 +41,8 @@ function _build(backend)
 end
 
 function _evalall(m)
-    x0 = copy(m.meta.x0) .+ 0.01
-    T = eltype(x0)
+    T = eltype(m.meta.x0)
+    x0 = copy(m.meta.x0) .+ T(0.01)   # a Float64 literal would promote a Float32 device vector
     g = fill!(similar(x0), zero(T))
     cv = fill!(similar(x0, m.meta.ncon), zero(T))
     jv = fill!(similar(x0, m.meta.nnzj), zero(T))
@@ -138,12 +138,15 @@ function _test_host_derivatives()
 end
 
 function _test_backend_matches_host(backend)
-    rb = _evalall(ExaModel(_build(backend)))
+    mb = ExaModel(_build(backend))
+    # Float32 backends (Metal) carry ~1e-7 roundoff per operation
+    tight, loose = eltype(mb.meta.x0) == Float32 ? (1.0e-4, 1.0e-4) : (1.0e-12, 1.0e-10)
+    rb = _evalall(mb)
     rh = _evalall(ExaModel(_build(nothing)))
-    @test rb[1] ≈ rh[1] rtol = 1e-12
+    @test rb[1] ≈ rh[1] rtol = tight
     for k in (2, 3, 6, 9)                       # grad, cons, jac vals, hess vals
-        @test sum(rb[k]) ≈ sum(rh[k]) rtol = 1e-10
-        @test maximum(abs, rb[k]) ≈ maximum(abs, rh[k]) rtol = 1e-10
+        @test sum(rb[k]) ≈ sum(rh[k]) rtol = loose
+        @test maximum(abs, rb[k]) ≈ maximum(abs, rh[k]) rtol = loose
     end
     for k in (4, 5, 7, 8)                       # sparsity coordinates
         @test sort(rb[k]) == sort(rh[k])
@@ -203,8 +206,36 @@ function _test_core_persistence()
     end
 end
 
+# Backends without Float64 (Metal) upload merged rows through
+# `replace_float_64_by_32`. The generic struct rebuild cannot reconstruct a
+# `MergedRow` (an empty Float-slot tuple leaves its `T` undetermined), so it
+# used to hand the row back unchanged with the Float64 still inside `d`; on
+# Julia 1.13.2 the rebuild segfaulted instead. Host-only check of the
+# dedicated method.
+function _test_merged_row_float32_rewrite()
+    c = ExaCore()
+    c, x = add_var(c, 4)
+    data = [(i, 0.5 * i) for i in 1:4]
+    c, _ = add_con(c, x[d[1]] * d[2] + x[1] for d in data)
+    m = ExaModel(c)
+    itr = m.cons[1].itr
+    @test itr isa ExaModels.SegmentedItr
+    rows = [itr[i] for i in 1:length(itr)]
+    @test ExaModels._contains_float64(eltype(rows))          # the fixture does carry a Float64
+    K, S = eltype(rows).parameters[1], eltype(rows).parameters[2]
+    r2 = ExaModels.replace_float_64_by_32.(rows)
+    @test !ExaModels._contains_float64(eltype(r2))
+    @test eltype(r2) <: ExaModels.MergedRow{K, S, Float32}   # K, S kept; T rewritten, not Union{}
+    @test r2[1].d === (1, 0.5f0)
+    @test r2[2].d === (2, 1.0f0)
+    @test r2[1].iv == rows[1].iv && r2[1].o0 == rows[1].o0 && r2[1].o1 == rows[1].o1 && r2[1].o2 == rows[1].o2
+end
+
 function runtests()
     @testset "Family merge" begin
+        @testset "merged rows rewrite Float64 to Float32" begin
+            _test_merged_row_float32_rewrite()
+        end
         @testset "host derivatives against finite differences" begin
             _test_host_derivatives()
         end
