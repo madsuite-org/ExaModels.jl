@@ -9,7 +9,7 @@ function getitr(gen::UnitRange{Int64})
 end
 function getitr(gen::Base.Iterators.ProductIterator{NTuple{N,UnitRange{Int64}}}) where {N} end
 
-function ExaModels.getptr(backend, array; cmp = (x, y) -> x != y)
+function ExaModels.getptr(backend, array; cmp = !=)
 
     bitarray = similar(array, Bool, length(array) + 1)
     kergetptr(backend)(cmp, bitarray, array; ndrange = length(array) + 1)
@@ -41,16 +41,16 @@ function ExaModels.build_extension(
     _grad_structure!(T, c.backend, c.obj, gsparsity)
 
     if !isempty(gsparsity)
-        ExaModels.sort!(gsparsity; lt = ((i, j), (k, l)) -> i < k)
+        ExaModels.sort!(gsparsity; lt = ExaModels._first_lt)
     end
-    gptr = ExaModels.getptr(c.backend, gsparsity; cmp = (x, y) -> x[1] != y[1])
+    gptr = ExaModels.getptr(c.backend, gsparsity; cmp = ExaModels._first_ne)
 
     conaugsparsity = similar(c.x0, Tuple{Int,Int}, c.nconaug)
     _conaug_structure!(T, c.backend, c.cons, conaugsparsity)
     if !isempty(conaugsparsity)
-        ExaModels.sort!(conaugsparsity; lt = ((i, j), (k, l)) -> i < k)
+        ExaModels.sort!(conaugsparsity; lt = ExaModels._first_lt)
     end
-    conaugptr = ExaModels.getptr(c.backend, conaugsparsity; cmp = (x, y) -> x[1] != y[1])
+    conaugptr = ExaModels.getptr(c.backend, conaugsparsity; cmp = ExaModels._first_ne)
 
 
     if prod
@@ -77,28 +77,28 @@ function ExaModels.build_extension(
         hesssparsityj = copy(hesssparsityi)
 
         if !isempty(jacsparsityi)
-            ExaModels.sort!(jacsparsityi; lt = (((i, j), k), ((n, m), l)) -> i < n)
+            ExaModels.sort!(jacsparsityi; lt = ExaModels._row_lt)
         end
         jacptri =
-            ExaModels.getptr(c.backend, jacsparsityi; cmp = (x, y) -> x[1][1] != y[1][1])
+            ExaModels.getptr(c.backend, jacsparsityi; cmp = ExaModels._row_ne)
 
         if !isempty(jacsparsityj)
-            ExaModels.sort!(jacsparsityj; lt = (((i, j), k), ((n, m), l)) -> j < m)
+            ExaModels.sort!(jacsparsityj; lt = ExaModels._col_lt)
         end
         jacptrj =
-            ExaModels.getptr(c.backend, jacsparsityj; cmp = (x, y) -> x[1][2] != y[1][2])
+            ExaModels.getptr(c.backend, jacsparsityj; cmp = ExaModels._col_ne)
 
 
         if !isempty(hesssparsityi)
-            ExaModels.sort!(hesssparsityi; lt = (((i, j), k), ((n, m), l)) -> i < n)
+            ExaModels.sort!(hesssparsityi; lt = ExaModels._row_lt)
         end
         hessptri =
-            ExaModels.getptr(c.backend, hesssparsityi; cmp = (x, y) -> x[1][1] != y[1][1])
+            ExaModels.getptr(c.backend, hesssparsityi; cmp = ExaModels._row_ne)
         if !isempty(hesssparsityj)
-            ExaModels.sort!(hesssparsityj; lt = (((i, j), k), ((n, m), l)) -> j < m)
+            ExaModels.sort!(hesssparsityj; lt = ExaModels._col_lt)
         end
         hessptrj =
-            ExaModels.getptr(c.backend, hesssparsityj; cmp = (x, y) -> x[1][2] != y[1][2])
+            ExaModels.getptr(c.backend, hesssparsityj; cmp = ExaModels._col_ne)
 
         # Per-oracle sorted sparsity + row/col pointers, precomputed once.
         # Used in jprod_nln! / jtprod_nln! / hprod! so we never rebuild them
@@ -115,22 +115,22 @@ function ExaModels.build_extension(
             off_j = _o_jac_off[i];  off_c = _o_con_off[i];  off_h = _o_hess_off[i]
             # Jac: row-sorted (for Jv) and col-sorted (for J'v)
             jac_sp_i = _oracle_jac_sparsity(oracle, off_j, off_c, c.backend, c.x0)
-            ExaModels.sort!(jac_sp_i; lt = (((r1, c1), _), ((r2, c2), __)) -> r1 < r2)
-            jac_ptr_i = ExaModels.getptr(c.backend, jac_sp_i; cmp = (a, b) -> a[1][1] != b[1][1])
+            ExaModels.sort!(jac_sp_i; lt = ExaModels._row_lt)
+            jac_ptr_i = ExaModels.getptr(c.backend, jac_sp_i; cmp = ExaModels._row_ne)
             jac_sp_j = copy(jac_sp_i)
-            ExaModels.sort!(jac_sp_j; lt = (((r1, c1), _), ((r2, c2), __)) -> c1 < c2)
-            jac_ptr_j = ExaModels.getptr(c.backend, jac_sp_j; cmp = (a, b) -> a[1][2] != b[1][2])
+            ExaModels.sort!(jac_sp_j; lt = ExaModels._col_lt)
+            jac_ptr_j = ExaModels.getptr(c.backend, jac_sp_j; cmp = ExaModels._col_ne)
             # Hess: row-sorted (kersyspmv) and col-sorted (kersyspmv2)
             if oracle.nnzh > 0
                 hess_sp_i = _oracle_hess_sparsity(oracle, off_h, c.backend, c.x0)
-                ExaModels.sort!(hess_sp_i; lt = (((r1, c1), _), ((r2, c2), __)) -> r1 < r2)
-                hess_ptr_i = ExaModels.getptr(c.backend, hess_sp_i; cmp = (a, b) -> a[1][1] != b[1][1])
+                ExaModels.sort!(hess_sp_i; lt = ExaModels._row_lt)
+                hess_ptr_i = ExaModels.getptr(c.backend, hess_sp_i; cmp = ExaModels._row_ne)
                 hess_sp_j = copy(hess_sp_i)
-                ExaModels.sort!(hess_sp_j; lt = (((r1, c1), _), ((r2, c2), __)) -> c1 < c2)
-                hess_ptr_j = ExaModels.getptr(c.backend, hess_sp_j; cmp = (a, b) -> a[1][2] != b[1][2])
+                ExaModels.sort!(hess_sp_j; lt = ExaModels._col_lt)
+                hess_ptr_j = ExaModels.getptr(c.backend, hess_sp_j; cmp = ExaModels._col_ne)
             else
                 hess_sp_i = similar(c.x0, _SP, 0)
-                hess_ptr_i = ExaModels.getptr(c.backend, hess_sp_i; cmp = (a, b) -> a[1][1] != b[1][1])
+                hess_ptr_i = ExaModels.getptr(c.backend, hess_sp_i; cmp = ExaModels._row_ne)
                 hess_sp_j = similar(c.x0, _SP, 0)
                 hess_ptr_j = hess_ptr_i
             end
