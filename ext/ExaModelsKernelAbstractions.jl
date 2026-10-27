@@ -104,27 +104,9 @@ function ExaModels.build_extension(
         # Per-oracle sorted sparsity + row/col pointers, precomputed once.
         # Used in jprod_nln! / jtprod_nln! / hprod! so we never rebuild them
         # at inference time.  adapt=Val(true) oracles store nothing.
-        _o_jac_off = let s = simd_nnzj
-            v = [
-                begin
-                        r = s; s += o.nnzj; r
-                    end for o in c.oracles
-            ]; v
-        end
-        _o_hess_off = let s = simd_nnzh
-            v = [
-                begin
-                        r = s; s += o.nnzh; r
-                    end for o in c.oracles
-            ]; v
-        end
-        _o_con_off = let s = simd_ncon
-            v = [
-                begin
-                        r = s; s += o.ncon; r
-                    end for o in c.oracles
-            ]; v
-        end
+        _o_jac_off = _oracle_offsets(simd_nnzj, c.oracles, :nnzj)
+        _o_hess_off = _oracle_offsets(simd_nnzh, c.oracles, :nnzh)
+        _o_con_off = _oracle_offsets(simd_ncon, c.oracles, :ncon)
         _SP = Tuple{Tuple{Int, Int}, Int}  # element type shared with SIMD sparsity
         oracle_prod = ntuple(length(c.oracles)) do i
             oracle = c.oracles[i]
@@ -841,6 +823,20 @@ end
 ExaModels.getbackend(m::ExaModels.AbstractExaModel{T,VT,E}) where {T,VT,E<:KAExtension} =
     m.ext.backend
 
+# Starting offset of each oracle's block: `start`, then `start` plus the running sum of
+# `getproperty(o, field)`. Built with a loop rather than a comprehension that updates a
+# captured counter, which Julia boxes, so the vector type is inferred and `collect`'s
+# generic path (open to invalidation by any new `merge!` method) is not used.
+function _oracle_offsets(start::Integer, oracles, field::Symbol)
+    v = Int[]
+    s = Int(start)
+    for o in oracles
+        push!(v, s)
+        s += Int(getproperty(o, field))
+    end
+    return v
+end
+
 # ── GPU-specific overrides for ExaModelWithOracle ────────────────────────────
 #
 # When the backend is a KA GPU (CUDA, ROCm, …) the generic oracle.jl methods
@@ -944,6 +940,13 @@ function ExaModels.hess_structure!(
             cols[cache.hess_idx] .= cache.hess_cols_copy
         end
     end
+    for (i, oracle) in enumerate(m.scalar_oracles)
+        cache = m.scalar_oracle_caches[i]
+        if oracle.nnzh > 0
+            rows[cache.hess_idx] .= cache.hess_rows_copy
+            cols[cache.hess_idx] .= cache.hess_cols_copy
+        end
+    end
     for (i, ev) in enumerate(m.evals)
         cache = m.eval_caches[i]
         if ev.nnzh > 0
@@ -1028,6 +1031,26 @@ function ExaModels.jac_coord!(
     return jac
 end
 
+# Objective-only hess_coord!: the SIMD objective part plus the scalar-oracle
+# Hessians (see the host method in oracle.jl). Needed here as well because the
+# AbstractExaModel KA override above would otherwise be ambiguous with it.
+function ExaModels.hess_coord!(
+        m::ExaModels.ExaModelWithOracle{T, VT, E},
+        x::AbstractVector,
+        hess::AbstractVector;
+        obj_weight = one(T),
+    ) where {T, VT, E <: KAExtension}
+    fill!(hess, zero(eltype(hess)))
+    _obj_hess_coord!(m.ext.backend, hess, m.objs, x, m.θ, T(obj_weight))
+    backend = m.ext.backend
+    for (i, oracle) in enumerate(m.scalar_oracles)
+        cache = m.scalar_oracle_caches[i]
+        oracle.nnzh == 0 && continue
+        ExaModels._scalar_hess!(oracle, x, hess, T(obj_weight), cache, backend)
+    end
+    return hess
+end
+
 function ExaModels.hess_coord!(
         m::ExaModels.ExaModelWithOracle{T, VT, E},
         x::AbstractVector,
@@ -1052,6 +1075,11 @@ function ExaModels.hess_coord!(
         else
             ExaModels._hess_reconstruct_via_hvp!(oracle, x, y, hess, cache, backend)
         end
+    end
+    for (i, oracle) in enumerate(m.scalar_oracles)
+        cache = m.scalar_oracle_caches[i]
+        oracle.nnzh == 0 && continue
+        ExaModels._scalar_hess!(oracle, x, hess, T(obj_weight), cache, backend)
     end
     for (i, ev) in enumerate(m.evals)
         cache = m.eval_caches[i]
@@ -1295,6 +1323,50 @@ function ExaModels.jtprod_nln!(
     return Jtv
 end
 
+# hprod! without y (objective-only): the SIMD objective part plus the
+# scalar-oracle hvp term, as in the host method.
+function ExaModels.hprod!(
+        m::ExaModels.ExaModelWithOracle{T, VT, E},
+        x::AbstractVector,
+        v::AbstractVector,
+        Hv::AbstractVector;
+        obj_weight = one(eltype(x)),
+    ) where {T, VT, N <: NamedTuple, E <: KAExtension{T, VT, N}}
+    fill!(Hv, zero(eltype(Hv)))
+    fill!(m.ext.prodhelper.hessbuffer, zero(eltype(Hv)))
+    _obj_hess_coord!(m.ext.backend, m.ext.prodhelper.hessbuffer, m.objs, x, m.θ, obj_weight)
+    let _n = length(m.ext.prodhelper.hessptri) - 1
+        _n > 0 && kersyspmv(m.ext.backend)(
+            Hv, v,
+            m.ext.prodhelper.hesssparsityi,
+            m.ext.prodhelper.hessbuffer,
+            m.ext.prodhelper.hessptri;
+            ndrange = _n,
+        )
+    end
+    let _n = length(m.ext.prodhelper.hessptrj) - 1
+        _n > 0 && kersyspmv2(m.ext.backend)(
+            Hv, v,
+            m.ext.prodhelper.hesssparsityj,
+            m.ext.prodhelper.hessbuffer,
+            m.ext.prodhelper.hessptrj;
+            ndrange = _n,
+        )
+    end
+    backend = m.ext.backend
+    for (i, oracle) in enumerate(m.scalar_oracles)
+        cache = m.scalar_oracle_caches[i]
+        oracle.hvp! === nothing && continue   # L-BFGS-only oracle
+        xin = ExaModels._oracle_input(oracle, x)
+        vin = ExaModels._oracle_input(oracle, v)
+        ExaModels._run_with_buf!(oracle, backend, cache.buf_nvar, cache.cpu_nvar) do b
+            oracle.hvp!(b, xin, vin)
+        end
+        Hv .+= T(obj_weight) .* cache.buf_nvar
+    end
+    return Hv
+end
+
 function ExaModels.hprod!(
         m::ExaModels.ExaModelWithOracle{T, VT, E},
         x::AbstractVector,
@@ -1375,6 +1447,16 @@ function ExaModels.hprod!(
             copyto!(m.work_nvar, delta)
             Hv .+= m.work_nvar
         end
+    end
+    for (i, oracle) in enumerate(m.scalar_oracles)
+        cache = m.scalar_oracle_caches[i]
+        oracle.hvp! === nothing && continue   # L-BFGS-only oracle
+        xin = ExaModels._oracle_input(oracle, x)
+        vin = ExaModels._oracle_input(oracle, v)
+        ExaModels._run_with_buf!(oracle, backend, cache.buf_nvar, cache.cpu_nvar) do b
+            oracle.hvp!(b, xin, vin)
+        end
+        Hv .+= T(obj_weight) .* cache.buf_nvar
     end
     for (i, ev) in enumerate(m.evals)
         cache = m.eval_caches[i]

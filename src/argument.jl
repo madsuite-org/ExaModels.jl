@@ -53,7 +53,7 @@
 #     @add_var(c, x, arg.N; start = arg.v)
 #     @add_con(c, x[i]^2 for i in 1:arg.N; lcon = 0.0, ucon = arg.nh * ones(10))
 #
-# and instantiated later.  Anything with no `ArgSource` in it is passed through
+# (the range `1:arg.N` needs ExaModelsCompiler) and instantiated later.  Anything with no `ArgSource` in it is passed through
 # by `instantiate` untouched, so ordinary (non-symbolic) models are unaffected.
 
 """
@@ -61,8 +61,10 @@
 
 Root type for the symbolic *argument* expression tree.  Nodes are built by
 ordinary Julia operations on an [`ArgSource`](@ref) (`arg.N`, `length(arg.v)`,
-`arg.nh * zeros(10)`, `1:arg.N`, …) and are resolved to concrete
-values by [`instantiate`](@ref).
+`arg.nh * zeros(10)`, …) and are resolved to concrete values by
+[`instantiate`](@ref).  Ranges and type-directed constructors on arguments
+(`1:arg.N`, `zeros(T, arg.N)`, `floor(Int, ·)`, `convert(T, ·)`) are defined by
+ExaModelsCompiler, which needs Julia 1.12.
 """
 abstract type AbstractArgNode end
 
@@ -306,24 +308,11 @@ end
 @inline Base.getindex(a::Tuple, b::AbstractArgNode) = ArgNode2(Base.getindex, a, b)
 @inline Base.getindex(a::Number, b::AbstractArgNode) = ArgNode2(Base.getindex, a, b)
 
-# Type-directed conversions: `floor(Int, arg.x)`, `zeros(Float64, arg.N)`.
-# `Base.Fix1` keeps the type parameter in the node's type instead of capturing a
-# closure, so the call stays statically resolvable.
-for op in (:floor, :ceil, :round, :trunc, :zeros, :ones, :convert)
-    @eval @inline Base.$op(::Type{T}, a::AbstractArgNode) where {T} =
-        ArgNode1(Base.Fix1(Base.$op, T), a)
-end
-# `convert` is the one name above that Base also uses for *storage* rather than
-# for conversion: `convert(::Type{Any}, x)` is what runs when a value is merely
-# put into an `Any` slot, which on 1.10 includes `push!` to a `Vector{Any}` — so
-# a node landing in one of those hits the deferred method above, and the two are
-# ambiguous.  Storing a node is not converting it.
-@inline Base.convert(::Type{Any}, a::AbstractArgNode) = a
-
-# Ranges: `1:arg.N`, `arg.lo:arg.hi`.
-@inline Base.:(:)(a::AbstractArgNode, b::AbstractArgNode) = ArgNode2(Colon(), a, b)
-@inline Base.:(:)(a::AbstractArgNode, b::Number) = ArgNode2(Colon(), a, b)
-@inline Base.:(:)(a::Number, b::AbstractArgNode) = ArgNode2(Colon(), a, b)
+# Type-directed conversions and constructors (`floor(Int, arg.x)`, `zeros(Float64, arg.N)`,
+# `convert(T, arg.x)`) and ranges (`1:arg.N`) are defined in ExaModelsCompiler, not here.
+# They extend Base functions whose call sites are everywhere (`convert`, `:`) or dispatch
+# on `::Type{T}` for any `T`, and loading them invalidates compiled code across the
+# session, which costs every ExaModels user, including those whose recipes never use them.
 
 # ── Broadcasting ──────────────────────────────────────────────────────────────
 #

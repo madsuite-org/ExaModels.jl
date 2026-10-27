@@ -4,6 +4,10 @@ include("backends.jl")
 
 using Test, ExaModels
 using Random
+
+# Loading ExaModels defines no `show` methods for node types (they invalidate compiled
+# code); short type printing is opt-in, enabled below by PrettyPrintTest.
+@test parentmodule(which(show, (IO, Type{typeof(ExaModels.Var(1) + ExaModels.Var(2))}))) === Base
 Random.seed!(0)
 
 ad_tolerance(m1,m2) = max(ad_tolerance(m1), ad_tolerance(m2))
