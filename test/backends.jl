@@ -1,5 +1,11 @@
 const BACKENDS = []
 
+# A job whose OS, architecture and Julia version already run the full suite on
+# another job passes this to skip the tests that never build a model on a
+# `BACKENDS` entry: there they would repeat that job's work exactly.
+const BACKEND_TESTS_ONLY = "EXAMODELS_BACKEND_TESTS_ONLY" in ARGS
+BACKEND_TESTS_ONLY && @info "skipping backend-independent tests"
+
 if "EXAMODELS_NO_TEST_CPU" in ARGS
     @info "excluding CPU"
 else
