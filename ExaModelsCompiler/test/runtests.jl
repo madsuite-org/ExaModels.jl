@@ -76,6 +76,7 @@ const S_TAB = [(i = 2, w = 1.5, s = 2.0), (i = 5, w = 3.0, s = -1.0), (i = 6, w 
 
 function runtests()
     @testset "ExaModelsCompiler" begin
+        include("operators.jl")
 
         @testset "the example arg is read, not guessed" begin
             c = build()

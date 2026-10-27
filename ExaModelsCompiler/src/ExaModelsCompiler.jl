@@ -83,6 +83,8 @@ import Random
 import Serialization
 import TOML
 
+include("operators.jl")
+
 export compile_library, compile_all
 
 # The generated app package is a throwaway: a fresh temporary directory with

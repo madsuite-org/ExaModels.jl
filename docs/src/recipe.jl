@@ -46,7 +46,9 @@
 # The rest of this page walks that through: writing a recipe, instantiating it,
 # and compiling it.
 
-using ExaModels, NLPModels
+# Ranges over arguments (`1:arg.N`) and type-directed conversions are defined by
+# `ExaModelsCompiler`, which a recipe is compiled with anyway.
+using ExaModels, ExaModelsCompiler, NLPModels
 
 # ## Argument placeholders
 

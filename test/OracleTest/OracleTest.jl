@@ -804,61 +804,191 @@ end
 # Scalar + vector oracles together: hess_structure!/hess_coord!/hprod! must
 # fill every block (the scalar-oracle block used to be allocated but never
 # written), on the host and on every device backend.
-function test_scalar_oracle_hessian(backend)
-    # Float64 only: oracle models cannot yet be built with T = Float32 on the
-    # host (the oracle caches and work buffers are allocated as Float64, and the
-    # ExaModelWithOracle fields require VT). The device legs still exercise the
-    # obj_weight -> T conversion in the KA overrides, which Metal requires.
-    return @testset "scalar-oracle Hessian assembly" begin
+# Shared fixture: f(x) = x1^2 x2 as a ScalarNonlinearOracle with the
+# lower-triangular pattern (1,1), (2,1), (2,2), plus one VectorNonlinearOracle
+# constraint x1 x2 = 1 whose Lagrangian Hessian is y1 at (2,1). `hess!`, when
+# requested, returns TEN TIMES the true Hessian so that a test can tell which
+# of the two second-order paths produced the assembled values.
+function _scalar_oracle_fixture(T, backend; hvp = true, hess = false)
+    c = ExaCore(T; backend = backend)
+    c, x = add_var(c, 2; start = T[1.0, 2.0])
+    sor = ScalarNonlinearOracle(;
+        nvar = 2,
+        f = x_ -> x_[1]^2 * x_[2],
+        grad! = (g, x_) -> (g[1] = 2x_[1] * x_[2]; g[2] = x_[1]^2),
+        hvp! = hvp ? (Hv, x_, v) -> (
+                Hv[1] = 2x_[2] * v[1] + 2x_[1] * v[2];
+                Hv[2] = 2x_[1] * v[1]
+            ) : nothing,
+        hess! = hess ? (vals, x_) -> (
+                vals[1] = 10 * 2x_[2]; vals[2] = 10 * 2x_[1]; vals[3] = 0
+            ) : nothing,
+        hess_rows = [1, 2, 2], hess_cols = [1, 1, 2],
+        adapt = Val(true),
+    )
+    c = objective(c, sor)
+    vor = VectorNonlinearOracle(;
+        nvar = 2, ncon = 1,
+        jac_rows = [1, 1], jac_cols = [1, 2],
+        hess_rows = [2], hess_cols = [1],
+        lcon = [0.0], ucon = [0.0],
+        f! = (cv, x_) -> (cv[1] = x_[1] * x_[2] - 1),
+        jac! = (vals, x_) -> (vals[1] = x_[2]; vals[2] = x_[1]),
+        hess! = (vals, x_, y_) -> (vals[1] = y_[1]),
+        adapt = Val(true),
+    )
+    c = constraint(c, vor)
+    return ExaModel(c; prod = true)
+end
+
+# Dense lower-triangular 2x2 assembly of the model Hessian at x = (1, 2),
+# y = 1 (or objective-only when `withy` is false), obj_weight = 0.5.
+function _assemble_scalar_fixture_hess(m; withy = true)
+    rows = similar(m.meta.x0, Int, m.meta.nnzh)
+    colsv = similar(rows)
+    NLPModels.hess_structure!(m, rows, colsv)
+    xv = similar(m.meta.x0, 2)
+    copyto!(xv, [1.0, 2.0])
+    vals = similar(m.meta.x0, m.meta.nnzh)
+    if withy
+        y = similar(m.meta.x0, 1)
+        fill!(y, 1.0)
+        NLPModels.hess_coord!(m, xv, y, vals; obj_weight = 0.5)
+    else
+        NLPModels.hess_coord!(m, xv, vals; obj_weight = 0.5)
+    end
+    H = zeros(2, 2)
+    for (i, j, vv) in zip(Array(rows), Array(colsv), Array(vals))
+        H[i, j] += vv
+    end
+    return H, sort(collect(zip(Array(rows), Array(colsv))))
+end
+
+function test_scalar_oracle_hessian(backend, T)
+    tol = T == Float32 ? 1.0e-5 : _atol(backend)
+    return @testset "T=$T" begin
+        m = _scalar_oracle_fixture(T, backend)
+        # The model's element type reaches the host-side oracle buffers (before
+        # this a Float32 model could not be built: every cache was Float64).
+        # Compared against the model rather than T because a backend without
+        # Float64 (Metal) builds a Float32 model from a Float64 core.
+        TM = eltype(m.meta.x0)
+        @test m.work_nvar_cpu isa Vector{TM}
+        @test m.scalar_oracle_caches[1].cpu_nvar isa Vector{TM}
+        @test m.oracle_caches[1].cpu_nvar isa Vector{TM}
+        H, pattern = _assemble_scalar_fixture_hess(m)
+        @test pattern == [(1, 1), (2, 1), (2, 1), (2, 2)]
+        # 0.5 * obj hessian [4 2; 2 0] + y1 * con hessian [0 1; 1 0] (lower)
+        @test isapprox(H[1, 1], 2.0; atol = tol)
+        @test isapprox(H[2, 1], 2.0; atol = tol)
+        @test isapprox(H[2, 2], 0.0; atol = tol)
+        # Objective-only hess_coord!: the scalar oracle's entries are present,
+        # the constraint oracle's are not.
+        H0, _ = _assemble_scalar_fixture_hess(m; withy = false)
+        @test isapprox(H0[1, 1], 2.0; atol = tol)
+        @test isapprox(H0[2, 1], 1.0; atol = tol)
+        @test isapprox(H0[2, 2], 0.0; atol = tol)
+        xv = similar(m.meta.x0, 2)
+        copyto!(xv, [1.0, 2.0])
+        y = similar(m.meta.x0, 1)
+        fill!(y, 1.0)
+        v = similar(xv)
+        copyto!(v, [1.0, 0.0])
+        Hv = similar(xv)
+        NLPModels.hprod!(m, xv, y, v, Hv; obj_weight = 0.5)
+        @test isapprox(Array(Hv), [2.0, 2.0]; atol = tol)   # 0.5*[4,2] + 1.0*[0,1]
+        NLPModels.hprod!(m, xv, v, Hv; obj_weight = 0.5)   # objective-only
+        @test isapprox(Array(Hv), [2.0, 1.0]; atol = tol)   # 0.5*[4,2]
+    end
+end
+
+function test_scalar_oracle_explicit_hess(backend)
+    tol = _atol(backend)
+    return @testset "explicit hess!" begin
+        # hess! given alongside hvp!: hess_coord! takes the hess! values (ten
+        # times the true Hessian in the fixture), hprod! still uses hvp!.
+        m = _scalar_oracle_fixture(Float64, backend; hvp = true, hess = true)
+        cache = m.scalar_oracle_caches[1]
+        @test isempty(cache.hess_recon_cols)
+        @test length(cache.buf_dir) == 0
+        @test length(cache.buf_nnzh) == 3
+        H, _ = _assemble_scalar_fixture_hess(m)
+        @test isapprox(H[1, 1], 20.0; atol = tol)   # 0.5 * 10 * 4
+        @test isapprox(H[2, 1], 11.0; atol = tol)   # 0.5 * 10 * 2 + y1
+        @test isapprox(H[2, 2], 0.0; atol = tol)
+        xv = similar(m.meta.x0, 2)
+        copyto!(xv, [1.0, 2.0])
+        v = similar(xv)
+        copyto!(v, [1.0, 0.0])
+        Hv = similar(xv)
+        NLPModels.hprod!(m, xv, v, Hv; obj_weight = 0.5)
+        @test isapprox(Array(Hv), [2.0, 1.0]; atol = tol)
+
+        # hess! without hvp!, on a pattern that repeats a coordinate: the slots
+        # are written as declared and the consumer sums them. (Through the hvp!
+        # fallback every duplicate slot would receive the whole entry.)
         c = ExaCore(Float64; backend = backend)
         c, x = add_var(c, 2; start = [1.0, 2.0])
         sor = ScalarNonlinearOracle(;
             nvar = 2,
             f = x_ -> x_[1]^2 * x_[2],
             grad! = (g, x_) -> (g[1] = 2x_[1] * x_[2]; g[2] = x_[1]^2),
-            hvp! = (Hv, x_, v) -> (
-                Hv[1] = 2x_[2] * v[1] + 2x_[1] * v[2];
-                Hv[2] = 2x_[1] * v[1]
+            hess! = (vals, x_) -> (
+                vals[1] = x_[2]; vals[2] = 2x_[1]; vals[3] = 0; vals[4] = x_[2]
             ),
-            hess_rows = [1, 2, 2], hess_cols = [1, 1, 2],
+            hess_rows = [1, 2, 2, 1], hess_cols = [1, 1, 2, 1],
             adapt = Val(true),
         )
         c = objective(c, sor)
-        vor = VectorNonlinearOracle(;
-            nvar = 2, ncon = 1,
-            jac_rows = [1, 1], jac_cols = [1, 2],
-            hess_rows = [2], hess_cols = [1],
-            lcon = [0.0], ucon = [0.0],
-            f! = (cv, x_) -> (cv[1] = x_[1] * x_[2] - 1.0),
-            jac! = (vals, x_) -> (vals[1] = x_[2]; vals[2] = x_[1]),
-            hess! = (vals, x_, y_) -> (vals[1] = y_[1]),
-            adapt = Val(true),
-        )
-        c = constraint(c, vor)
-        m = ExaModel(c; prod = true)
-        rows = similar(m.meta.x0, Int, m.meta.nnzh)
+        m2 = ExaModel(c; prod = true)
+        @test m2.meta.nnzh == 4
+        rows = similar(m2.meta.x0, Int, 4)
         colsv = similar(rows)
-        NLPModels.hess_structure!(m, rows, colsv)
-        @test sort(collect(zip(Array(rows), Array(colsv)))) == [(1, 1), (2, 1), (2, 1), (2, 2)]
-        xv = similar(m.meta.x0, 2)
-        copyto!(xv, [1.0, 2.0])
-        y = similar(m.meta.x0, 1)
-        fill!(y, 1.0)
-        vals = similar(m.meta.x0, m.meta.nnzh)
-        NLPModels.hess_coord!(m, xv, y, vals; obj_weight = 0.5)
-        H = zeros(2, 2)
+        NLPModels.hess_structure!(m2, rows, colsv)
+        @test sort(collect(zip(Array(rows), Array(colsv)))) == [(1, 1), (1, 1), (2, 1), (2, 2)]
+        xv2 = similar(m2.meta.x0, 2)
+        copyto!(xv2, [1.0, 2.0])
+        vals = similar(m2.meta.x0, 4)
+        NLPModels.hess_coord!(m2, xv2, vals; obj_weight = 0.5)
+        H2 = zeros(2, 2)
         for (i, j, vv) in zip(Array(rows), Array(colsv), Array(vals))
-            H[i, j] += vv
+            H2[i, j] += vv
         end
-        # 0.5 * obj hessian [4 2; 2 0] + y1 * con hessian [0 1; 1 0] (lower)
-        @test H[1, 1] == 2.0 && H[2, 1] == 2.0 && H[2, 2] == 0.0
-        v = similar(xv)
-        copyto!(v, [1.0, 0.0])
-        Hv = similar(xv)
-        NLPModels.hprod!(m, xv, y, v, Hv; obj_weight = 0.5)
-        @test Array(Hv) == [2.0, 2.0]   # 0.5*[4,2] + 1.0*[0,1]
-        NLPModels.hprod!(m, xv, v, Hv; obj_weight = 0.5)   # objective-only
-        @test Array(Hv) == [2.0, 1.0]   # 0.5*[4,2]
+        @test isapprox(H2[1, 1], 2.0; atol = tol)   # 0.5 * (x2 + x2) = 0.5 * 4
+        @test isapprox(H2[2, 1], 1.0; atol = tol)
+        @test isapprox(H2[2, 2], 0.0; atol = tol)
+    end
+end
+
+function test_scalar_oracle_constructor_errors()
+    return @testset "ScalarNonlinearOracle constructor" begin
+        f = x_ -> x_[1]^2
+        grad! = (g, x_) -> (g[1] = 2x_[1])
+        # Declared sparsity needs a second-order callback.
+        @test_throws ArgumentError ScalarNonlinearOracle(;
+            nvar = 1, f, grad!, hess_rows = [1], hess_cols = [1]
+        )
+        # hess! fills declared slots, so it needs the sparsity.
+        @test_throws ArgumentError ScalarNonlinearOracle(;
+            nvar = 1, f, grad!, hess! = (vals, x_) -> (vals[1] = 2)
+        )
+        # Either callback alone is accepted with the sparsity ...
+        @test ScalarNonlinearOracle(;
+            nvar = 1, f, grad!, hess! = (vals, x_) -> (vals[1] = 2),
+            hess_rows = [1], hess_cols = [1],
+        ).nnzh == 1
+        # ... and hvp! without sparsity still implies the dense pattern.
+        o = ScalarNonlinearOracle(; nvar = 2, f, grad!, hvp! = (Hv, x_, v) -> (Hv .= 0))
+        @test o.nnzh == 3 && o.hess! === nothing
+    end
+end
+
+function test_scalar_oracle_hessian(backend)
+    return @testset "scalar-oracle Hessian assembly" begin
+        for T in (Float64, Float32)
+            test_scalar_oracle_hessian(backend, T)
+        end
+        test_scalar_oracle_explicit_hess(backend)
     end
 end
 
@@ -867,6 +997,7 @@ function runtests()
         @testset "VectorNonlinearOracle type checks" begin
             test_model_type()
         end
+        test_scalar_oracle_constructor_errors()
 
         for backend in BACKENDS
             @testset "backend=$backend" begin

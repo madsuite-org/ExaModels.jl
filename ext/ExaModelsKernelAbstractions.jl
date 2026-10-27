@@ -104,27 +104,9 @@ function ExaModels.build_extension(
         # Per-oracle sorted sparsity + row/col pointers, precomputed once.
         # Used in jprod_nln! / jtprod_nln! / hprod! so we never rebuild them
         # at inference time.  adapt=Val(true) oracles store nothing.
-        _o_jac_off = let s = simd_nnzj
-            v = [
-                begin
-                        r = s; s += o.nnzj; r
-                    end for o in c.oracles
-            ]; v
-        end
-        _o_hess_off = let s = simd_nnzh
-            v = [
-                begin
-                        r = s; s += o.nnzh; r
-                    end for o in c.oracles
-            ]; v
-        end
-        _o_con_off = let s = simd_ncon
-            v = [
-                begin
-                        r = s; s += o.ncon; r
-                    end for o in c.oracles
-            ]; v
-        end
+        _o_jac_off = _oracle_offsets(simd_nnzj, c.oracles, :nnzj)
+        _o_hess_off = _oracle_offsets(simd_nnzh, c.oracles, :nnzh)
+        _o_con_off = _oracle_offsets(simd_ncon, c.oracles, :ncon)
         _SP = Tuple{Tuple{Int, Int}, Int}  # element type shared with SIMD sparsity
         oracle_prod = ntuple(length(c.oracles)) do i
             oracle = c.oracles[i]
@@ -838,6 +820,20 @@ end
 ExaModels.getbackend(m::ExaModels.AbstractExaModel{T, VT, E}) where {T, VT, E <: KAExtension} =
     m.ext.backend
 
+# Starting offset of each oracle's block: `start`, then `start` plus the running sum of
+# `getproperty(o, field)`. Built with a loop rather than a comprehension that updates a
+# captured counter, which Julia boxes, so the vector type is inferred and `collect`'s
+# generic path (open to invalidation by any new `merge!` method) is not used.
+function _oracle_offsets(start::Integer, oracles, field::Symbol)
+    v = Int[]
+    s = Int(start)
+    for o in oracles
+        push!(v, s)
+        s += Int(getproperty(o, field))
+    end
+    return v
+end
+
 # ── GPU-specific overrides for ExaModelWithOracle ────────────────────────────
 #
 # When the backend is a KA GPU (CUDA, ROCm, …) the generic oracle.jl methods
@@ -1032,6 +1028,26 @@ function ExaModels.jac_coord!(
     return jac
 end
 
+# Objective-only hess_coord!: the SIMD objective part plus the scalar-oracle
+# Hessians (see the host method in oracle.jl). Needed here as well because the
+# AbstractExaModel KA override above would otherwise be ambiguous with it.
+function ExaModels.hess_coord!(
+        m::ExaModels.ExaModelWithOracle{T, VT, E},
+        x::AbstractVector,
+        hess::AbstractVector;
+        obj_weight = one(T),
+    ) where {T, VT, E <: KAExtension}
+    fill!(hess, zero(eltype(hess)))
+    _obj_hess_coord!(m.ext.backend, hess, m.objs, x, m.θ, T(obj_weight))
+    backend = m.ext.backend
+    for (i, oracle) in enumerate(m.scalar_oracles)
+        cache = m.scalar_oracle_caches[i]
+        oracle.nnzh == 0 && continue
+        ExaModels._scalar_hess!(oracle, x, hess, T(obj_weight), cache, backend)
+    end
+    return hess
+end
+
 function ExaModels.hess_coord!(
         m::ExaModels.ExaModelWithOracle{T, VT, E},
         x::AbstractVector,
@@ -1060,7 +1076,7 @@ function ExaModels.hess_coord!(
     for (i, oracle) in enumerate(m.scalar_oracles)
         cache = m.scalar_oracle_caches[i]
         oracle.nnzh == 0 && continue
-        ExaModels._scalar_hess_via_hvp!(oracle, x, hess, T(obj_weight), cache, backend)
+        ExaModels._scalar_hess!(oracle, x, hess, T(obj_weight), cache, backend)
     end
     for (i, ev) in enumerate(m.evals)
         cache = m.eval_caches[i]

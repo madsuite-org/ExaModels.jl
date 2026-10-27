@@ -199,20 +199,29 @@ Callbacks:
 - `f(x) -> Float64`:           objective value
 - `grad!(g, x)`:              fills g[1:nvar] = ∇f(x)
 - `hvp!(Hv, x, v) = nothing`: fills Hv[1:nvar] = ∇²f(x)·v  (optional; L-BFGS if absent)
+- `hess!(vals, x) = nothing`: fills vals[1:nnzh] = ∇²f(x) at the declared
+  `hess_rows`/`hess_cols` slots (optional)
 
 Second-order use: `hess_rows`/`hess_cols` declare the (lower-triangular,
-1-based) Hessian sparsity and require `hvp!` — the Hessian entries are
-recovered column by column from Hessian-vector products. With `hvp!` and no
-declared sparsity, a dense lower-triangular pattern is assumed. With neither,
-the oracle is first-order only.
+1-based) Hessian sparsity. `hprod!` uses `hvp!` (an oracle without it adds no
+`hprod!` term); `hess_coord!` uses `hess!` when it is given and otherwise
+recovers the declared entries column by column from `hvp!`. That fallback
+costs one `hvp!` call per distinct column and
+assumes every (row, col) coordinate appears once in the pattern: a repeated
+coordinate receives the whole assembled entry in each of its slots, and the
+consumer then sums them. A pattern built blockwise (one dense block per
+element) repeats coordinates by construction, so such oracles supply `hess!`.
+With `hvp!` and no declared sparsity, a dense lower-triangular pattern is
+assumed. With neither callback, the oracle is first-order only.
 
 Register via `objective(core, oracle)`.
 """
-struct ScalarNonlinearOracle{F, G, H, A}
+struct ScalarNonlinearOracle{F, G, H, HE, A}
     nvar::Int
     f::F
     grad!::G
     hvp!::H
+    hess!::HE
     nnzh::Int
     hess_rows::Vector{Int}
     hess_cols::Vector{Int}
@@ -224,6 +233,7 @@ function ScalarNonlinearOracle(;
         f,
         grad!,
         hvp! = nothing,
+        hess! = nothing,
         nnzh::Int = -1,
         hess_rows::Vector{Int} = Int[],
         hess_cols::Vector{Int} = Int[],
@@ -244,17 +254,26 @@ function ScalarNonlinearOracle(;
             end
         end
     end
-    if nnzh > 0 && hvp! === nothing
+    if nnzh > 0 && hvp! === nothing && hess! === nothing
         throw(
             ArgumentError(
                 "ScalarNonlinearOracle: declaring Hessian sparsity (hess_rows/hess_cols " *
-                    "or nnzh > 0) requires the hvp! callback, which the Hessian values are " *
-                    "recovered from. Omit the sparsity for a first-order (L-BFGS) oracle.",
+                    "or nnzh > 0) requires hess! (explicit values) or hvp! (values " *
+                    "recovered column by column). Omit the sparsity for a first-order " *
+                    "(L-BFGS) oracle.",
+            )
+        )
+    end
+    if hess! !== nothing && nnzh == 0
+        throw(
+            ArgumentError(
+                "ScalarNonlinearOracle: hess! fills the declared hess_rows/hess_cols " *
+                    "slots, so it requires the sparsity to be declared.",
             )
         )
     end
     @assert length(hess_rows) == length(hess_cols) "hess_rows and hess_cols lengths must match"
-    return ScalarNonlinearOracle(nvar, f, grad!, hvp!, nnzh, hess_rows, hess_cols, adapt)
+    return ScalarNonlinearOracle(nvar, f, grad!, hvp!, hess!, nnzh, hess_rows, hess_cols, adapt)
 end
 
 Base.show(io::IO, o::ScalarNonlinearOracle) = print(
@@ -263,7 +282,7 @@ Base.show(io::IO, o::ScalarNonlinearOracle) = print(
     ScalarNonlinearOracle
 
       nvar: $(o.nvar)   nnzh: $(o.nnzh)   adapt: $(o.adapt)
-      hvp!: $(o.hvp! !== nothing)
+      hvp!: $(o.hvp! !== nothing)   hess!: $(o.hess! !== nothing)
     """,
 )
 
@@ -334,7 +353,7 @@ end
 # concrete type known at construction time (juliac `--trim=safe` friendly).
 # `adapt = Val(true)` means the inner callback always receives CPU arrays;
 # `Val(false)` follows whatever array type the model's backend uses.
-@inline _embed_scratch(::Val{true}, _, n::Int) = zeros(n)
+@inline _embed_scratch(::Val{true}, x0, n::Int) = zeros(eltype(x0), n)
 @inline _embed_scratch(::Val{false}, x0, n::Int) = similar(x0, n)
 
 
@@ -360,7 +379,7 @@ end
 
 # ── Model type ────────────────────────────────────────────────────────────────
 
-struct OracleIndexCache{VI <: AbstractVector{Int}, VF <: AbstractVector}
+struct OracleIndexCache{VI <: AbstractVector{Int}, VF <: AbstractVector, VC <: AbstractVector}
     con_idx::VI             # indices into g/y for this oracle's constraints
     jac_idx::VI             # indices into jac for this oracle's Jacobian entries
     hess_idx::VI            # indices into hess for this oracle's Hessian entries
@@ -383,16 +402,16 @@ struct OracleIndexCache{VI <: AbstractVector{Int}, VF <: AbstractVector}
     buf_nnzj::VF            # length nnzj — for jac! results
     buf_nnzh::VF            # length nnzh — for hess! results
     # CPU-side buffers for adapt=Val(true) callbacks on GPU backends.
-    # Always allocated as Vector{Float64}; on CPU backends they are unused
+    # Always allocated as a host Vector{T}; on CPU backends they are unused
     # (`_run_with_buf!` short-circuits on `backend === nothing`).
-    cpu_ncon::Vector{Float64}
-    cpu_nvar::Vector{Float64}
-    cpu_nvar2::Vector{Float64}
-    cpu_nnzj::Vector{Float64}
-    cpu_nnzh::Vector{Float64}
+    cpu_ncon::VC
+    cpu_nvar::VC
+    cpu_nvar2::VC
+    cpu_nnzj::VC
+    cpu_nnzh::VC
 end
 
-function _build_oracle_index_cache(oracle, con_off, jac_off, hess_off)
+function _build_oracle_index_cache(::Type{T}, oracle, con_off, jac_off, hess_off) where {T}
     con_idx = collect((con_off + 1):(con_off + oracle.ncon))
     jac_idx = collect((jac_off + 1):(jac_off + oracle.nnzj))
     hess_idx = collect((hess_off + 1):(hess_off + oracle.nnzh))
@@ -401,9 +420,12 @@ function _build_oracle_index_cache(oracle, con_off, jac_off, hess_off)
     hess_rows_copy = copy(oracle.hess_rows)
     hess_cols_copy = copy(oracle.hess_cols)
 
-    # Jac reconstruction (for matrix-free oracles)
+    # Per-column reconstruction tables, read only by the matrix-free branches
+    # of jac_coord! / hess_coord! (`_jac_reconstruct_via_jvp!`,
+    # `_hess_reconstruct_via_hvp!`). They hold O(nnz) nested-Vector entries, so
+    # they are built only when the explicit callback is absent.
     jac_col_map = Dict{Int, Tuple{Vector{Int}, Vector{Int}}}()
-    for k in 1:oracle.nnzj
+    for k in 1:(oracle.jac! === nothing ? oracle.nnzj : 0)
         col = oracle.jac_cols[k]
         rows, pos = get!(jac_col_map, col) do
             (Int[], Int[])
@@ -415,9 +437,8 @@ function _build_oracle_index_cache(oracle, con_off, jac_off, hess_off)
     jac_recon_row_idx = [jac_col_map[c][1] for c in jac_recon_cols]
     jac_recon_pos_idx = [jac_col_map[c][2] for c in jac_recon_cols]
 
-    # Hess reconstruction (for matrix-free oracles)
     hess_col_map = Dict{Int, Tuple{Vector{Int}, Vector{Int}}}()
-    for k in 1:oracle.nnzh
+    for k in 1:(oracle.hess! === nothing ? oracle.nnzh : 0)
         col = oracle.hess_cols[k]
         rows, pos = get!(hess_col_map, col) do
             (Int[], Int[])
@@ -435,16 +456,16 @@ function _build_oracle_index_cache(oracle, con_off, jac_off, hess_off)
         hess_rows_copy, hess_cols_copy,
         jac_recon_cols, jac_recon_row_idx, jac_recon_pos_idx,
         hess_recon_cols, hess_recon_row_idx, hess_recon_pos_idx,
-        zeros(oracle.ncon),   # buf_ncon
-        zeros(oracle.nvar),   # buf_nvar
-        zeros(oracle.nvar),   # buf_nvar2
-        zeros(oracle.nnzj),   # buf_nnzj
-        zeros(oracle.nnzh),   # buf_nnzh
-        zeros(oracle.ncon),   # cpu_ncon
-        zeros(oracle.nvar),   # cpu_nvar
-        zeros(oracle.nvar),   # cpu_nvar2
-        zeros(oracle.nnzj),   # cpu_nnzj
-        zeros(oracle.nnzh),   # cpu_nnzh
+        zeros(T, oracle.ncon),   # buf_ncon
+        zeros(T, oracle.nvar),   # buf_nvar
+        zeros(T, oracle.nvar),   # buf_nvar2
+        zeros(T, oracle.nnzj),   # buf_nnzj
+        zeros(T, oracle.nnzh),   # buf_nnzh
+        zeros(T, oracle.ncon),   # cpu_ncon
+        zeros(T, oracle.nvar),   # cpu_nvar
+        zeros(T, oracle.nvar),   # cpu_nvar2
+        zeros(T, oracle.nnzj),   # cpu_nnzj
+        zeros(T, oracle.nnzh),   # cpu_nnzh
     )
 end
 
@@ -509,7 +530,7 @@ struct OracleEvaluator{F, J, H, JVP, VJP, HVP, A}
     adapt::A
 end
 
-struct EvalIndexCache{VI <: AbstractVector{Int}, VF <: AbstractVector}
+struct EvalIndexCache{VI <: AbstractVector{Int}, VF <: AbstractVector, VC <: AbstractVector}
     con_global_idx::VI       # device: 1-based global g-indices
     var_global_idx::VI       # device: 1-based global x-indices
     jac_idx::VI              # positions in global jac NNZ array
@@ -524,11 +545,11 @@ struct EvalIndexCache{VI <: AbstractVector{Int}, VF <: AbstractVector}
     buf_nnzj::VF
     buf_nnzh::VF
     # CPU-side shadows for adapt=Val(true) callbacks on GPU backends.
-    cpu_ncon::Vector{Float64}
-    cpu_nvar::Vector{Float64}
-    cpu_nvar2::Vector{Float64}
-    cpu_nnzj::Vector{Float64}
-    cpu_nnzh::Vector{Float64}
+    cpu_ncon::VC
+    cpu_nvar::VC
+    cpu_nvar2::VC
+    cpu_nnzj::VC
+    cpu_nnzh::VC
     # Stable CPU copies of index arrays (computed once at construction).  Used in
     # the matfree reconstruction helpers and the explicit-jac fallback paths to
     # avoid `adapt(Array, cache.<idx>)` allocating per call on GPU.
@@ -538,7 +559,7 @@ struct EvalIndexCache{VI <: AbstractVector{Int}, VF <: AbstractVector}
     cpu_var_global_idx::Vector{Int}
 end
 
-function _build_eval_index_cache(ev::OracleEvaluator, jac_off::Int, hess_off::Int)
+function _build_eval_index_cache(::Type{T}, ev::OracleEvaluator, jac_off::Int, hess_off::Int) where {T}
     jac_idx = isempty(ev.jac_rows) ? Int[] : collect((jac_off + 1):(jac_off + ev.nnzj))
     hess_idx = isempty(ev.hess_rows) ? Int[] : collect((hess_off + 1):(hess_off + ev.nnzh))
     jac_rows_global = isempty(ev.jac_rows) ? Int[] : ev.con_global_idx[ev.jac_rows]
@@ -551,16 +572,16 @@ function _build_eval_index_cache(ev::OracleEvaluator, jac_off::Int, hess_off::In
         jac_idx, hess_idx,
         jac_rows_global, jac_cols_global,
         hess_rows_global, hess_cols_global,
-        zeros(ev.ncon_total),     # buf_ncon
-        zeros(ev.nvar_total),     # buf_nvar
-        zeros(ev.nvar_total),     # buf_nvar2
-        zeros(ev.nnzj),           # buf_nnzj
-        zeros(ev.nnzh),           # buf_nnzh
-        zeros(ev.ncon_total),     # cpu_ncon
-        zeros(ev.nvar_total),     # cpu_nvar
-        zeros(ev.nvar_total),     # cpu_nvar2
-        zeros(ev.nnzj),           # cpu_nnzj
-        zeros(ev.nnzh),           # cpu_nnzh
+        zeros(T, ev.ncon_total),     # buf_ncon
+        zeros(T, ev.nvar_total),     # buf_nvar
+        zeros(T, ev.nvar_total),     # buf_nvar2
+        zeros(T, ev.nnzj),           # buf_nnzj
+        zeros(T, ev.nnzh),           # buf_nnzh
+        zeros(T, ev.ncon_total),     # cpu_ncon
+        zeros(T, ev.nvar_total),     # cpu_nvar
+        zeros(T, ev.nvar_total),     # cpu_nvar2
+        zeros(T, ev.nnzj),           # cpu_nnzj
+        zeros(T, ev.nnzh),           # cpu_nnzh
         copy(jac_idx),                   # cpu_jac_idx
         copy(hess_idx),                  # cpu_hess_idx
         copy(ev.con_global_idx),         # cpu_con_global_idx
@@ -592,42 +613,55 @@ _eval_input(ev::OracleEvaluator, x) = _do_adapt(ev.adapt, x)
 # Per-`ScalarNonlinearOracle` work buffers, parallel to `OracleIndexCache`.
 # Used by `grad!` (and any future second-order entry points) to avoid
 # allocating a fresh nvar-length `Vector` on every NLP iteration.
-struct ScalarOracleCache{VI <: AbstractVector{Int}, VF <: AbstractVector}
+struct ScalarOracleCache{VI <: AbstractVector{Int}, VF <: AbstractVector, VC <: AbstractVector}
     buf_nvar::VF             # device-side, length oracle.nvar
-    cpu_nvar::Vector{Float64}
-    # second-order bookkeeping (explicit-sparsity Hessian via hvp columns)
+    cpu_nvar::VC
+    # second-order bookkeeping
     hess_idx::UnitRange{Int}    # global slots in the model Hessian
     hess_rows_copy::VI          # oracle-local pattern (1-based into x)
     hess_cols_copy::VI
-    # Per-column reconstruction data (stays CPU — used in scalar loops)
+    # explicit-hess! result buffer + CPU shadow (length nnzh when the oracle
+    # supplies hess!, otherwise 0)
+    buf_nnzh::VF
+    cpu_nnzh::VC
+    # Per-column reconstruction data for the hvp! fallback (stays CPU: used in
+    # scalar loops); empty when the oracle supplies hess!
     hess_recon_cols::Vector{Int}
     hess_recon_row_idx::Vector{Vector{Int}}
     hess_recon_pos_idx::Vector{Vector{Int}}   # global hess slots
     # hvp work buffers (same device as solver arrays) + CPU shadows for
-    # adapt=Val(true) callbacks on GPU backends
+    # adapt=Val(true) callbacks on GPU backends; length 0 when hess! is given
     buf_dir::VF
     buf_hv::VF
-    cpu_dir::Vector{Float64}
-    cpu_hv::Vector{Float64}
+    cpu_dir::VC
+    cpu_hv::VC
 end
 
-function _build_scalar_oracle_cache(oracle::ScalarNonlinearOracle, hess_off::Int)
+function _build_scalar_oracle_cache(::Type{T}, oracle::ScalarNonlinearOracle, hess_off::Int) where {T}
+    # The per-column tables and the direction/result buffers are read only by
+    # the hvp! reconstruction branch of hess_coord!. Built unconditionally the
+    # tables hold O(nnzh) nested-Vector entries that an oracle with hess!
+    # never reads, so they are skipped (and the buffers sized 0) in that case.
+    needs_recon = oracle.hess! === nothing
     hess_col_map = Dict{Int, Tuple{Vector{Int}, Vector{Int}}}()
-    for k in 1:oracle.nnzh
+    for k in 1:(needs_recon ? oracle.nnzh : 0)
         rows, pos = get!(() -> (Int[], Int[]), hess_col_map, oracle.hess_cols[k])
         push!(rows, oracle.hess_rows[k])
         push!(pos, hess_off + k)
     end
     hess_recon_cols = sort!(collect(keys(hess_col_map)))
+    n_dir = needs_recon ? oracle.nvar : 0
+    n_nnzh = needs_recon ? 0 : oracle.nnzh
     return ScalarOracleCache(
-        zeros(oracle.nvar), zeros(oracle.nvar),
+        zeros(T, oracle.nvar), zeros(T, oracle.nvar),
         (hess_off + 1):(hess_off + oracle.nnzh),
         copy(oracle.hess_rows), copy(oracle.hess_cols),
+        zeros(T, n_nnzh), zeros(T, n_nnzh),
         hess_recon_cols,
         [hess_col_map[c][1] for c in hess_recon_cols],
         [hess_col_map[c][2] for c in hess_recon_cols],
-        zeros(oracle.nvar), zeros(oracle.nvar),
-        zeros(oracle.nvar), zeros(oracle.nvar),
+        zeros(T, n_dir), zeros(T, n_dir),
+        zeros(T, n_dir), zeros(T, n_dir),
     )
 end
 
@@ -637,6 +671,7 @@ function _adapt_scalar_cache(c::ScalarOracleCache, backend)
     return ScalarOracleCache(
         cv(c.buf_nvar), c.cpu_nvar,
         c.hess_idx, cv(c.hess_rows_copy), cv(c.hess_cols_copy),
+        cv(c.buf_nnzh), c.cpu_nnzh,
         c.hess_recon_cols, c.hess_recon_row_idx, c.hess_recon_pos_idx,
         cv(c.buf_dir), cv(c.buf_hv), c.cpu_dir, c.cpu_hv,
     )
@@ -677,8 +712,8 @@ struct ExaModelWithOracle{T, VT, E, O, C, S, R, IC, SO, SC, EV, EC} <: AbstractE
     # without allocating per call.
     work_ncon::VT                    # device-side, length total_ncon
     work_nvar::VT                    # device-side, length total_nvar
-    work_ncon_cpu::Vector{Float64}
-    work_nvar_cpu::Vector{Float64}
+    work_ncon_cpu::Vector{T}
+    work_nvar_cpu::Vector{T}
 end
 
 function Base.show(io::IO, m::ExaModelWithOracle{T, VT}) where {T, VT}
@@ -696,7 +731,7 @@ end
 
 # ── Internal constructor ───────────────────────────────────────────────────────
 
-function _build_with_oracle(c::ExaCore; kwargs...)
+function _build_with_oracle(c::ExaCore{T}; kwargs...) where {T}
     oracles = c.oracles                          # Tuple of VectorNonlinearOracle
     s_oracles = c.scalar_oracles                 # Tuple of ScalarNonlinearOracle
     evaluators = c.evals                         # Tuple of OracleEvaluator
@@ -767,6 +802,7 @@ function _build_with_oracle(c::ExaCore; kwargs...)
     oracle_caches = [
         _adapt_cache(
                 _build_oracle_index_cache(
+                    T,
                     oracles[i], oracle_con_offsets[i],
                     oracle_jac_offsets[i], oracle_hess_offsets[i],
                 ),
@@ -781,7 +817,7 @@ function _build_with_oracle(c::ExaCore; kwargs...)
     eval_caches = [
         begin
                 cache = _adapt_eval_cache(
-                    _build_eval_index_cache(evaluators[i], eval_jac_cursor, eval_hess_cursor),
+                    _build_eval_index_cache(T, evaluators[i], eval_jac_cursor, eval_hess_cursor),
                     c.backend,
                 )
                 eval_jac_cursor += evaluators[i].nnzj
@@ -800,7 +836,7 @@ function _build_with_oracle(c::ExaCore; kwargs...)
     scalar_oracle_caches = [
         begin
             cache = _adapt_scalar_cache(
-                _build_scalar_oracle_cache(s_oracles[i], scalar_hess_cursor),
+                _build_scalar_oracle_cache(T, s_oracles[i], scalar_hess_cursor),
                 c.backend,
             )
             scalar_hess_cursor += s_oracles[i].nnzh
@@ -813,8 +849,8 @@ function _build_with_oracle(c::ExaCore; kwargs...)
     # jprod_nln! / jtprod_nln! / hprod!.  Allocated even when no fallback path
     # is exercised (one ncon-vector and one nvar-vector each, on device + CPU
     # shadow); cheap relative to the rest of the solve.
-    work_ncon = convert_array(zeros(total_ncon), c.backend)
-    work_nvar = convert_array(zeros(c.nvar), c.backend)
+    work_ncon = convert_array(zeros(T, total_ncon), c.backend)
+    work_nvar = convert_array(zeros(T, c.nvar), c.backend)
 
     return ExaModelWithOracle(
         c.obj,
@@ -835,8 +871,8 @@ function _build_with_oracle(c::ExaCore; kwargs...)
         eval_caches,
         work_ncon,
         work_nvar,
-        zeros(total_ncon),       # work_ncon_cpu
-        zeros(c.nvar),           # work_nvar_cpu
+        zeros(T, total_ncon),    # work_ncon_cpu
+        zeros(T, c.nvar),        # work_nvar_cpu
     )
 end
 
@@ -1132,6 +1168,29 @@ function hess_structure!(m::ExaModelWithOracle{T}, rows::AbstractVector, cols::A
     return rows, cols
 end
 
+# hess_coord! without y (objective-only): the SIMD objective part plus the
+# scalar-oracle Hessians. Vector oracles and evaluators contribute only
+# through constraint multipliers, so they have no objective-only term. Without
+# this method the AbstractExaModel fallback in nlp.jl writes the SIMD part
+# alone, and a zero block where an oracle's entries belong is a plausible
+# Hessian (it is the right one for a linear objective), so nothing raises.
+function hess_coord!(
+        m::ExaModelWithOracle,
+        x::AbstractVector,
+        hess::AbstractVector;
+        obj_weight = one(eltype(x)),
+    )
+    fill!(hess, zero(eltype(hess)))
+    _obj_hess_coord!(m.objs, x, m.θ, hess, obj_weight)
+    backend = _oracle_backend(m)
+    for (i, oracle) in enumerate(m.scalar_oracles)
+        cache = m.scalar_oracle_caches[i]
+        oracle.nnzh == 0 && continue
+        _scalar_hess!(oracle, x, hess, obj_weight, cache, backend)
+    end
+    return hess
+end
+
 function hess_coord!(
         m::ExaModelWithOracle,
         x::AbstractVector,
@@ -1160,7 +1219,7 @@ function hess_coord!(
     for (i, oracle) in enumerate(m.scalar_oracles)
         cache = m.scalar_oracle_caches[i]
         oracle.nnzh == 0 && continue
-        _scalar_hess_via_hvp!(oracle, x, hess, obj_weight, cache, backend)
+        _scalar_hess!(oracle, x, hess, obj_weight, cache, backend)
     end
     for (i, ev) in enumerate(m.evals)
         cache = m.eval_caches[i]
@@ -1206,11 +1265,27 @@ function _hess_reconstruct_via_hvp!(oracle, x, y, hess, cache::OracleIndexCache,
     return nothing
 end
 
-# Scalar-oracle analogue of `_hess_reconstruct_via_hvp!`, shared by the host
-# methods and the KA-extension overrides: the objective Hessian entries are
-# recovered one distinct column at a time from `hvp!(Hv, x, e_col)` and
-# written, scaled by `obj_weight`, into the oracle's global slots. The
-# constructor guarantees `hvp!` whenever `nnzh > 0`.
+# Scalar-oracle analogue of the vector-oracle branch of `hess_coord!`, shared
+# by the host methods and the KA-extension overrides. With `hess!` the values
+# arrive in one callback call, straight into the declared slots: the only path
+# that is correct under repeated coordinates, and the only one that runs on a
+# device. Without it the entries are recovered one distinct column at a time
+# from `hvp!(Hv, x, e_col)`. Either way they are written, scaled by
+# `obj_weight`, into the oracle's global slots. The constructor guarantees one
+# of the two callbacks whenever `nnzh > 0`.
+function _scalar_hess!(oracle::ScalarNonlinearOracle, x, hess, obj_weight, cache::ScalarOracleCache, backend = nothing)
+    if oracle.hess! !== nothing
+        xin = _oracle_input(oracle, x)
+        _run_with_buf!(oracle, backend, cache.buf_nnzh, cache.cpu_nnzh) do b
+            oracle.hess!(b, xin)
+        end
+        hess[cache.hess_idx] .= obj_weight .* cache.buf_nnzh
+    else
+        _scalar_hess_via_hvp!(oracle, x, hess, obj_weight, cache, backend)
+    end
+    return nothing
+end
+
 function _scalar_hess_via_hvp!(oracle::ScalarNonlinearOracle, x, hess, obj_weight, cache::ScalarOracleCache, backend = nothing)
     T = eltype(x)
     xin = _oracle_input(oracle, x)
