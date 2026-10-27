@@ -137,7 +137,10 @@ function _device_tests(backend)
     @test Array(hp1) ≈ hp0 rtol = rt
 
     # A device model with no buffered stage and no prodhelper keeps the host
-    # hprod! it had before the buffered methods existed.
+    # hprod! it had before the buffered methods existed. That fallback indexes
+    # the arrays on the host, so it is only usable where the device arrays are
+    # host arrays (the CPU backend); on a GPU it scalar-indexes, as it always did.
+    backend isa CPU || return nothing
     function plain(bk)
         c2 = ExaCore(concrete = Val(true), backend = bk)
         c2, x2 = add_var(c2, 10)
