@@ -378,7 +378,6 @@ _short_type(::SecondAdjointNodeSource) = "SecondAdjointNodeSource"
 # `short_type_printing.jl` and `enable_short_type_printing`.
 
 
-
 # --- MIME "text/plain" for detailed display ---
 
 function Base.show(io::IO, ::MIME"text/plain", node::AbstractNode)

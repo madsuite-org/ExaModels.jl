@@ -176,7 +176,7 @@ function test_madnlp_status()
     @test JuMP.primal_status(model) == MOI.FEASIBLE_POINT
     @test JuMP.dual_status(model) == MOI.FEASIBLE_POINT
     @test JuMP.raw_status(model) == "SOLVE_SUCCEEDED"
-    @test JuMP.value(x) ≈ 1 atol = 1e-6
+    @test JuMP.value(x) ≈ 1 atol = 1.0e-6
     JuMP.@constraint(model, x^2 == -1)
     JuMP.optimize!(model)
     @test JuMP.termination_status(model) == MOI.LOCALLY_INFEASIBLE

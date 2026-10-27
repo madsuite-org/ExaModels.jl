@@ -86,8 +86,10 @@ import ExaModels: instantiate, ArgSource
             c = ExaModels.ExaCore(concrete = Val(true))
             ExaModels.@add_var(c, x, src.N; start = 1.0)
             ExaModels.@add_obj(c, h * (x[i] - 2.0)^2 for i in 1:src.N)
-            ExaModels.@add_con(c, h * x[i] + x[i] for i in 1:src.N;
-                               lcon = 0.0, ucon = 1.0)
+            ExaModels.@add_con(
+                c, h * x[i] + x[i] for i in 1:src.N;
+                lcon = 0.0, ucon = 1.0
+            )
             return c
         end
 
@@ -148,8 +150,10 @@ import ExaModels: instantiate, ArgSource
             ExaModels.@add_var(c, x, src.N; start = 1.0)
             ExaModels.@add_var(c, z, 3; start = 2.0)
             ExaModels.@add_obj(c, z[j]^2 for j in 1:3)
-            ExaModels.@add_con(c, x[i] + z[1] for i in 1:src.N;
-                               lcon = 0.0, ucon = Inf)
+            ExaModels.@add_con(
+                c, x[i] + z[1] for i in 1:src.N;
+                lcon = 0.0, ucon = Inf
+            )
             return c
         end
 
