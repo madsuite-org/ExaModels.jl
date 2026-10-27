@@ -14,11 +14,48 @@ import PowerModels
 
 import ..NLPTest
 import ..BACKENDS
+import ..BACKEND_TESTS_ONLY
 import ..sol_tolerance
 import ..solver_tolerance
 
+# Tests that never build a model on a `BACKENDS` entry. A test missing from
+# this list still runs everywhere; listing one that does take a backend would
+# drop its device coverage.
+const HOST_ONLY_TESTS = (
+    :test_fixed_variable_e2etest,
+    :test_generic_e2etest,
+    :test_madnlp_status,
+    :test_moi_tests,
+    :test_nlp_legacy,
+    :test_no_constraints_e2etest,
+    :test_no_constraints_simd_failure,
+    :test_nonlinear_aliasing_and_batching,
+    :test_nonlinear_batching,
+    :test_nonlinear_constraint_derivative_sparsity,
+    :test_nonlinear_constraint_repeated_variable,
+    :test_nonlinear_constraint_sum,
+    :test_nonlinear_float32,
+    :test_nonlinear_nested_affine,
+    :test_nonlinear_nested_quadratic,
+    :test_nonlinear_objective_coupled,
+    :test_nonlinear_objective_derivative_sparsity,
+    :test_nonlinear_objective_nested_expr,
+    :test_nonlinear_objective_parameter,
+    :test_nonlinear_parameters_and_nested_expressions,
+    :test_nonlinear_prameter_only,
+    :test_nonlinear_shapes,
+    :test_parameter_e2etest,
+    :test_sum_constraint_decomposition,
+    :test_sum_constraint_decomposition_multiple_rhs_terms,
+    :test_sum_objective_decomposition,
+)
+
 function runtests()
-    is_test(name) = startswith("$name", "test_")
+    for name in HOST_ONLY_TESTS
+        isdefined(@__MODULE__, name) || error("HOST_ONLY_TESTS: no test named $name")
+    end
+    is_test(name) =
+        startswith("$name", "test_") && !(BACKEND_TESTS_ONLY && name in HOST_ONLY_TESTS)
     @testset "$name" for name in filter(is_test, names(@__MODULE__; all = true))
         getfield(@__MODULE__, name)()
     end
@@ -195,14 +232,16 @@ function _test_jump_interface(modelfunction, case)
     JuMP.set_optimizer_attribute(jm, "print_level", 0)
     JuMP.optimize!(jm)
     sol = JuMP.value.(JuMP.all_variables(jm))
-    dsol = JuMP.dual.(JuMP.all_constraints(jm, include_variable_in_set_constraints = true))
-    JuMP.set_optimizer(jm, () -> ExaModels.Optimizer(NLPModelsIpopt.ipopt))
-    JuMP.set_optimizer_attribute(jm, "print_level", 0)
-    JuMP.optimize!(jm)
-    sol2 = JuMP.value.(JuMP.all_variables(jm))
-    dsol2 = JuMP.dual.(JuMP.all_constraints(jm, include_variable_in_set_constraints = true))
-    @test sol ≈ sol2 atol = sol_tolerance(eltype(sol), eltype(sol2))
-    @test dsol ≈ dsol2 atol = sol_tolerance(eltype(sol), eltype(sol2))
+    if !BACKEND_TESTS_ONLY
+        dsol = JuMP.dual.(JuMP.all_constraints(jm, include_variable_in_set_constraints = true))
+        JuMP.set_optimizer(jm, () -> ExaModels.Optimizer(NLPModelsIpopt.ipopt))
+        JuMP.set_optimizer_attribute(jm, "print_level", 0)
+        JuMP.optimize!(jm)
+        sol2 = JuMP.value.(JuMP.all_variables(jm))
+        dsol2 = JuMP.dual.(JuMP.all_constraints(jm, include_variable_in_set_constraints = true))
+        @test sol ≈ sol2 atol = sol_tolerance(eltype(sol), eltype(sol2))
+        @test dsol ≈ dsol2 atol = sol_tolerance(eltype(sol), eltype(sol2))
+    end
     @testset "$backend" for backend in BACKENDS
         m = ExaModels.WrapperNLPModel(ExaModels.ExaModel(jm; backend))
         result = NLPModelsIpopt.ipopt(

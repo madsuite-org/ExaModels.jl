@@ -36,8 +36,10 @@ include("OracleTest/OracleTest.jl")
     @info "Running Argument Test"
     ArgumentTest.runtests()
 
-    @info "Running AD Test"
-    ADTest.runtests()
+    if !BACKEND_TESTS_ONLY
+        @info "Running AD Test"
+        ADTest.runtests()
+    end
 
     @info "Running NLP Test"
     NLPTest.runtests()
