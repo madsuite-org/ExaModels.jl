@@ -2,6 +2,9 @@ module PrettyPrintTest
 
 using Test, ExaModels
 
+# short type printing is opt-in
+ExaModels.enable_short_type_printing()
+
 function runtests()
     @testset "Pretty printing" begin
         c = ExaCore(concrete = Val(true))

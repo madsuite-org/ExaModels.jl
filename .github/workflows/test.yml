@@ -24,7 +24,7 @@ jobs:
         os: [ubuntu-latest,windows-latest]
     steps:
       - uses: actions/checkout@v2
-      - uses: julia-actions/setup-julia@latest
+      - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.julia-version }}
       - uses: julia-actions/cache@v3
@@ -68,35 +68,40 @@ jobs:
         julia-version: ['1', 'lts']
         julia-arch: [x64]
         os: [ubuntu-latest]
+        backend: ['ka', 'pocl']
     runs-on: ['self-hosted', 'shin-compute']
     steps:
     - name: Checkout code
       uses: actions/checkout@v2
     - name: Setup Julia
-      uses: julia-actions/setup-julia@latest
+      uses: julia-actions/setup-julia@v3
       with:
         version: ${{ matrix.julia-version }}
+    # The backend packages are added in the same resolution as the package
+    # and its test deps, before develop/instantiate: a later Pkg.add that
+    # moves an indirect dependency fails on Julia 1.13.2 with "Unknown
+    # package: <dep>" (Pkg.jl #4866), which took every self-hosted leg red.
     - name: Setup tests
       run: |
         julia --startup-file=no --color=yes --project=./test -e '
           using Pkg
           Pkg.Registry.update()
+          ${{ matrix.backend == 'pocl' && 'Pkg.add(["OpenCL", "pocl_jll"])' || '' }}
           Pkg.develop(path=".")
           Pkg.instantiate()'
-    - name: Add OpenCL.jl to test environment
-      run: |
-        julia --startup-file=no --project=test -e 'using Pkg; Pkg.add(["OpenCL", "pocl_jll"])'
     - name: Run tests
       env:
         EXAMODELS_SKIP_AOT: "1"
-      # Coverage only on the julia-version 1 leg: the KernelAbstractions and
+      # EXAMODELS_BACKEND_TESTS_ONLY: the hosted ubuntu legs already run the
+      # backend-independent tests on Linux x64 at the same Julia versions.
+      # Coverage only on the julia-version 1 legs: the KernelAbstractions and
       # OpenCL extension lines are exercised here and nowhere on the hosted
-      # runners, and one instrumented leg is enough for the report.
+      # runners, and one instrumented leg per backend is enough for the report.
       run: |
         julia --startup-file=no --color=yes ${{ matrix.julia-version == '1' && '--code-coverage=user' || '' }} --project=./test -e '
           push!(ARGS, "EXAMODELS_NO_TEST_CPU")
-          push!(ARGS, "EXAMODELS_TEST_KA")
-          push!(ARGS, "EXAMODELS_TEST_POCL")
+          push!(ARGS, "EXAMODELS_BACKEND_TESTS_ONLY")
+          push!(ARGS, "EXAMODELS_TEST_" * uppercase("${{ matrix.backend }}"))
           include("test/runtests.jl")'
     - uses: julia-actions/julia-processcoverage@v1
       if: matrix.julia-version == '1'
@@ -134,37 +139,33 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v2
     - name: Setup Julia
-      uses: julia-actions/setup-julia@latest
+      uses: julia-actions/setup-julia@v3
       with:
         version: ${{ matrix.julia-version }}
+    # The backend packages are added in the same resolution as the package
+    # and its test deps, before develop/instantiate: a later Pkg.add that
+    # moves an indirect dependency fails on Julia 1.13.2 with "Unknown
+    # package: <dep>" (Pkg.jl #4866), which took every self-hosted leg red.
     - name: Setup tests
       run: |
         julia --startup-file=no --color=yes --project=./test -e '
           using Pkg
           Pkg.Registry.update()
+          Pkg.add("${{ matrix.backend == 'cuda' && 'CUDA' || matrix.backend == 'amdgpu' && 'AMDGPU' || 'oneAPI' }}")
           Pkg.develop(path=".")
           Pkg.instantiate()'
-    - name: Add AMDGPU.jl to test environment
-      if: matrix.backend == 'amdgpu'
-      run: |
-        julia --startup-file=no --project=test -e 'using Pkg; Pkg.add("AMDGPU")'
-    - name: Add CUDA.jl to test environment
-      if: matrix.backend == 'cuda'
-      run: |
-        julia --startup-file=no --project=test -e 'using Pkg; Pkg.add("CUDA")'
-    - name: Add oneAPI.jl to test environment
-      if: matrix.backend == 'oneapi'
-      run: |
-        julia --startup-file=no --project=test -e 'using Pkg; Pkg.add("oneAPI")'
     - name: Run tests
       env:
         EXAMODELS_SKIP_AOT: "1"
+      # EXAMODELS_BACKEND_TESTS_ONLY: as in the cpu job. The metal job does not
+      # pass it: no other job runs the suite on macOS.
       # Coverage from the CUDA leg on julia-version 1 only: it exercises the
       # device paths of the KernelAbstractions extension; the other backends
       # walk the same extension lines and need no second instrumented run.
       run: |
         julia --startup-file=no --color=yes ${{ matrix.julia-version == '1' && matrix.backend == 'cuda' && '--code-coverage=user' || '' }} --project=./test -e '
           push!(ARGS, "EXAMODELS_NO_TEST_CPU")
+          push!(ARGS, "EXAMODELS_BACKEND_TESTS_ONLY")
           push!(ARGS, "EXAMODELS_TEST_" * uppercase("${{ matrix.backend }}"))
           include("test/runtests.jl")'
     - uses: julia-actions/julia-processcoverage@v1
@@ -193,19 +194,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       - name: Setup Julia
-        uses: julia-actions/setup-julia@latest
+        uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.julia-version }}
+      # The backend packages are added in the same resolution as the package
+      # and its test deps, before develop/instantiate: a later Pkg.add that
+      # moves an indirect dependency fails on Julia 1.13.2 with "Unknown
+      # package: <dep>" (Pkg.jl #4866), which took every self-hosted leg red.
       - name: Setup tests
         run: |
           julia --startup-file=no --color=yes --project=./test -e '
             using Pkg
             Pkg.Registry.update()
+            Pkg.add("Metal")
             Pkg.develop(path=".")
             Pkg.instantiate()'
-      - name: Add Metal.jl to test environment
-        run: |
-          julia --startup-file=no --project=test -e 'using Pkg; Pkg.add("Metal")'
       - name: Show platform info
         run: |
           uname -a
@@ -224,7 +227,7 @@ jobs:
     runs-on: ['self-hosted', 'shin-compute']
     steps:
       - uses: actions/checkout@v4
-      - uses: julia-actions/setup-julia@latest
+      - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
       - name: Instantiate
@@ -252,14 +255,14 @@ jobs:
       CUDA_MPS_PIPE_DIRECTORY: /tmp/no-mps-${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
-      - uses: julia-actions/setup-julia@latest
+      - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
       - name: Instantiate
         working-directory: benchmark
         run: |
-          julia --startup-file=no --project=main    -e 'using Pkg; Pkg.Registry.update(); Pkg.instantiate(); Pkg.add("CUDA")'
-          julia --startup-file=no --project=current -e 'using Pkg; Pkg.Registry.update(); Pkg.instantiate(); Pkg.add("CUDA")'
+          julia --startup-file=no --project=main    -e 'using Pkg; Pkg.Registry.update(); Pkg.add("CUDA"); Pkg.instantiate()'
+          julia --startup-file=no --project=current -e 'using Pkg; Pkg.Registry.update(); Pkg.add("CUDA"); Pkg.instantiate()'
       - name: Run benchmark (main)
         working-directory: benchmark
         run: julia --startup-file=no runbenchmark.jl main cuda
@@ -277,14 +280,14 @@ jobs:
     runs-on: ['self-hosted', 'gpu', 'amdgpu', 'shin-compute']
     steps:
       - uses: actions/checkout@v4
-      - uses: julia-actions/setup-julia@latest
+      - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
       - name: Instantiate
         working-directory: benchmark
         run: |
-          julia --startup-file=no --project=main    -e 'using Pkg; Pkg.Registry.update(); Pkg.instantiate(); Pkg.add("AMDGPU")'
-          julia --startup-file=no --project=current -e 'using Pkg; Pkg.Registry.update(); Pkg.instantiate(); Pkg.add("AMDGPU")'
+          julia --startup-file=no --project=main    -e 'using Pkg; Pkg.Registry.update(); Pkg.add("AMDGPU"); Pkg.instantiate()'
+          julia --startup-file=no --project=current -e 'using Pkg; Pkg.Registry.update(); Pkg.add("AMDGPU"); Pkg.instantiate()'
       - name: Run benchmark (main)
         working-directory: benchmark
         run: julia --startup-file=no runbenchmark.jl main amdgpu
@@ -306,14 +309,14 @@ jobs:
       IGC_EnableDPEmulation: '1'
     steps:
       - uses: actions/checkout@v4
-      - uses: julia-actions/setup-julia@latest
+      - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
       - name: Instantiate
         working-directory: benchmark
         run: |
-          julia --startup-file=no --project=main    -e 'using Pkg; Pkg.Registry.update(); Pkg.instantiate(); Pkg.add("oneAPI")'
-          julia --startup-file=no --project=current -e 'using Pkg; Pkg.Registry.update(); Pkg.instantiate(); Pkg.add("oneAPI")'
+          julia --startup-file=no --project=main    -e 'using Pkg; Pkg.Registry.update(); Pkg.add("oneAPI"); Pkg.instantiate()'
+          julia --startup-file=no --project=current -e 'using Pkg; Pkg.Registry.update(); Pkg.add("oneAPI"); Pkg.instantiate()'
       - name: Run benchmark (main)
         working-directory: benchmark
         run: julia --startup-file=no runbenchmark.jl main oneapi
@@ -331,7 +334,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: julia-actions/setup-julia@latest
+      - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
       - name: Instantiate
@@ -381,7 +384,7 @@ jobs:
           repository: madsuite-org/cnlpmodels-py
           ref: master
           path: cnlpmodels-py
-      - uses: julia-actions/setup-julia@latest
+      - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
       # No julia-actions/cache here: both legs are self-hosted with

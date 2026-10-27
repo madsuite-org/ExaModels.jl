@@ -9,7 +9,7 @@ function getitr(gen::UnitRange{Int64})
 end
 function getitr(gen::Base.Iterators.ProductIterator{NTuple{N,UnitRange{Int64}}}) where {N} end
 
-function ExaModels.getptr(backend, array; cmp = (x, y) -> x != y)
+function ExaModels.getptr(backend, array; cmp = !=)
 
     bitarray = similar(array, Bool, length(array) + 1)
     kergetptr(backend)(cmp, bitarray, array; ndrange = length(array) + 1)
@@ -41,16 +41,16 @@ function ExaModels.build_extension(
     _grad_structure!(T, c.backend, c.obj, gsparsity)
 
     if !isempty(gsparsity)
-        ExaModels.sort!(gsparsity; lt = ((i, j), (k, l)) -> i < k)
+        ExaModels.sort!(gsparsity; lt = ExaModels._first_lt)
     end
-    gptr = ExaModels.getptr(c.backend, gsparsity; cmp = (x, y) -> x[1] != y[1])
+    gptr = ExaModels.getptr(c.backend, gsparsity; cmp = ExaModels._first_ne)
 
     conaugsparsity = similar(c.x0, Tuple{Int,Int}, c.nconaug)
     _conaug_structure!(T, c.backend, c.cons, conaugsparsity)
     if !isempty(conaugsparsity)
-        ExaModels.sort!(conaugsparsity; lt = ((i, j), (k, l)) -> i < k)
+        ExaModels.sort!(conaugsparsity; lt = ExaModels._first_lt)
     end
-    conaugptr = ExaModels.getptr(c.backend, conaugsparsity; cmp = (x, y) -> x[1] != y[1])
+    conaugptr = ExaModels.getptr(c.backend, conaugsparsity; cmp = ExaModels._first_ne)
 
 
     if prod
@@ -77,53 +77,35 @@ function ExaModels.build_extension(
         hesssparsityj = copy(hesssparsityi)
 
         if !isempty(jacsparsityi)
-            ExaModels.sort!(jacsparsityi; lt = (((i, j), k), ((n, m), l)) -> i < n)
+            ExaModels.sort!(jacsparsityi; lt = ExaModels._row_lt)
         end
         jacptri =
-            ExaModels.getptr(c.backend, jacsparsityi; cmp = (x, y) -> x[1][1] != y[1][1])
+            ExaModels.getptr(c.backend, jacsparsityi; cmp = ExaModels._row_ne)
 
         if !isempty(jacsparsityj)
-            ExaModels.sort!(jacsparsityj; lt = (((i, j), k), ((n, m), l)) -> j < m)
+            ExaModels.sort!(jacsparsityj; lt = ExaModels._col_lt)
         end
         jacptrj =
-            ExaModels.getptr(c.backend, jacsparsityj; cmp = (x, y) -> x[1][2] != y[1][2])
+            ExaModels.getptr(c.backend, jacsparsityj; cmp = ExaModels._col_ne)
 
 
         if !isempty(hesssparsityi)
-            ExaModels.sort!(hesssparsityi; lt = (((i, j), k), ((n, m), l)) -> i < n)
+            ExaModels.sort!(hesssparsityi; lt = ExaModels._row_lt)
         end
         hessptri =
-            ExaModels.getptr(c.backend, hesssparsityi; cmp = (x, y) -> x[1][1] != y[1][1])
+            ExaModels.getptr(c.backend, hesssparsityi; cmp = ExaModels._row_ne)
         if !isempty(hesssparsityj)
-            ExaModels.sort!(hesssparsityj; lt = (((i, j), k), ((n, m), l)) -> j < m)
+            ExaModels.sort!(hesssparsityj; lt = ExaModels._col_lt)
         end
         hessptrj =
-            ExaModels.getptr(c.backend, hesssparsityj; cmp = (x, y) -> x[1][2] != y[1][2])
+            ExaModels.getptr(c.backend, hesssparsityj; cmp = ExaModels._col_ne)
 
         # Per-oracle sorted sparsity + row/col pointers, precomputed once.
         # Used in jprod_nln! / jtprod_nln! / hprod! so we never rebuild them
         # at inference time.  adapt=Val(true) oracles store nothing.
-        _o_jac_off = let s = simd_nnzj
-            v = [
-                begin
-                        r = s; s += o.nnzj; r
-                    end for o in c.oracles
-            ]; v
-        end
-        _o_hess_off = let s = simd_nnzh
-            v = [
-                begin
-                        r = s; s += o.nnzh; r
-                    end for o in c.oracles
-            ]; v
-        end
-        _o_con_off = let s = simd_ncon
-            v = [
-                begin
-                        r = s; s += o.ncon; r
-                    end for o in c.oracles
-            ]; v
-        end
+        _o_jac_off = _oracle_offsets(simd_nnzj, c.oracles, :nnzj)
+        _o_hess_off = _oracle_offsets(simd_nnzh, c.oracles, :nnzh)
+        _o_con_off = _oracle_offsets(simd_ncon, c.oracles, :ncon)
         _SP = Tuple{Tuple{Int, Int}, Int}  # element type shared with SIMD sparsity
         oracle_prod = ntuple(length(c.oracles)) do i
             oracle = c.oracles[i]
@@ -133,22 +115,22 @@ function ExaModels.build_extension(
             off_j = _o_jac_off[i];  off_c = _o_con_off[i];  off_h = _o_hess_off[i]
             # Jac: row-sorted (for Jv) and col-sorted (for J'v)
             jac_sp_i = _oracle_jac_sparsity(oracle, off_j, off_c, c.backend, c.x0)
-            ExaModels.sort!(jac_sp_i; lt = (((r1, c1), _), ((r2, c2), __)) -> r1 < r2)
-            jac_ptr_i = ExaModels.getptr(c.backend, jac_sp_i; cmp = (a, b) -> a[1][1] != b[1][1])
+            ExaModels.sort!(jac_sp_i; lt = ExaModels._row_lt)
+            jac_ptr_i = ExaModels.getptr(c.backend, jac_sp_i; cmp = ExaModels._row_ne)
             jac_sp_j = copy(jac_sp_i)
-            ExaModels.sort!(jac_sp_j; lt = (((r1, c1), _), ((r2, c2), __)) -> c1 < c2)
-            jac_ptr_j = ExaModels.getptr(c.backend, jac_sp_j; cmp = (a, b) -> a[1][2] != b[1][2])
+            ExaModels.sort!(jac_sp_j; lt = ExaModels._col_lt)
+            jac_ptr_j = ExaModels.getptr(c.backend, jac_sp_j; cmp = ExaModels._col_ne)
             # Hess: row-sorted (kersyspmv) and col-sorted (kersyspmv2)
             if oracle.nnzh > 0
                 hess_sp_i = _oracle_hess_sparsity(oracle, off_h, c.backend, c.x0)
-                ExaModels.sort!(hess_sp_i; lt = (((r1, c1), _), ((r2, c2), __)) -> r1 < r2)
-                hess_ptr_i = ExaModels.getptr(c.backend, hess_sp_i; cmp = (a, b) -> a[1][1] != b[1][1])
+                ExaModels.sort!(hess_sp_i; lt = ExaModels._row_lt)
+                hess_ptr_i = ExaModels.getptr(c.backend, hess_sp_i; cmp = ExaModels._row_ne)
                 hess_sp_j = copy(hess_sp_i)
-                ExaModels.sort!(hess_sp_j; lt = (((r1, c1), _), ((r2, c2), __)) -> c1 < c2)
-                hess_ptr_j = ExaModels.getptr(c.backend, hess_sp_j; cmp = (a, b) -> a[1][2] != b[1][2])
+                ExaModels.sort!(hess_sp_j; lt = ExaModels._col_lt)
+                hess_ptr_j = ExaModels.getptr(c.backend, hess_sp_j; cmp = ExaModels._col_ne)
             else
                 hess_sp_i = similar(c.x0, _SP, 0)
-                hess_ptr_i = ExaModels.getptr(c.backend, hess_sp_i; cmp = (a, b) -> a[1][1] != b[1][1])
+                hess_ptr_i = ExaModels.getptr(c.backend, hess_sp_i; cmp = ExaModels._row_ne)
                 hess_sp_j = similar(c.x0, _SP, 0)
                 hess_ptr_j = hess_ptr_i
             end
@@ -773,6 +755,20 @@ end
 ExaModels.getbackend(m::ExaModels.AbstractExaModel{T,VT,E}) where {T,VT,E<:KAExtension} =
     m.ext.backend
 
+# Starting offset of each oracle's block: `start`, then `start` plus the running sum of
+# `getproperty(o, field)`. Built with a loop rather than a comprehension that updates a
+# captured counter, which Julia boxes, so the vector type is inferred and `collect`'s
+# generic path (open to invalidation by any new `merge!` method) is not used.
+function _oracle_offsets(start::Integer, oracles, field::Symbol)
+    v = Int[]
+    s = Int(start)
+    for o in oracles
+        push!(v, s)
+        s += Int(getproperty(o, field))
+    end
+    return v
+end
+
 # ── GPU-specific overrides for ExaModelWithOracle ────────────────────────────
 #
 # When the backend is a KA GPU (CUDA, ROCm, …) the generic oracle.jl methods
@@ -876,7 +872,13 @@ function ExaModels.hess_structure!(
             cols[cache.hess_idx] .= cache.hess_cols_copy
         end
     end
-    ExaModels._scalar_oracles_hess_structure!(m, rows, cols)
+    for (i, oracle) in enumerate(m.scalar_oracles)
+        cache = m.scalar_oracle_caches[i]
+        if oracle.nnzh > 0
+            rows[cache.hess_idx] .= cache.hess_rows_copy
+            cols[cache.hess_idx] .= cache.hess_cols_copy
+        end
+    end
     for (i, ev) in enumerate(m.evals)
         cache = m.eval_caches[i]
         if ev.nnzh > 0
@@ -961,6 +963,26 @@ function ExaModels.jac_coord!(
     return jac
 end
 
+# Objective-only hess_coord!: the SIMD objective part plus the scalar-oracle
+# Hessians (see the host method in oracle.jl). Needed here as well because the
+# AbstractExaModel KA override above would otherwise be ambiguous with it.
+function ExaModels.hess_coord!(
+        m::ExaModels.ExaModelWithOracle{T, VT, E},
+        x::AbstractVector,
+        hess::AbstractVector;
+        obj_weight = one(T),
+    ) where {T, VT, E <: KAExtension}
+    fill!(hess, zero(eltype(hess)))
+    _obj_hess_coord!(m.ext.backend, hess, m.objs, x, m.θ, T(obj_weight))
+    backend = m.ext.backend
+    for (i, oracle) in enumerate(m.scalar_oracles)
+        cache = m.scalar_oracle_caches[i]
+        oracle.nnzh == 0 && continue
+        ExaModels._scalar_hess!(oracle, x, hess, T(obj_weight), cache, backend)
+    end
+    return hess
+end
+
 function ExaModels.hess_coord!(
         m::ExaModels.ExaModelWithOracle{T, VT, E},
         x::AbstractVector,
@@ -986,7 +1008,11 @@ function ExaModels.hess_coord!(
             ExaModels._hess_reconstruct_via_hvp!(oracle, x, y, hess, cache, backend)
         end
     end
-    ExaModels._scalar_oracles_hess_coord!(m, x, hess, T(obj_weight), backend)
+    for (i, oracle) in enumerate(m.scalar_oracles)
+        cache = m.scalar_oracle_caches[i]
+        oracle.nnzh == 0 && continue
+        ExaModels._scalar_hess!(oracle, x, hess, T(obj_weight), cache, backend)
+    end
     for (i, ev) in enumerate(m.evals)
         cache = m.eval_caches[i]
         ev.nnzh == 0 && continue
@@ -1229,6 +1255,50 @@ function ExaModels.jtprod_nln!(
     return Jtv
 end
 
+# hprod! without y (objective-only): the SIMD objective part plus the
+# scalar-oracle hvp term, as in the host method.
+function ExaModels.hprod!(
+        m::ExaModels.ExaModelWithOracle{T, VT, E},
+        x::AbstractVector,
+        v::AbstractVector,
+        Hv::AbstractVector;
+        obj_weight = one(eltype(x)),
+    ) where {T, VT, N <: NamedTuple, E <: KAExtension{T, VT, N}}
+    fill!(Hv, zero(eltype(Hv)))
+    fill!(m.ext.prodhelper.hessbuffer, zero(eltype(Hv)))
+    _obj_hess_coord!(m.ext.backend, m.ext.prodhelper.hessbuffer, m.objs, x, m.θ, obj_weight)
+    let _n = length(m.ext.prodhelper.hessptri) - 1
+        _n > 0 && kersyspmv(m.ext.backend)(
+            Hv, v,
+            m.ext.prodhelper.hesssparsityi,
+            m.ext.prodhelper.hessbuffer,
+            m.ext.prodhelper.hessptri;
+            ndrange = _n,
+        )
+    end
+    let _n = length(m.ext.prodhelper.hessptrj) - 1
+        _n > 0 && kersyspmv2(m.ext.backend)(
+            Hv, v,
+            m.ext.prodhelper.hesssparsityj,
+            m.ext.prodhelper.hessbuffer,
+            m.ext.prodhelper.hessptrj;
+            ndrange = _n,
+        )
+    end
+    backend = m.ext.backend
+    for (i, oracle) in enumerate(m.scalar_oracles)
+        cache = m.scalar_oracle_caches[i]
+        oracle.hvp! === nothing && continue   # L-BFGS-only oracle
+        xin = ExaModels._oracle_input(oracle, x)
+        vin = ExaModels._oracle_input(oracle, v)
+        ExaModels._run_with_buf!(oracle, backend, cache.buf_nvar, cache.cpu_nvar) do b
+            oracle.hvp!(b, xin, vin)
+        end
+        Hv .+= T(obj_weight) .* cache.buf_nvar
+    end
+    return Hv
+end
+
 function ExaModels.hprod!(
         m::ExaModels.ExaModelWithOracle{T, VT, E},
         x::AbstractVector,
@@ -1310,7 +1380,16 @@ function ExaModels.hprod!(
             Hv .+= m.work_nvar
         end
     end
-    ExaModels._scalar_oracles_hprod!(m, x, v, Hv, obj_weight, backend)
+    for (i, oracle) in enumerate(m.scalar_oracles)
+        cache = m.scalar_oracle_caches[i]
+        oracle.hvp! === nothing && continue   # L-BFGS-only oracle
+        xin = ExaModels._oracle_input(oracle, x)
+        vin = ExaModels._oracle_input(oracle, v)
+        ExaModels._run_with_buf!(oracle, backend, cache.buf_nvar, cache.cpu_nvar) do b
+            oracle.hvp!(b, xin, vin)
+        end
+        Hv .+= T(obj_weight) .* cache.buf_nvar
+    end
     for (i, ev) in enumerate(m.evals)
         cache = m.eval_caches[i]
         ev.nnzh == 0 && continue

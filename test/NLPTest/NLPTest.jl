@@ -5,7 +5,7 @@ using ExaPowerIO, Test
 using NLPModels, NLPModelsJuMP, NLPModelsIpopt, NLPModelsTest
 using JuMP, PowerModels, MadNLP, Percival
 
-import ..BACKENDS
+import ..BACKENDS, ..BACKEND_TESTS_ONLY
 import ..ad_tolerance, ..sol_tolerance, ..solver_tolerance
 
 const NLP_TEST_ARGUMENTS = [
@@ -25,16 +25,6 @@ const SOLVERS = [
 ]
 
 const EXCLUDE1 = [("ac_power", "percival"), ("struct_ac_power", "percival"), ("trivialmax", "percival")]
-const EXCLUDE2 = []
-
-for backend in BACKENDS
-    if "oneAPIBackend()" == string(backend)
-        push!(EXCLUDE2, ("percival", backend))
-    end
-    if "OpenCLBackend()" == string(backend)
-        push!(EXCLUDE2, ("percival", backend))
-    end
-end
 
 include("luksan.jl")
 include("power.jl")
@@ -147,6 +137,39 @@ end
 
 function runtests()
     @testset "NLP test" begin
+        # The JuMP comparisons build only host models, so they sit outside the
+        # backend loop.
+        BACKEND_TESTS_ONLY || @testset "Comparison to JuMP" begin
+            for (name, args) in NLP_TEST_ARGUMENTS
+                @testset "$name $args" begin
+                    exa_model = getfield(@__MODULE__, Symbol("_exa_$(name)_model"))
+                    jump_model = getfield(@__MODULE__, Symbol("_jump_$(name)_model"))
+
+                    m0 = WrapperNLPModel(first(exa_model(nothing, args)))
+                    m2 = MathOptNLPModel(first(jump_model(nothing, args)))
+
+                    test_nlp(m0, m2; full = false)
+
+                    for (sname, solver) in SOLVERS
+                        (name, sname) in EXCLUDE1 && continue
+
+                        result1 = solver(m0)
+                        result2 = solver(m2)
+
+                        @testset "$sname" begin
+                            test_nlp_solution(result1, result2)
+                        end
+                    end
+                end
+            end
+
+            @testset "Multi-column constraints" begin
+                m3 = WrapperNLPModel(exa_luksan_vlcek_model(nothing, 3; M = 2))
+                m4 = jump_luksan_vlcek_model(nothing, 3; M = 2)
+                test_nlp(m3, m4; full = false)
+            end
+        end
+
         for backend in BACKENDS
             @testset "$backend" begin
                 for (name, args) in NLP_TEST_ARGUMENTS
@@ -155,15 +178,12 @@ function runtests()
                         exa_model = getfield(@__MODULE__, Symbol("_exa_$(name)_model"))
                         jump_model = getfield(@__MODULE__, Symbol("_jump_$(name)_model"))
 
-                        m, vars0, cons0 = exa_model(nothing, args)
-                        m0 = WrapperNLPModel(m)
+                        m0 = WrapperNLPModel(first(exa_model(nothing, args)))
 
-                        m, vars2, cons2 = jump_model(nothing, args)
-                        m2 = MathOptNLPModel(m)
-
-                        set_optimizer(m, MadNLP.Optimizer)
-                        set_optimizer_attribute(m, "print_level", MadNLP.ERROR)
-                        optimize!(m)
+                        jm, vars2, cons2 = jump_model(nothing, args)
+                        set_optimizer(jm, MadNLP.Optimizer)
+                        set_optimizer_attribute(jm, "print_level", MadNLP.ERROR)
+                        optimize!(jm)
 
                         m, vars1, cons1 = exa_model(backend, args)
                         m1 = WrapperNLPModel(m)
@@ -171,34 +191,11 @@ function runtests()
                         @testset "Backend test" begin
                             test_nlp(m0, m1; full = true, tol = sol_tolerance(eltype(m0.meta.x0), eltype(m1.inner.meta.x0)))
                         end
-                        @testset "Comparison to JuMP" begin
-                            test_nlp(m0, m2; full = false)
-
-                            for (sname, solver) in SOLVERS
-                                if (name, sname) in EXCLUDE1 || (sname, backend) in EXCLUDE2
-                                    continue
-                                end
-
-                                result1 = solver(m0)
-                                result2 = solver(m2)
-
-                                @testset "$sname" begin
-                                    test_nlp_solution(result1, result2)
-                                end
-                            end
-                        end
                         @testset "API test" begin
                             result1 = madnlp(m1; print_level = MadNLP.ERROR, tol = solver_tolerance(eltype(m1.inner.meta.x0)))
-                            test_api(result1, vars1, cons1, vars2, cons2, m2.meta.minimize; tol = sol_tolerance(eltype(m1.inner.meta.x0)))
+                            test_api(result1, vars1, cons1, vars2, cons2, objective_sense(jm) == MIN_SENSE; tol = sol_tolerance(eltype(m1.inner.meta.x0)))
                         end
                     end
-                end
-
-                m3 = WrapperNLPModel(exa_luksan_vlcek_model(nothing, 3; M = 2))
-                m4 = jump_luksan_vlcek_model(nothing, 3; M = 2)
-
-                @testset "Multi-column constraints" begin
-                    test_nlp(m3, m4; full = false)
                 end
 
                 @testset "Parameter Test" begin

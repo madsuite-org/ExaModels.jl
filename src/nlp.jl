@@ -617,13 +617,20 @@ is known statically and destructuring stays inferable.
 # keeps the `Val(true)` path fully inferable for `juliac --trim=safe`.
 @inline _concretize(c::ExaCore) = _concretize(c, c.var, c.par, c.obj, c.cons)
 @inline _concretize(c::ExaCore, ::Tuple, ::Tuple, ::Tuple, ::Tuple) = c
-@inline _concretize(c::ExaCore, var, par, obj, cons) = ExaCore(
-    c;
-    var = _materialize(var),
-    par = _materialize(par),
-    obj = _materialize(obj),
-    cons = _materialize(cons),
-    refs = _materialize_refs(c.refs),
+@inline _concretize(c::ExaCore, var, par, obj, cons) = _with_blocks(
+    c, _materialize(var), _materialize(par), _materialize(obj), _materialize(cons),
+    _materialize_refs(c.refs),
+)
+# The core with its block storage (and the refs that name blocks) replaced, built
+# positionally: the keyword copy `ExaCore(c; var = ...)` cannot be inferred here (its
+# keywords come from splatting the fields), and its keyword body then compiles
+# default-argument code for an abstract backend that packages loaded later can
+# invalidate.
+@inline _with_blocks(c::ExaCore{T}, var, par, obj, cons, refs) where {T} = ExaCore{T}(
+    c.name, c.backend, var, par, obj, cons, c.subexprs,
+    c.nvar, c.npar, c.ncon, c.nconaug, c.nobj, c.nnzc, c.nnzg, c.nnzj, c.nnzh,
+    c.x0, c.θ, c.lvar, c.uvar, c.y0, c.lcon, c.ucon,
+    c.minimize, c.tag, refs, c.oracles, c.scalar_oracles, c.evals, c.nargs,
 )
 
 @inline _exa_core_from_x0(x0, backend; kwargs...) =
@@ -834,7 +841,21 @@ julia> result = ipopt(m; print_level=0)    # solve the problem
 # No-oracle path: always returns ExaModel (type-stable for juliac --trim=safe).
 function ExaModel(c::ExaCore{T, VT, B, S, V, P, O, C, R, Tuple{}, Tuple{}, Tuple{}}; prod = false, kwargs...) where {T, VT, B, S, V, P, O, C, R}
     _recipe_check(c)
-    c = _finalize_merged(_concretize(c))
+    return _build_model(c, c.var, c.par, c.obj, c.cons, prod)
+end
+
+# A tuple-storage core is already concrete: build directly, which keeps this path
+# inferable for `juliac --trim=safe`. For `Vector{Any}` storage, `_concretize` is not
+# inferable, so build behind `invokelatest`: `_model_from_core` is then compiled for the
+# concrete core only, and nothing here has a backedge to an abstractly inferred copy
+# that packages loaded later could invalidate.
+_build_model(c, ::Tuple, ::Tuple, ::Tuple, ::Tuple, prod) = _model_from_core(c, prod)
+_build_model(c, var, par, obj, cons, prod) = Base.invokelatest(_model_from_dynamic_core, c, prod)
+_model_from_dynamic_core(c, prod) =
+    Base.invokelatest(_model_from_core, Base.invokelatest(_concretize, c), prod)
+
+function _model_from_core(c::ExaCore{T}, prod) where {T}
+    c = _finalize_merged(c)
     prod && !isempty(c.subexprs) && error(
         "ExaModel(c; prod = true) is not yet supported with buffered subexpressions",
     )
@@ -881,10 +902,22 @@ end
 # Oracle path: always returns ExaModelWithOracle (type-stable for juliac --trim=safe).
 function ExaModel(c::ExaCore; prod = false, kwargs...)
     _recipe_check(c)
-    cc = _finalize_merged(_concretize(c))
+    return _build_oracle_model(c, c.var, c.par, c.obj, c.cons; prod, kwargs...)
+end
+
+# As `_build_model`: direct for tuple storage, behind `invokelatest` for `Vector{Any}`.
+_build_oracle_model(c, ::Tuple, ::Tuple, ::Tuple, ::Tuple; kwargs...) =
+    _oracle_model_from_core(c; kwargs...)
+_build_oracle_model(c, var, par, obj, cons; kwargs...) =
+    Base.invokelatest(_build_dynamic_oracle_model, c; kwargs...)
+_build_dynamic_oracle_model(c; kwargs...) =
+    Base.invokelatest(_oracle_model_from_core, Base.invokelatest(_concretize, c); kwargs...)
+
+function _oracle_model_from_core(c::ExaCore; kwargs...)
+    cc = _finalize_merged(c)
     isempty(cc.subexprs) ||
         error("buffered subexpressions are not supported together with oracles yet")
-    return _build_with_oracle(cc; prod, kwargs...)
+    return _build_with_oracle(cc; kwargs...)
 end
 
 """
@@ -916,8 +949,24 @@ julia> m.meta.nvar, m.meta.x0
 # hide leftover placeholders from both.
 function ExaModel(c::ExaCore, a, as...; check = Val(true), kwargs...)
     _arity_check(c.nargs, Val(length(as) + 1))
-    return ExaModel(_assert_instantiated(check, instantiate(_concretize(c), a, as...)); kwargs...)
+    return _instantiated_model(c, c.var, c.par, c.obj, c.cons, check, (a, as...); kwargs...)
 end
+
+# As `_build_model`: direct for tuple storage, behind `invokelatest` for `Vector{Any}`,
+# whose instantiated core is not inferable.
+_instantiated_model(c, ::Tuple, ::Tuple, ::Tuple, ::Tuple, check, args; kwargs...) =
+    ExaModel(_assert_instantiated(check, instantiate(c, args...)); kwargs...)
+_instantiated_model(c, var, par, obj, cons, check, args; kwargs...) =
+    Base.invokelatest(_instantiated_model_dynamic, c, check, args; kwargs...)
+# Each stage is called through `invokelatest` on the concrete value the previous one
+# returned, so no part of this is inferred for an abstract core.
+function _instantiated_model_dynamic(c, check, args; kwargs...)
+    cc = Base.invokelatest(_concretize, c)
+    ic = Base.invokelatest(instantiate, cc, args...)
+    return Base.invokelatest(_instantiated_model_finish, check, ic; kwargs...)
+end
+_instantiated_model_finish(check, ic; kwargs...) =
+    ExaModel(_assert_instantiated(check, ic); kwargs...)
 
 # One value per placeholder, checked against the arity the core recorded. Both
 # `Val`s are known statically, so a correct call compiles to nothing at all.
@@ -1180,7 +1229,8 @@ end
 
 # A symbolic dimension defers to itself: at instantiation the node resolves to
 # an `Int` or a `UnitRange` and the methods above then apply unchanged, so
-# `arg.N` and `1:arg.N` need no separate handling here.
+# `arg.N` and `1:arg.N` (the range needs ExaModelsCompiler) need no separate
+# handling here.
 @inline _length(n::AbstractArgNode) = ArgCall(_length, (n,))
 @inline _start(n::AbstractArgNode) = ArgCall(_start, (n,))
 
