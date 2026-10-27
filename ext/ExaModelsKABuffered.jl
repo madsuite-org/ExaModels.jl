@@ -187,6 +187,12 @@ function _lamjac!(backend, y, cons::ExaModels._LongTuple, x, θ, yv)
     end
     return nothing
 end
+# Every plain block kind: `Constraint` and `ConstraintAugmentation` (what `add_con!`
+# produces; augmentations are stored plain on every backend). Both keep their
+# nonzero base in the SIMDFunction's affine fields and `offset0` dispatches on
+# the augmentation's Pair head, so one kernel covers them. There is deliberately
+# no `= nothing` fallback: a block that seeded no λ would drop the
+# (∂c/∂s)·∇²s term of its rows from the device Hessian.
 function _lamjac1!(backend, y, con, x, θ, yv)
     isempty(con.itr) && return nothing
     kerjs(backend)(y, con.f, con.itr, x, θ, yv, ExaModels._constraint_dims(con); ndrange = length(con.itr))

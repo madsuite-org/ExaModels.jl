@@ -483,7 +483,8 @@ function _device_augmented_con_buffered(backend)
         H1[i, j] += v
         i != j && (H1[j, i] += v)
     end
-    return @test H1 ≈ H0 rtol = 1.0e-13
+    # Float32 backends (Metal) need a looser comparison than Float64 ones
+    return @test H1 ≈ H0 rtol = (eltype(m1.meta.x0) == Float32 ? 1.0e-4 : 1.0e-13)
 end
 
 end # module
