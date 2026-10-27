@@ -443,7 +443,18 @@ struct CompressedNLPModel{
     counters::NLPModels.Counters
 end
 
-function getptr(backend::Nothing, array; cmp = (x, y) -> x != y)
+# Comparisons for sorting sparsity entries and finding where runs start. They are named
+# functions rather than closures so that their names, and so the names of the GPU kernels
+# and methods specialized on them, stay the same from one version to the next; precompile
+# statements and ahead-of-time compiled code can then refer to them.
+_first_lt(a, b) = a[1] < b[1]
+_first_ne(a, b) = a[1] != b[1]
+_row_lt(a, b) = a[1][1] < b[1][1]
+_col_lt(a, b) = a[1][2] < b[1][2]
+_row_ne(a, b) = a[1][1] != b[1][1]
+_col_ne(a, b) = a[1][2] != b[1][2]
+
+function getptr(backend::Nothing, array; cmp = !=)
     return push!(
         pushfirst!(findall(cmp.(@view(array[1:(end-1)]), @view(array[2:end]))) .+= 1, 1),
         length(array) + 1,
@@ -473,14 +484,14 @@ function CompressedNLPModel(m)
     backend = getbackend(m)
 
     jsparsity = get_compressed_sparsity(nnzj, Ibuffer, Jbuffer, backend)
-    sort!(jsparsity; lt = (a, b) -> a[1] < b[1])
-    jptr = getptr(backend, jsparsity; cmp = (a, b) -> first(a) != first(b))
+    sort!(jsparsity; lt = _first_lt)
+    jptr = getptr(backend, jsparsity; cmp = _first_ne)
 
     NLPModels.hess_structure!(m, Ibuffer, Jbuffer)
 
     hsparsity = get_compressed_sparsity(nnzh, Ibuffer, Jbuffer, backend)
-    sort!(hsparsity; lt = (a, b) -> a[1] < b[1])
-    hptr = getptr(backend, hsparsity; cmp = (a, b) -> first(a) != first(b))
+    sort!(hsparsity; lt = _first_lt)
+    hptr = getptr(backend, hsparsity; cmp = _first_ne)
 
 
     meta = NLPModels.NLPModelMeta(

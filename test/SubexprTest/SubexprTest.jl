@@ -12,7 +12,7 @@ function _nested_model(; buffered = false)
     c, x = add_var(c, 10)
     c, s = add_expr(c, (x[i]^2 + sin(x[i+1]) for i in 1:9); buffered)
     c, t = add_expr(c, (s[i] * s[i+1] + x[i] for i in 1:8); buffered)
-    c, _ = add_obj(c, (exp(t[i] / 100) * t[i] + cos(x[i]) for i in 1:8))
+    c, _ = add_obj(c, (exp(t[i] / 100.0) * t[i] + cos(x[i]) for i in 1:8))
     c, _ = add_con(c, (t[i] + x[i+2]^2 for i in 1:8))
     return ExaModel(c)
 end
@@ -76,26 +76,31 @@ function _device_tests(backend)
     c, x = add_var(c, 10)
     c, s = add_expr(c, (x[i]^2 + sin(x[i+1]) for i in 1:9); buffered = true)
     c, t = add_expr(c, (s[i] * s[i+1] + x[i] for i in 1:8); buffered = true)
-    c, _ = add_obj(c, (exp(t[i] / 100) * t[i] + cos(x[i]) for i in 1:8))
+    # 100.0, not 100: the `/` derivative rule evaluates `1 / x2`, which for an Int
+    # divisor is Int / Int = Float64 and does not compile on Metal (same fixture
+    # as the host model above, so the two stay comparable)
+    c, _ = add_obj(c, (exp(t[i] / 100.0) * t[i] + cos(x[i]) for i in 1:8))
     c, _ = add_con(c, (t[i] + x[i+2]^2 for i in 1:8))
     m1 = ExaModel(c)
+    # Float32 backends (Metal) need a looser comparison than Float64 ones
+    rt = eltype(m1.meta.x0) == Float32 ? 1.0e-4 : 1.0e-13
 
     xh = [sin(3i) + 0.5 for i in 1:10]
     xd = copyto!(similar(m1.meta.x0, 10), xh)
 
-    @test NLPModels.obj(m1, xd) ≈ NLPModels.obj(m0, xh) rtol = 1e-13
+    @test NLPModels.obj(m1, xd) ≈ NLPModels.obj(m0, xh) rtol = rt
 
     g0 = zeros(8)
     gd = fill!(similar(m1.meta.x0, 8), 0)
     NLPModels.cons_nln!(m0, xh, g0)
     NLPModels.cons_nln!(m1, xd, gd)
-    @test Array(gd) ≈ g0 rtol = 1e-13
+    @test Array(gd) ≈ g0 rtol = rt
 
     d0 = zeros(10)
     dd = fill!(similar(m1.meta.x0, 10), 0)
     NLPModels.grad!(m0, xh, d0)
     NLPModels.grad!(m1, xd, dd)
-    @test Array(dd) ≈ d0 rtol = 1e-13
+    @test Array(dd) ≈ d0 rtol = rt
 
     r = zeros(Int, m1.meta.nnzj); cl = zeros(Int, m1.meta.nnzj)
     NLPModels.jac_structure!(m1, r, cl)
@@ -105,7 +110,7 @@ function _device_tests(backend)
     for (i, j, v) in zip(r, cl, Array(vd))
         J1[i, j] += v
     end
-    @test J1 ≈ _dense_jac(m0, xh) rtol = 1e-13
+    @test J1 ≈ _dense_jac(m0, xh) rtol = rt
 
     yh = [cos(2i) for i in 1:8]
     yd = copyto!(similar(m1.meta.x0, 8), yh)
@@ -118,7 +123,7 @@ function _device_tests(backend)
         H1[i, j] += v
         i != j && (H1[j, i] += v)
     end
-    @test H1 ≈ _dense_hess(m0, xh, yh; obj_weight = 0.7) rtol = 1e-12
+    @test H1 ≈ _dense_hess(m0, xh, yh; obj_weight = 0.7) rtol = rt
 
     pvh = [sin(5i) + 0.25 for i in 1:10]
     pvd = copyto!(similar(m1.meta.x0, 10), pvh)
@@ -126,10 +131,10 @@ function _device_tests(backend)
     hp1 = fill!(similar(m1.meta.x0, 10), 0)
     NLPModels.hprod!(m0, xh, yh, pvh, hp0; obj_weight = 0.7)
     NLPModels.hprod!(m1, xd, yd, pvd, hp1; obj_weight = 0.7)
-    @test Array(hp1) ≈ hp0 rtol = 1e-12
+    @test Array(hp1) ≈ hp0 rtol = rt
     NLPModels.hprod!(m0, xh, pvh, hp0)
     NLPModels.hprod!(m1, xd, pvd, hp1)
-    @test Array(hp1) ≈ hp0 rtol = 1e-12
+    @test Array(hp1) ≈ hp0 rtol = rt
 end
 
 function runtests(; backends = Any[CPU()])
@@ -449,7 +454,7 @@ function _device_merged_plus_buffered(backend)
     for (i, j, v) in zip(hr, hc, Array(hv))
         H1[i, j] += v
     end
-    return @test H1 ≈ H0 rtol = 1.0e-13
+    return @test H1 ≈ H0 rtol = (eltype(m1.meta.x0) == Float32 ? 1.0e-4 : 1.0e-13)
 end
 
 end # module

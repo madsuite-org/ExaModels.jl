@@ -48,6 +48,24 @@ const _MROW_IV = 4  # field position of `iv` in MergedRow
 const _MROW_FV = 5  # field position of `fv` in MergedRow
 const _MROW_D  = 6  # field position of `d` in MergedRow
 
+# Float64 -> Float32 rewrite for backends without Float64 (Metal). The generic
+# struct rebuild in templates.jl cannot reconstruct a MergedRow: with no Float
+# slots (S = 0) the empty `fv` tuple leaves `T` undetermined for the default
+# constructor, so the rebuild fell back to returning the row unchanged and the
+# Float64 inside `d` reached the device upload (metal lts leg of #329); and on
+# Julia 1.13.2 the generic rebuild segfaults in `getfield` during the
+# broadcast over these rows (reproduced on x86 Linux, no Metal involved). The
+# parameters are written out, so neither path is taken.
+function replace_float_64_by_32(r::MergedRow{K, S, T, D}) where {K, S, T, D}
+    fv = map(replace_float_64_by_32, getfield(r, :fv))
+    d = replace_float_64_by_32(getfield(r, :d))
+    return MergedRow{K, S, _f32type(T), typeof(d)}(
+        getfield(r, :o0), getfield(r, :o1), getfield(r, :o2), getfield(r, :iv), fv, d,
+    )
+end
+_f32type(::Type{Float64}) = Float32
+_f32type(::Type{T}) where {T} = T
+
 # ── merged iterators ─────────────────────────────────────────────────────────
 
 struct MergedSeg{K, S, T, I}

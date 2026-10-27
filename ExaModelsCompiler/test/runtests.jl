@@ -76,6 +76,7 @@ const S_TAB = [(i = 2, w = 1.5, s = 2.0), (i = 5, w = 3.0, s = -1.0), (i = 6, w 
 
 function runtests()
     @testset "ExaModelsCompiler" begin
+        include("operators.jl")
 
         @testset "the example arg is read, not guessed" begin
             c = build()
@@ -570,6 +571,37 @@ function runtests()
             @test fn === RecipeKernels.doubled_args && rest == (4,)
         end
 
+        @testset "a solution writer is checked before it is compiled" begin
+            c = build()
+            w = (:summary => RecipeKernels.summary_writer,)
+            # The writer is handed the argument-function value, so a model
+            # without one has nothing to hand it.
+            @test_throws "need a model with an argument function" compile_library(
+                OUT, c, 4; writers = w)
+            @test_throws "a writer must be a named function" compile_library(
+                OUT, c, 4; argfun = RecipeKernels.doubled_args,
+                writers = (:summary => (out, args...; kw...) -> nothing,))
+            @test_throws "prefix must be a C identifier" compile_library(
+                OUT, c, 4; argfun = RecipeKernels.doubled_args,
+                writers = (Symbol("bad name") => RecipeKernels.summary_writer,))
+            @test_throws "two writers are both named" compile_library(
+                OUT, c, 4; argfun = RecipeKernels.doubled_args, writers = (w..., w...))
+            @test_throws "failed on the example instance" compile_library(
+                OUT, c, 4; argfun = RecipeKernels.doubled_args,
+                writers = (:bad => RecipeKernels.alternating,))
+            @test_throws "names a model `nope`" compile_library(
+                OUT, :m => (c, RecipeKernels.doubled_args, 4); writers = (:nope => w,))
+            # A valid writer reaches the generated source as a named call.
+            s = ExaModelsCompiler._with_writers(
+                ExaModelsCompiler._model_spec("m", c, RecipeKernels.parsed_args, ("4",)), w)
+            src = ExaModelsCompiler._model_source(s)
+            @test occursin("function m_write_summary(", src)
+            @test occursin("RecipeKernels.summary_writer(", src)
+            @test occursin("push!(ARGIN_m, s)", src)
+            @test occursin("Cint(1)", ExaModelsCompiler._writers_source("m", s.writers))
+            @test occursin("Cint(0)", ExaModelsCompiler._writers_source("m", ExaModelsCompiler.Writer[]))
+        end
+
         @testset "a structured model instantiates through the builder" begin
             # One compile carries every surface — builder, one-knob, and both
             # argument-function kinds — in one library: the surface is per
@@ -580,7 +612,8 @@ function runtests()
                 :knob => (build(), 4),
                 :dbl => (build(), RecipeKernels.doubled_args, 4),
                 :strd => (build(), RecipeKernels.parsed_args, "6"),
-                :lay => (pbuild(), 3),
+                :lay => (pbuild(), 3);
+                writers = (:strd => (:summary => RecipeKernels.summary_writer,),),
             )
             @test sb.prefixes == ["structm", "knob", "dbl", "strd", "lay"]
             slib = CNLPModels.load(sb.libpath)
@@ -670,6 +703,29 @@ function runtests()
             @test sid > 0
             @test ccall(dl(:strd_nvar), Cint, (Cint,), sid) == 6
             @test ccall(dl(:strd_new), Cint, (Cint,), 4) == 0
+
+            # The solution writer: discoverable by name, and handed this
+            # instance's own argument and the caller's solution.
+            @test ccall(dl(:strd_nwriters), Cint, ()) == 1
+            @test ccall(dl(:knob_nwriters), Cint, ()) == 0
+            wbuf = zeros(UInt8, 16)
+            wn = ccall(dl(:strd_writer_name), Cint, (Cint, Ptr{UInt8}, Cint), 0, wbuf, 16)
+            @test String(wbuf[1:wn]) == "summary"
+            @test ccall(dl(:strd_writer_name), Cint, (Cint, Ptr{UInt8}, Cint), 1, wbuf, 16) == -1
+            wx, wy = collect(1.0:6.0), fill(0.5, 5)
+            wzl, wzu = fill(0.25, 6), fill(2.0, 6)
+            wout = tempname()
+            @test ccall(dl(:strd_write_summary), Cint,
+                        (Cint, Cstring, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Cdouble, Cstring),
+                        sid, wout, wx, wy, wzl, wzu, 1.5, "done") == 0
+            @test readline(wout) == "6 6 6 21.0 5 2.5 1.5 12.0 1.5 done"
+            @test ccall(dl(:strd_write_summary), Cint,
+                        (Cint, Cstring, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Cdouble, Cstring),
+                        99, wout, wx, wy, wzl, wzu, 1.5, "done") == 1
+            # A writer that throws (an unwritable path) reports 2, not a crash.
+            @test ccall(dl(:strd_write_summary), Cint,
+                        (Cint, Cstring, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Cdouble, Cstring),
+                        sid, joinpath(wout, "no", "such"), wx, wy, wzl, wzu, 1.5, "done") == 2
 
             # ── the layout surface: named blocks, addressable from a
             # library alone ─────────────────────────────────────────────────
