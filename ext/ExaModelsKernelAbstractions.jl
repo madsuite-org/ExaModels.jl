@@ -441,10 +441,15 @@ function ExaModels.hprod!(
     x::AbstractVector,
     v::AbstractVector,
     Hv::AbstractVector;
-    obj_weight = one(T),
+    obj_weight = one(eltype(x)),
 ) where {T,VT,E<:KAExtension{T,VT,Nothing}}
     _ska(m) === nothing || return _hprod_buffered!(m, x, nothing, v, Hv, T(obj_weight))
-    error("Prodhelper is not defined. Use ExaModels(c; prod=true) to use hprod!")
+    # no buffered stage and no prodhelper: the host implementation in nlp.jl,
+    # exactly the method this call reached before the buffered methods existed
+    return Base.invoke(
+        ExaModels.hprod!, Tuple{ExaModels.AbstractExaModel,AbstractVector,AbstractVector,AbstractVector},
+        m, x, v, Hv; obj_weight,
+    )
 end
 function ExaModels.hprod!(
     m::ExaModels.AbstractExaModel{T,VT,E},
@@ -452,10 +457,14 @@ function ExaModels.hprod!(
     y::AbstractVector,
     v::AbstractVector,
     Hv::AbstractVector;
-    obj_weight = one(T),
+    obj_weight = one(eltype(x)),
 ) where {T,VT,E<:KAExtension{T,VT,Nothing}}
     _ska(m) === nothing || return _hprod_buffered!(m, x, y, v, Hv, T(obj_weight))
-    error("Prodhelper is not defined. Use ExaModels(c; prod=true) to use hprod!")
+    return Base.invoke(
+        ExaModels.hprod!,
+        Tuple{ExaModels.AbstractExaModel,AbstractVector,AbstractVector,AbstractVector,AbstractVector},
+        m, x, y, v, Hv; obj_weight,
+    )
 end
 function ExaModels.jtprod_nln!(
     m::ExaModels.AbstractExaModel{T,VT,E},

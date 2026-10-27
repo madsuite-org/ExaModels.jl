@@ -135,6 +135,25 @@ function _device_tests(backend)
     NLPModels.hprod!(m0, xh, pvh, hp0)
     NLPModels.hprod!(m1, xd, pvd, hp1)
     @test Array(hp1) ≈ hp0 rtol = rt
+
+    # A device model with no buffered stage and no prodhelper keeps the host
+    # hprod! it had before the buffered methods existed.
+    function plain(bk)
+        c2 = ExaCore(concrete = Val(true), backend = bk)
+        c2, x2 = add_var(c2, 10)
+        c2, _ = add_obj(c2, (x2[i]^2 * x2[i + 1] for i in 1:9))
+        c2, _ = add_con(c2, (x2[i] * x2[i + 2] - 1.0 for i in 1:8))
+        return ExaModel(c2)
+    end
+    m2, m3 = plain(backend), plain(nothing)
+    hp2 = fill!(similar(m2.meta.x0, 10), 0)
+    hp3 = zeros(10)
+    NLPModels.hprod!(m3, xh, yh, pvh, hp3; obj_weight = 0.7)
+    NLPModels.hprod!(m2, xd, yd, pvd, hp2; obj_weight = 0.7)
+    @test Array(hp2) ≈ hp3 rtol = rt
+    NLPModels.hprod!(m3, xh, pvh, hp3)
+    NLPModels.hprod!(m2, xd, pvd, hp2)
+    @test Array(hp2) ≈ hp3 rtol = rt
 end
 
 function runtests(; backends = Any[CPU()])
