@@ -7,9 +7,12 @@
 # sparsity-structure evaluation reads with θ = NaNSource; `AbstractFloat`
 # leaves once per segment, as loop-invariant struct loads that cannot alias
 # the output vectors the way θ reads would).  A later `add_con` / `add_obj`
-# whose tree type and slot-sharing pattern match an existing family appends
-# one segment; the core's type does not change.  All decisions are static:
-# there is no runtime merge heuristic.  Stored plain instead: trees containing
+# whose tree type matches an existing family appends one segment; the core's
+# type does not change.  All decisions are static: there is no runtime merge
+# heuristic.  The block's Integer-slot sharing pattern must match the family's
+# as well: dynamic storage starts a second family on a mismatch, concrete
+# storage (whose block-list type must stay a function of types) raises an
+# error.  Stored plain instead: trees containing
 # node kinds outside the hoisting walk (`SumNode`, `ProdNode`, recipe
 # placeholders, registered-function internals), augmentation (`add_con!`)
 # blocks, recipe cores (`nargs > 0`), and pair-headed blocks on device
@@ -371,15 +374,19 @@ end
 
 # ── family membership: dispatch on the stored representative's type ─────────
 
-# same representative type (tree type), same data eltype, and the same
-# Integer-slot sharing pattern
-@inline _same_family(a, f, ::Type{E}, cls) where {E} = false
-@inline _same_family(a::Constraint{F2, I}, f::F, ::Type{E}, cls) where {F2, F, E, I <: _MergedItr} =
-    typeof(_mrep(getfield(a, :itr))) == F && _mrow_dtype(eltype(getfield(a, :itr))) == E &&
-    getfield(getfield(a, :itr), :cls) == cls
-@inline _same_family(a::Objective{F2, I}, f::F, ::Type{E}, cls) where {F2, F, E, I <: _MergedItr} =
-    typeof(_mrep(getfield(a, :itr))) == F && _mrow_dtype(eltype(getfield(a, :itr))) == E &&
-    getfield(getfield(a, :itr), :cls) == cls
+# same representative type (tree type) and same data eltype: a type-level
+# test, so it folds at inference and the core's type stays static
+@inline _same_family(a, f, ::Type{E}) where {E} = false
+@inline _same_family(a::Constraint{F2, I}, f::F, ::Type{E}) where {F2, F, E, I <: _MergedItr} =
+    typeof(_mrep(getfield(a, :itr))) == F && _mrow_dtype(eltype(getfield(a, :itr))) == E
+@inline _same_family(a::Objective{F2, I}, f::F, ::Type{E}) where {F2, F, E, I <: _MergedItr} =
+    typeof(_mrep(getfield(a, :itr))) == F && _mrow_dtype(eltype(getfield(a, :itr))) == E
+# same Integer-slot sharing pattern: a value-level test. Only the dynamic
+# (`Vector{Any}`) storage consults it when choosing a family, since there the
+# block list's type is erased anyway; in concrete storage the family decision
+# must stay a function of types, so a pattern mismatch is an error there
+# (`_merged_append`) rather than a second family.
+@inline _same_cls(a, cls) = getfield(getfield(a, :itr), :cls) == cls
 
 # ── block creation and appends ───────────────────────────────────────────────
 
@@ -446,10 +453,17 @@ end
 
 # A later arrival: extract in the representative's layout, append one
 # segment.  nnz bases again come from the arriving block's own counters.
+# one literal: a `*` over many string pieces is a vararg call that `juliac --trim`
+# cannot resolve, and this throw sits on the model-building path
+const _CLS_MISMATCH_MSG = "a block with the same expression structure as an existing family but a different pattern of repeated index values (such as `x[i + 1] * x[i + 1]` after `x[i + 1] * x[i + 2]`) cannot join that family, and in concrete mode (`concrete = Val(true)`) the family decision must be static. Build the core with `concrete = Val(false)`, where such a block starts its own family, or give the two blocks distinct structures."
+
 @inline function _merged_append(::Type{T}, prev, f, pars, dims, tag) where {T}
     # same family means same tree type, so the arriving tree's own walk uses
-    # the representative's slot layout by construction
-    _, ivs, fvt, _ = _shoist(T, _family_tree(f))
+    # the representative's slot layout by construction; the slot-sharing
+    # pattern must agree too, or the family's merged tree would read one slot
+    # for two leaves that differ in this block
+    _, ivs, fvt, cls = _shoist(T, _family_tree(f))
+    cls == getfield(getfield(prev, :itr), :cls) || throw(ArgumentError(_CLS_MISMATCH_MSG))
     return _merged_append_itr(
         getfield(prev, :itr), prev, f, pars, dims, tag,
         ivs, fvt
@@ -546,7 +560,7 @@ end
 @inline function _smerge(::Type{T}, kind, cons::Tuple, f, pars, dims, tag, ::Type{E}, cls) where {T, E}
     b = first(cons)
     rest = Base.tail(cons)
-    if _same_family(b, f, E, cls) && _blocktag(b) === tag &&
+    if _same_family(b, f, E) && _blocktag(b) === tag &&
             _appendable(getfield(b, :itr), pars)
         nb = _merged_append(T, b, f, pars, dims, tag)
         mf = getfield(nb, :f)
@@ -559,7 +573,7 @@ end
 end
 function _smerge(::Type{T}, kind, cons::Vector{Any}, f, pars, dims, tag, ::Type{E}, cls) where {T, E}
     for (i, b) in enumerate(cons)
-        if _same_family(b, f, E, cls) && _blocktag(b) === tag &&
+        if _same_family(b, f, E) && _same_cls(b, cls) && _blocktag(b) === tag &&
                 _appendable(getfield(b, :itr), pars)
             nb = _merged_append(T, b, f, pars, dims, tag)
             out = copy(cons)

@@ -1849,16 +1849,18 @@ function _add_con(c, f, pars, dims, start, lcon, ucon, name, tag)
     o = c.ncon
     ncon = c.ncon + nitr
 
+    # the family decision first: it can refuse the block (a slot-sharing
+    # pattern mismatch in concrete storage), and the bound vectors below are
+    # grown in place, so nothing may be appended before it has succeeded
+    m = _merge_block(c, f, pars, dims, tag)
+
     y0 = _append_slot(c.backend, c.y0, start, nitr)
     lcon = _append_slot(c.backend, c.lcon, lcon, nitr)
     ucon = _append_slot(c.backend, c.ucon, ucon, nitr)
 
     con = Constraint(f, convert_array(pars, c.backend), o, dims, tag)
 
-    return _add_con_store(
-        _merge_block(c, f, pars, dims, tag),
-        c, con, f, name, nitr, ncon, y0, lcon, ucon
-    )
+    return _add_con_store(m, c, con, f, name, nitr, ncon, y0, lcon, ucon)
 end
 
 # merged into a family: the per-row nnz steps come back from the merge
