@@ -79,11 +79,12 @@ struct MergedSeg{K, S, T, I, C1, C2}
     comp2::C2
     o1step::Int
     o2step::Int
+    dims::Tuple                 # the source block's size (a 2-D generator's product shape), for writers
 end
-# the segment a block contributes: its own offsets, leaves, compressors and steps
-@inline _mergedseg(::Type{T}, f, pars, ivs::NTuple{K, Int}, fvt::NTuple{S, T}) where {K, S, T} =
+# the segment a block contributes: its own offsets, leaves, compressors, steps and shape
+@inline _mergedseg(::Type{T}, f, pars, dims, ivs::NTuple{K, Int}, fvt::NTuple{S, T}) where {K, S, T} =
     MergedSeg{K, S, T, typeof(pars), typeof(f.comp1), typeof(f.comp2)}(
-        pars, f.o0, f.o1, f.o2, ivs, fvt, f.comp1, f.comp2, f.o1step, f.o2step
+        pars, f.o0, f.o1, f.o2, ivs, fvt, f.comp1, f.comp2, f.o1step, f.o2step, dims
     )
 
 """
@@ -228,6 +229,33 @@ _short_type(::FvRef) = "FvRef"
 @inline (v::FvRef)(i, x, θ) = @inbounds getfield(i, _MROW_FV)[v.k]
 @inline (v::FvRef)(i::Identity, x, θ) = eltype(θ)(NaN)
 
+"""
+    NullRef <: AbstractNode
+
+Reads the `k`-th hoisted Float leaf the way a [`Null`](@ref) value node
+would: a plain value under a value source, `AdjointNull`/`SecondAdjointNull`
+under the adjoint sources. A `Null` leaf is hoisted into this node rather
+than an [`FvRef`](@ref) because the two differ in adjoint shape under `*`:
+`Null(c) * x[i]` builds `SecondAdjointNode2{*}(SecondAdjointNull, Var)`,
+which `hrpass0` walks and writes one Hessian slot for, while a plain value
+builds `SecondAdjointNode1{FirstFixed{*}}(Var)`, whose linear shortcut
+writes none. The source block's compressors and steps come from its own
+tree, so the hoisted tree must build the same adjoint nodes, or a slot is
+accounted and never written.
+"""
+struct NullRef <: AbstractNode
+    k::Int
+end
+Base.show(io::IO, v::NullRef) = print(io, "⟨n", v.k, "⟩")
+_short_type(::NullRef) = "NullRef"
+@inline (v::NullRef)(i, x, θ) = @inbounds getfield(i, _MROW_FV)[v.k]
+@inline (v::NullRef)(i, x::AdjointNodeSource{T}, θ) where {T} =
+    @inbounds AdjointNull(eltype(T)(getfield(i, _MROW_FV)[v.k]))
+@inline (v::NullRef)(i, x::SecondAdjointNodeSource{T}, θ) where {T} =
+    @inbounds SecondAdjointNull(eltype(T)(getfield(i, _MROW_FV)[v.k]))
+@inline (v::NullRef)(i::Identity, x::AdjointNodeSource{T}, θ) where {T} = AdjointNull(eltype(T)(NaN))
+@inline (v::NullRef)(i::Identity, x::SecondAdjointNodeSource{T}, θ) where {T} = SecondAdjointNull(eltype(T)(NaN))
+
 # The hoisting walk: three single-purpose recursions, one dispatch method
 # per node kind each: the merged TREE (threading running slot counts as
 # plain Int arguments), the Integer-slot tuple, and the Float-slot tuple.
@@ -272,8 +300,8 @@ end
 @inline _stree(a::ParameterSource, io::Int, fo::Int) = a, 0, 0
 @inline _stree(a::Val, io::Int, fo::Int) = a, 0, 0
 @inline _stree(a::Null{Nothing}, io::Int, fo::Int) = a, 0, 0
-# a Null's value is a scalar field like any other: hoist it
-@inline _stree(a::Null{T}, io::Int, fo::Int) where {T <: Real} = FvRef(fo + 1), 0, 1
+# a Null's value is a scalar field like any other: hoist it, keeping Null's adjoint shape
+@inline _stree(a::Null{T}, io::Int, fo::Int) where {T <: Real} = NullRef(fo + 1), 0, 1
 @inline _stree(a::T, io::Int, fo::Int) where {T <: Integer} = IvRef(io + 1), 1, 0
 @inline _stree(a::T, io::Int, fo::Int) where {T <: Real} = FvRef(fo + 1), 0, 1
 
@@ -371,7 +399,6 @@ end
     typeof(_mrep(getfield(a, :itr))) == F && _mrow_dtype(eltype(getfield(a, :itr))) == E
 @inline _same_family(a::Objective{F2, I}, f::F, ::Type{E}) where {F2, F, E, I <: _MergedItr} =
     typeof(_mrep(getfield(a, :itr))) == F && _mrow_dtype(eltype(getfield(a, :itr))) == E
-# same Integer-slot sharing pattern: a value-level test, consulted only by the
 
 # ── block creation and appends ───────────────────────────────────────────────
 
@@ -411,7 +438,7 @@ end
     SIMDFunction(replace_T(T, tree), rep.comp1, rep.comp2, 0, 0, 0, 0, 0)
 
 @inline function _merged_first_itr(::Type{T}, head, backend, rep, f, pars, dims, ivs, fvt) where {T}
-    seg = _mergedseg(T, f, pars, ivs, fvt)
+    seg = _mergedseg(T, f, pars, dims, ivs, fvt)
     K = length(ivs)
     S = length(fvt)
     return SegmentedItr{K, S, T, eltype(pars), typeof(pars), typeof(rep), typeof(f.comp1), typeof(f.comp2)}(
@@ -459,7 +486,7 @@ end
 @inline function _merged_append_itr(m::SegmentedItr{K, S, T}, prev, f, pars, dims, tag, ivs, fvt) where {K, S, T}
     segs = copy(m.segs)
     offs = copy(m.offs)
-    push!(segs, _mergedseg(T, f, pars, ivs, fvt))
+    push!(segs, _mergedseg(T, f, pars, dims, ivs, fvt))
     newlen = length(pars)
     push!(offs, offs[end] + newlen)
     seglen = (m.seglen == newlen) ? newlen : 0
@@ -620,6 +647,8 @@ struct DeviceSegItr{
     comp2::VI                   # N2 compressor entries per segment
     offs::VI                    # cumulative row counts, one per segment
     d::VD                       # all segments' iterator elements, in order
+    seg_dims::VI                # the segments' source shapes, concatenated (writers only)
+    seg_dimptr::VI              # segment j's shape is seg_dims[seg_dimptr[j]:seg_dimptr[j+1]-1]
     K::Int
     S::Int
     N1::Int
@@ -655,9 +684,9 @@ end
 # kernels receive the device arrays through Adapt (KernelAbstractions adapts
 # every kernel argument); the Int fields pass through. The parameters are
 # written out so that an empty Float vector still names `T`.
-@inline function _devsegitr(::Type{T}, ::Type{D}, o0, o1, o2, s1, s2, iv, fv, c1, c2, offs, d, K, S, N1, N2, seglen, n) where {T, D}
+@inline function _devsegitr(::Type{T}, ::Type{D}, o0, o1, o2, s1, s2, iv, fv, c1, c2, offs, d, dims, dimptr, K, S, N1, N2, seglen, n) where {T, D}
     return DeviceSegItr{T, D, typeof(o0), typeof(fv), typeof(d)}(
-        o0, o1, o2, s1, s2, iv, fv, c1, c2, offs, d, K, S, N1, N2, seglen, n,
+        o0, o1, o2, s1, s2, iv, fv, c1, c2, offs, d, dims, dimptr, K, S, N1, N2, seglen, n,
     )
 end
 function Adapt.adapt_structure(to, s::DeviceSegItr{T, D}) where {T, D}
@@ -665,7 +694,8 @@ function Adapt.adapt_structure(to, s::DeviceSegItr{T, D}) where {T, D}
         T, D, Adapt.adapt(to, s.seg_o0), Adapt.adapt(to, s.seg_o1), Adapt.adapt(to, s.seg_o2),
         Adapt.adapt(to, s.seg_o1step), Adapt.adapt(to, s.seg_o2step),
         Adapt.adapt(to, s.iv), Adapt.adapt(to, s.fv), Adapt.adapt(to, s.comp1), Adapt.adapt(to, s.comp2),
-        Adapt.adapt(to, s.offs), Adapt.adapt(to, s.d), s.K, s.S, s.N1, s.N2, s.seglen, s.n,
+        Adapt.adapt(to, s.offs), Adapt.adapt(to, s.d), Adapt.adapt(to, s.seg_dims), Adapt.adapt(to, s.seg_dimptr),
+        s.K, s.S, s.N1, s.N2, s.seglen, s.n,
     )
 end
 
@@ -691,6 +721,7 @@ struct DeviceSeg1Itr{
     comp1::VI
     comp2::VI
     d::VD
+    dims::VI                    # the source block's shape (writers only)
     n::Int
 end
 Base.size(s::DeviceSeg1Itr) = (s.n,)
@@ -701,12 +732,12 @@ Base.IndexStyle(::Type{<:DeviceSeg1Itr}) = IndexLinear()
         SegView(s.iv, 0), SegView(s.fv, 0), s.d[i], CompView(s.comp1, 0), CompView(s.comp2, 0),
     )
 end
-@inline _devseg1itr(::Type{T}, ::Type{D}, o0, o1, o2, s1, s2, iv, fv, c1, c2, d, n) where {T, D} =
-    DeviceSeg1Itr{T, D, typeof(iv), typeof(fv), typeof(d)}(o0, o1, o2, s1, s2, iv, fv, c1, c2, d, n)
+@inline _devseg1itr(::Type{T}, ::Type{D}, o0, o1, o2, s1, s2, iv, fv, c1, c2, d, dims, n) where {T, D} =
+    DeviceSeg1Itr{T, D, typeof(iv), typeof(fv), typeof(d)}(o0, o1, o2, s1, s2, iv, fv, c1, c2, d, dims, n)
 Adapt.adapt_structure(to, s::DeviceSeg1Itr{T, D}) where {T, D} =
     _devseg1itr(
     T, D, s.o0, s.o1, s.o2, s.o1step, s.o2step, Adapt.adapt(to, s.iv), Adapt.adapt(to, s.fv),
-    Adapt.adapt(to, s.comp1), Adapt.adapt(to, s.comp2), Adapt.adapt(to, s.d), s.n,
+    Adapt.adapt(to, s.comp1), Adapt.adapt(to, s.comp2), Adapt.adapt(to, s.d), Adapt.adapt(to, s.dims), s.n,
 )
 
 const _DeviceMergedItr = Union{DeviceSegItr, DeviceSeg1Itr}
@@ -729,7 +760,7 @@ function _materialize_mergeditr(backend, s::SegmentedItr{K, S, T, D}) where {K, 
         return _devseg1itr(
             eltype(fv), eltype(dd), seg.o0, seg.o1, seg.o2, seg.o1step, seg.o2step,
             cv(collect(Int, seg.iv)), fv, cv(collect(Int, seg.comp1.inner)), cv(collect(Int, seg.comp2.inner)),
-            dd, length(s),
+            dd, cv(_dims_code(seg.dims)), length(s),
         )
     end
     d = D[]
@@ -746,7 +777,9 @@ function _materialize_mergeditr(backend, s::SegmentedItr{K, S, T, D}) where {K, 
         cv(Int[seg.o1step for seg in segs]), cv(Int[seg.o2step for seg in segs]),
         cv(Int[x for seg in segs for x in seg.iv]), fv,
         cv(Int[x for seg in segs for x in seg.comp1.inner]), cv(Int[x for seg in segs for x in seg.comp2.inner]),
-        cv(copy(s.offs)), dd, K, S, N1, N2, s.seglen, length(s),
+        cv(copy(s.offs)), dd,
+        cv(Int[x for seg in segs for x in _dims_code(seg.dims)]), cv(cumsum(Int[1; [3 * length(seg.dims) for seg in segs]])),
+        K, S, N1, N2, s.seglen, length(s),
     )
 end
 _materialize_mergeditr(backend, m::MergedRows) = convert_array(m.rows, backend)
@@ -792,14 +825,21 @@ end
 end
 @inline _unhoist(a::IvRef, iv, fv) = @inbounds iv[a.k]
 @inline _unhoist(a::FvRef, iv, fv) = @inbounds fv[a.k]
+@inline _unhoist(a::NullRef, iv, fv) = @inbounds Null(fv[a.k])
 @inline _unhoist(a, iv, fv) = a
 
-# (o0, o1, o2, iv, fv, elements) per segment, on the host
+# a block's size on a device layout: (start, length, is-a-range) per dimension, flat
+_dims_code(dims) = Int[v for d in dims for v in (_start(d), _length(d), d isa Integer ? 0 : 1)]
+_dims_decode(v::AbstractVector{Int}) = Tuple(
+    v[3k] == 0 ? v[3k - 1] : (v[3k - 2]:(v[3k - 2] + v[3k - 1] - 1)) for k in 1:(length(v) ÷ 3)
+)
+
+# (o0, o1, o2, iv, fv, elements, dims) per segment, on the host
 _family_segments(s::SegmentedItr) =
-    [(seg.o0, seg.o1, seg.o2, seg.iv, seg.fv, collect(seg.itr)) for seg in s.segs]
+    [(seg.o0, seg.o1, seg.o2, seg.iv, seg.fv, collect(seg.itr), seg.dims) for seg in s.segs]
 function _family_segments(s::DeviceSeg1Itr)
     h = _host_array(s)
-    return [(h.o0, h.o1, h.o2, Tuple(h.iv), Tuple(h.fv), collect(h.d))]
+    return [(h.o0, h.o1, h.o2, Tuple(h.iv), Tuple(h.fv), collect(h.d), _dims_decode(h.dims))]
 end
 function _family_segments(s::DeviceSegItr)
     h = _host_array(s)
@@ -808,6 +848,7 @@ function _family_segments(s::DeviceSegItr)
             h.seg_o0[j], h.seg_o1[j], h.seg_o2[j],
             Tuple(h.iv[((j - 1) * h.K + 1):(j * h.K)]), Tuple(h.fv[((j - 1) * h.S + 1):(j * h.S)]),
             collect(h.d[(j == 1 ? 0 : h.offs[j - 1]) + 1:h.offs[j]]),
+            _dims_decode(h.seg_dims[h.seg_dimptr[j]:(h.seg_dimptr[j + 1] - 1)]),
         )
             for j in eachindex(h.offs)
     ]
@@ -825,21 +866,21 @@ _is_family(::Objective{F, I}) where {F, I <: Union{_MergedItr, _DeviceMergedItr}
     expand_family(block)
 
 The source blocks of a merged constraint or objective block, as plain blocks
-(one per segment, each with its own tree, row offset and iterator); `[block]`
+(one per segment, each with its own tree, row offset, iterator and shape); `[block]`
 for a block that is not a family. Used by writers that serialize expressions.
 """
 function expand_family(b)
     _is_family(b) || return Any[b]
     T = _mrow_T(eltype(getfield(b, :itr)))
     out = Any[]
-    for (o0, o1, o2, iv, fv, itr) in _family_segments(getfield(b, :itr))
+    for (o0, o1, o2, iv, fv, itr, dims) in _family_segments(getfield(b, :itr))
         f = _simdfunction(T, _unhoist(getfield(b, :f).f, iv, fv), o0, o1, o2)
-        push!(out, _plain_block(b, f, itr, o0))
+        push!(out, _plain_block(b, f, itr, o0, dims))
     end
     return out
 end
-_plain_block(b::Constraint, f, itr, o0) = Constraint(f, itr, o0, (length(itr),), b.tag)
-_plain_block(b::Objective, f, itr, o0) = Objective(f, itr)
+_plain_block(b::Constraint, f, itr, o0, dims) = Constraint(f, itr, o0, dims, b.tag)
+_plain_block(b::Objective, f, itr, o0, dims) = Objective(f, itr)
 
 # ── specialized hot loops for the lazy iterator ──────────────────────────────
 # One affine @simd inner loop per segment, materializing the isbits row

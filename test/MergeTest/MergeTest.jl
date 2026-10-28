@@ -33,6 +33,11 @@ function _build(backend)
     # variable (one Jacobian entry per row), the second's read two
     c, _ = add_con(c, x[i] * x[i] for i in 1:8; lcon = -3.0, ucon = 3.0)
     c, _ = add_con(c, x[i] * z[i] for i in 1:8; lcon = -3.0, ucon = 3.0)
+    # Null value leaves: hoisted with Null's adjoint shape, so the Hessian slot
+    # the source block's probe counts under `*` is the one the merged tree
+    # writes (two single-segment families)
+    c, _ = add_con(c, ExaModels.Null(2.0) * x[i] for i in 1:4; lcon = -3.0, ucon = 3.0)
+    c, _ = add_con(c, x[i] * ExaModels.Null(0.5) + z[i + 1] for i in 1:4; lcon = -3.0, ucon = 3.0)
     # a 2-D generator (its iterator is a Matrix): one single-segment family
     c, _ = add_con(c, x[i] * z[j] - 0.2 for i in 1:3, j in 1:2; lcon = -2.0, ucon = 2.0)
     # an `exa_sum` reduction (SumNode) is statically non-mergeable: stored
@@ -113,9 +118,10 @@ end
 function _gradL(m, x, y)
     g = zeros(length(x))
     NLPModels.grad!(m, x, g)
-    jr = zeros(Int, m.meta.nnzj); jc = zeros(Int, m.meta.nnzj)
+    jr = fill(-1, m.meta.nnzj); jc = fill(-1, m.meta.nnzj)
     jv = zeros(m.meta.nnzj)
     NLPModels.jac_structure!(m, jr, jc)
+    @test all(>(0), jr) && all(>(0), jc)   # every accounted slot was written
     NLPModels.jac_coord!(m, x, jv)
     for k in 1:m.meta.nnzj
         g[jc[k]] += jv[k] * y[jr[k]]
@@ -127,13 +133,15 @@ function _test_host_derivatives()
     m = ExaModel(_build(nothing))
     # the fixture's 11 constraint adds collapse to: one range family, one
     # data-tuple family, the named block, the tanh block and the 2-D block
-    # (one-segment families: no sibling), the mixed-footprint family, two
-    # augmentations (plain) and one statically non-mergeable plain block (the
-    # `exa_sum` reduction); its 9
+    # (one-segment families: no sibling), the mixed-footprint family, the two
+    # Null-leaf families, two augmentations (plain) and one statically
+    # non-mergeable plain block (the `exa_sum` reduction); its 9
     # objective adds collapse to the generator objective plus one merged
     # family for the 8 loop-written ones
-    @test length(m.cons) == 9
-    @test count(b -> b.itr isa ExaModels._MergedItr, m.cons) == 6   # six families
+    @test length(m.cons) == 11
+    @test count(b -> b.itr isa ExaModels._MergedItr, m.cons) == 8   # eight families
+    # writers get the source blocks back with their own shapes (the 2-D family's product shape)
+    @test any(b -> b.itr isa ExaModels._MergedItr && ExaModels.expand_family(b)[1].size == (1:3, 1:2), m.cons)
     @test count(b -> b isa ExaModels.ConstraintAugmentation, m.cons) == 2
     @test length(m.objs) == 2
     _check_fd_derivatives(m)
@@ -146,9 +154,10 @@ end
 function _check_fd_derivatives(m)
     x0 = copy(m.meta.x0) .+ 0.01
     # Jacobian values against central finite differences of cons!
-    jr = zeros(Int, m.meta.nnzj); jc = zeros(Int, m.meta.nnzj)
+    jr = fill(-1, m.meta.nnzj); jc = fill(-1, m.meta.nnzj)
     jv = zeros(m.meta.nnzj)
     NLPModels.jac_structure!(m, jr, jc)
+    @test all(>(0), jr) && all(>(0), jc)   # every accounted slot was written
     NLPModels.jac_coord!(m, x0, jv)
     J = zeros(m.meta.ncon, length(x0))
     for k in 1:m.meta.nnzj
@@ -158,9 +167,10 @@ function _check_fd_derivatives(m)
     # Lagrangian Hessian values against central finite differences of
     # grad(obj) + J(x)'y (the Jacobian is validated just above)
     y = fill!(zeros(m.meta.ncon), 1.0)
-    hr = zeros(Int, m.meta.nnzh); hc = zeros(Int, m.meta.nnzh)
+    hr = fill(-1, m.meta.nnzh); hc = fill(-1, m.meta.nnzh)
     hv = zeros(m.meta.nnzh)
     NLPModels.hess_structure!(m, hr, hc)
+    @test all(>(0), hr) && all(>(0), hc)   # every accounted slot was written
     NLPModels.hess_coord!(m, x0, y, hv)
     H = zeros(length(x0), length(x0))
     for k in 1:m.meta.nnzh
@@ -204,11 +214,14 @@ function _test_backend_matches_host(backend)
             @test length(b.itr.d) == length(b.itr)
         end
     end
-    # six families: the range, data-tuple and mixed-footprint families have 2+ segments; the
-    # named block, the tanh block and the 2-D block (a Matrix iterator on the
-    # host) are single-segment
+    # eight families: the range, data-tuple and mixed-footprint families have 2+ segments; the
+    # named block, the tanh block, the two Null-leaf blocks and the 2-D block (a Matrix
+    # iterator on the host) are single-segment
     @test count(b -> b.itr isa ExaModels.DeviceSegItr, mb.cons) == 3
-    @test count(b -> b.itr isa ExaModels.DeviceSeg1Itr, mb.cons) == 3
+    @test count(b -> b.itr isa ExaModels.DeviceSeg1Itr, mb.cons) == 5
+    # the device layouts carry the source shapes too
+    @test any(b -> b.itr isa ExaModels.DeviceSeg1Itr && ExaModels.expand_family(b)[1].size == (1:3, 1:2), mb.cons)
+    @test any(b -> b.itr isa ExaModels.DeviceSegItr && ExaModels.expand_family(b)[2].size == (1:(64 - 1),), mb.cons)
     # Float32 backends (Metal) carry ~1e-7 roundoff per operation
     tight, loose = eltype(mb.meta.x0) == Float32 ? (1.0e-4, 1.0e-4) : (1.0e-12, 1.0e-10)
     rb = _evalall(mb)
@@ -401,6 +414,20 @@ function _test_slot_sharing()
         _recipe_parity(hx, concrete)
     end
 
+    # Null value leaves: the plain block's probe counts a Hessian slot for
+    # `Null(c) * x[i]` (no linear shortcut for a Null factor), and the merged
+    # tree must write it
+    function nulls(c, x)
+        c, _ = add_con(c, ExaModels.Null(2.0) * x[i] for i in 1:4)
+        c, _ = add_con(c, x[i] * ExaModels.Null(0.5) + x[i + 1] for i in 1:4)
+        c, _ = add_obj(c, x[i]^2 for i in 1:6)
+        return c
+    end
+    for concrete in (Val(false), Val(true))
+        m = _recipe_parity(nulls, concrete)
+        _check_fd_derivatives(m)
+    end
+
     # an inlined subexpression spliced at two reference sites: the sites'
     # leaves compare === in the probe over the source tree, so the merged
     # block carries one entry per variable, as the plain block does
@@ -451,9 +478,10 @@ function runtests()
             @test cv[1:9] ≈ fill(sin(0.3) * 0.3 - 0.1, 9) atol = 1.0e-15
             @test cv[10:18] ≈ fill(sin(0.8) * 0.8 - 0.1, 9) atol = 1.0e-15
             @test cv[19:27] ≈ fill(sin(0.3) * 0.3 - 0.7, 9) atol = 1.0e-15
-            jr = zeros(Int, m.meta.nnzj); jc = zeros(Int, m.meta.nnzj)
+            jr = fill(-1, m.meta.nnzj); jc = fill(-1, m.meta.nnzj)
             jv = zeros(m.meta.nnzj)
             NLPModels.jac_structure!(m, jr, jc)
+            @test all(>(0), jr) && all(>(0), jc)   # every accounted slot was written
             NLPModels.jac_coord!(m, x0, jv)
             # second block's rows must reference the second variable block's columns
             @test all(col -> 11 <= col <= 20, jc[(jr .>= 10) .& (jr .<= 18)])
@@ -520,9 +548,10 @@ function runtests()
             @test g[N + 1] ≈ -0.5 rtol = 1.0e-14
             @test g[N + 2] ≈ 4 * 0.25 rtol = 1.0e-14
             @test g[2N + 2] ≈ -0.5 rtol = 1.0e-14
-            hr = zeros(Int, m.meta.nnzh); hc = zeros(Int, m.meta.nnzh)
+            hr = fill(-1, m.meta.nnzh); hc = fill(-1, m.meta.nnzh)
             hv = zeros(m.meta.nnzh)
             NLPModels.hess_structure!(m, hr, hc)
+            @test all(>(0), hr) && all(>(0), hc)   # every accounted slot was written
             NLPModels.hess_coord!(m, x0, ones(m.meta.ncon), hv)
             @test sum(hv) ≈ 4.0 * 2N rtol = 1.0e-14
             # every Hessian entry is a diagonal of one of the two blocks

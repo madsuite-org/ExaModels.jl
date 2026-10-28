@@ -1838,9 +1838,8 @@ function _add_con(c, f, pars, dims, start, lcon, ucon, name, tag)
     o = c.ncon
     ncon = c.ncon + nitr
 
-    # the family decision first: it can refuse the block (a slot-sharing
-    # pattern mismatch in concrete storage), and the bound vectors below are
-    # grown in place, so nothing may be appended before it has succeeded
+    # the family decision first: the bound vectors below are grown in place,
+    # so nothing may be appended before it has succeeded
     m = _merge_block(c, f, pars, dims, tag)
 
     y0 = _append_slot(c.backend, c.y0, start, nitr)
