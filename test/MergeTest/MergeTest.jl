@@ -160,9 +160,15 @@ function _test_backend_matches_host(backend)
         if b.itr isa ExaModels.DeviceSegItr
             @test length(b.itr.d) == length(b.itr)
             @test length(b.itr.seg_iv) == length(b.itr.offs)
+            @test length(b.itr.offs) > 1                 # single segments take the field layout
+        elseif b.itr isa ExaModels.DeviceSeg1Itr
+            @test length(b.itr.d) == length(b.itr)
         end
     end
-    @test count(b -> b.itr isa ExaModels.DeviceSegItr, mb.cons) == 4
+    # four families: the range and data-tuple families have 2 segments, the
+    # named block and the tanh block are single-segment
+    @test count(b -> b.itr isa ExaModels.DeviceSegItr, mb.cons) == 2
+    @test count(b -> b.itr isa ExaModels.DeviceSeg1Itr, mb.cons) == 2
     # Float32 backends (Metal) carry ~1e-7 roundoff per operation
     tight, loose = eltype(mb.meta.x0) == Float32 ? (1.0e-4, 1.0e-4) : (1.0e-12, 1.0e-10)
     rb = _evalall(mb)

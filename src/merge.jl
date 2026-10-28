@@ -377,6 +377,11 @@ end
 @inline _blocktag(b::Constraint) = getfield(b, :tag)
 @inline _blocktag(b::Objective) = nothing
 @inline _blocktag(b) = nothing
+# tags take part in the family decision by TYPE: a value comparison would make
+# the core's type depend on tag values in concrete storage. Merging blocks
+# that differ only in tag value is sound: the stored block's tag is read by
+# nothing in src/, and each user handle keeps its own tag.
+@inline _same_tag(a, b) = typeof(a) === typeof(b)
 
 @inline _family_tree(f::SIMDFunction) = _pair_second(f.f)
 @inline _pair_second(p::Pair) = p.second
@@ -566,7 +571,7 @@ end
 @inline function _smerge(::Type{T}, kind, cons::Tuple, f, pars, dims, tag, ::Type{E}, cls) where {T, E}
     b = first(cons)
     rest = Base.tail(cons)
-    if _same_family(b, f, E) && _blocktag(b) === tag &&
+    if _same_family(b, f, E) && _same_tag(_blocktag(b), tag) &&
             _appendable(getfield(b, :itr), pars)
         nb = _merged_append(T, b, f, pars, dims, tag, cls)
         mf = getfield(nb, :f)
@@ -579,7 +584,7 @@ end
 end
 function _smerge(::Type{T}, kind, cons::Vector{Any}, f, pars, dims, tag, ::Type{E}, cls) where {T, E}
     for (i, b) in enumerate(cons)
-        if _same_family(b, f, E) && _same_cls(b, cls) && _blocktag(b) === tag &&
+        if _same_family(b, f, E) && _same_cls(b, cls) && _same_tag(_blocktag(b), tag) &&
                 _appendable(getfield(b, :itr), pars)
             nb = _merged_append(T, b, f, pars, dims, tag, cls)
             out = copy(cons)
@@ -673,18 +678,70 @@ function Adapt.adapt_structure(to, s::DeviceSegItr{K, S, T, D}) where {K, S, T, 
     )
 end
 
+"""
+    DeviceSeg1Itr{K, S, T, D}
+
+Device layout of a single-segment [`SegmentedItr`](@ref): the segment's
+offsets and hoisted leaves are fields of the iterator itself, so they reach a
+kernel inside its argument struct (parameter space, uniform across threads),
+the way the leaf values inside a plain block's tree do; only the iterator
+elements `d` are a device array. A per-thread load of `K` Integer leaves from
+a segment table (the [`DeviceSegItr`](@ref) layout) cost the COPS dirichlet
+PDE block (`K = 94`) about 2x in `jac_coord!`/`hess_coord!` against main.
+"""
+struct DeviceSeg1Itr{K, S, T, D, VD <: AbstractVector{D}} <: AbstractVector{MergedRow{K, S, T, D}}
+    o0::Int
+    o1::Int
+    o2::Int
+    iv::NTuple{K, Int}
+    fv::NTuple{S, T}
+    d::VD
+    o1step::Int
+    o2step::Int
+    n::Int
+end
+Base.size(s::DeviceSeg1Itr) = (s.n,)
+Base.IndexStyle(::Type{<:DeviceSeg1Itr}) = IndexLinear()
+@inline function Base.getindex(s::DeviceSeg1Itr{K, S, T, D}, i::Int) where {K, S, T, D}
+    return @inbounds MergedRow{K, S, T, D}(
+        s.o0 + i, s.o1 + s.o1step * (i - 1), s.o2 + s.o2step * (i - 1), s.iv, s.fv, s.d[i],
+    )
+end
+@inline _devseg1itr(::Type{T}, ::Type{D}, o0, o1, o2, iv::NTuple{K, Int}, fv::NTuple{S, T}, d, o1step, o2step, n) where {K, S, T, D} =
+    DeviceSeg1Itr{K, S, T, D, typeof(d)}(o0, o1, o2, iv, fv, d, o1step, o2step, n)
+Adapt.adapt_structure(to, s::DeviceSeg1Itr{K, S, T, D}) where {K, S, T, D} =
+    _devseg1itr(T, D, s.o0, s.o1, s.o2, s.iv, s.fv, Adapt.adapt(to, s.d), s.o1step, s.o2step, s.n)
+
+const _DeviceMergedItr = Union{DeviceSegItr, DeviceSeg1Itr}
+# host copy for the host-side passes that read every block's rows
+# (`_build_subexpr_jac` and friends): adapt the arrays to `Array`, which is a
+# bulk copy, where `Array(itr)` would index the device arrays element by element
+_host_array(s::_DeviceMergedItr) = Adapt.adapt(Array, s)
+# the Float-slot tuple travels as a field, so a backend without Float64 (Metal)
+# gets it rewritten here; `convert_array` only sees arrays
+@inline _fvt(::Type{T}, fv::NTuple{S, T}, backend) where {S, T} = fv
+
 function _materialize_mergeditr(backend, s::SegmentedItr{K, S, T, D}) where {K, S, T, D}
     segs = s.segs
+    if length(segs) == 1
+        seg = @inbounds segs[1]
+        dd = convert_array(collect(D, seg.itr), backend)   # may rewrite Float64 inside D (Metal)
+        return _devseg1itr(
+            T, eltype(dd), seg.o0, seg.o1, seg.o2, seg.iv, _fvt(T, seg.fv, backend),
+            dd, s.o1step, s.o2step, length(s),
+        )
+    end
     cv = v -> convert_array(v, backend)
     d = D[]
     for seg in segs
         Base.append!(d, seg.itr)   # ExaModels has its own `append!`
     end
+    dd = cv(d)   # may rewrite Float64 inside D (Metal): the layout takes its D from the device array
     return _devsegitr(
-        K, S, T, D,
+        K, S, T, eltype(dd),
         cv(Int[seg.o0 for seg in segs]), cv(Int[seg.o1 for seg in segs]), cv(Int[seg.o2 for seg in segs]),
         cv(NTuple{K, Int}[seg.iv for seg in segs]), cv(NTuple{S, T}[seg.fv for seg in segs]),
-        cv(copy(s.offs)), cv(d), s.seglen, s.o1step, s.o2step, length(s),
+        cv(copy(s.offs)), dd, s.seglen, s.o1step, s.o2step, length(s),
     )
 end
 _materialize_mergeditr(backend, m::MergedRows) = convert_array(m.rows, backend)
