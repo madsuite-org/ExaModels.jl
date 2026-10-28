@@ -1507,9 +1507,11 @@ end
 
 
 # ── merged (family-merged) constraint and objective blocks ──────────────────
-# A merged block's row/nonzero offsets live in its MergedRow elements, not in
-# the SIMDFunction's affine fields, so the generic kernels' offset1/offset2
-# calls would be wrong for them.  These variants read the element.  (The cons
+# A merged block's row/nonzero offsets and its source block's compressors
+# live in its MergedRow elements, not in the SIMDFunction's affine and
+# compressor fields, so the generic kernels' offset1/offset2 calls and
+# `f.comp1`/`f.comp2` reads would be wrong for them.  These variants read the
+# element.  (The cons
 # path needs no variant: kerf resolves the row through the 3-argument
 # offset0, which dispatches on the MergedRow iterator.)
 
@@ -1519,7 +1521,7 @@ end
         el = itr[I]
         ExaModels.jrpass(
             f(el, ExaModels.AdjointNodeSource(x), θ),
-            f.comp1, el.o0, y1, y2, el.o1, 0, adj,
+            el.comp1, el.o0, y1, y2, el.o1, 0, adj,
         )
     end
 end
@@ -1530,7 +1532,7 @@ end
         el = itr[I]
         ExaModels.hrpass0(
             f(el, ExaModels.SecondAdjointNodeSource(x), θ),
-            f.comp2, y1, y2, el.o2, 0, adj1, adj2,
+            el.comp2, y1, y2, el.o2, 0, adj1, adj2,
         )
     end
 end
@@ -1541,7 +1543,7 @@ end
         el = itr[I]
         ExaModels.hrpass0(
             f(el, ExaModels.SecondAdjointNodeSource(x), θ),
-            f.comp2, y1, y2, el.o2, 0, adjs1[el.o0], adj2,
+            el.comp2, y1, y2, el.o2, 0, adjs1[el.o0], adj2,
         )
     end
 end
@@ -1552,7 +1554,7 @@ end
         el = itr[I]
         ExaModels.grpass(
             f(el, ExaModels.AdjointNodeSource(x), θ),
-            f.comp1, y, el.o1, 0, adj,
+            el.comp1, y, el.o1, 0, adj,
         )
     end
 end

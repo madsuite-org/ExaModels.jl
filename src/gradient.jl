@@ -169,7 +169,10 @@ Performs sparse gradient evaluation
 """
 function sgradient!(y, f, x, θ, adj)
     @simd for k in eachindex(f.itr)
-        @inbounds sgradient!(y, f.f, f.itr[k], x, θ, f.itr.comp1, offset1(f, k), adj)
+        @inbounds begin
+            p = f.itr[k]
+            sgradient!(y, f.f, p, x, θ, _comp1(f.f, p), offset1(f, k), adj)
+        end
     end
     return y
 end

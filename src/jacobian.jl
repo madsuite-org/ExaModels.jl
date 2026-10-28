@@ -111,18 +111,10 @@ Performs sparse jacobian evaluation
 """
 function sjacobian!(y1, y2, f, x, θ, adj)
     @simd for i in eachindex(f.itr)
-        @inbounds sjacobian!(
-            y1,
-            y2,
-            f.f,
-            f.itr[i],
-            x,
-            θ,
-            f.f.comp1,
-            offset0(f, i),
-            offset1(f, i),
-            adj,
-        )
+        @inbounds begin
+            p = f.itr[i]
+            sjacobian!(y1, y2, f.f, p, x, θ, _comp1(f.f, p), offset0(f, i), offset1(f, i), adj)
+        end
     end
 end
 

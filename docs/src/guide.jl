@@ -142,17 +142,13 @@ c2 = ExaCore(concrete = Val(true))
 #     structure are merged into one family at construction time, so a model
 #     written as a loop of scalar `add_con`/`add_obj` calls costs what the
 #     single-generator form costs to compile. Merging does not change the
-#     sparsity of a block: repeated references to one variable in a row share
-#     one Jacobian entry, as in a plain block (in a `concrete = Val(true)` core
-#     each such reference keeps its own entry, since the family decision must
-#     then be a function of types). Two things do affect `meta.nnzj`/`meta.nnzh`
-#     and the coordinate lists, which are representation details: an inlined
-#     subexpression spliced at several use sites carries one derivative entry
-#     per site (duplicate coordinates are summed on assembly), and
-#     `buffered = true` or `lift = true` bring that footprint back down; and
-#     recipe cores (built against `ArgSource` placeholders) are stored
-#     unmerged, so a recipe and a direct build of the same model can order
-#     their coordinates differently while assembling to the same matrices.
+#     sparsity of a block: each block keeps the nonzero layout its plain form
+#     has, in both storage modes, so repeated references to one variable in a
+#     row share one Jacobian entry and an inlined subexpression spliced at
+#     several sites counts each variable once. `meta.nnzj`/`meta.nnzh` and the
+#     coordinate lists are those of the unmerged model; recipe cores (built
+#     against `ArgSource` placeholders) are stored unmerged, and a recipe and
+#     a direct build of one model agree on them.
 #
 # For a comprehensive example using subexpressions, see the [Distillation Column example](@ref distillation).
 

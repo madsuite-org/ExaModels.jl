@@ -13,6 +13,12 @@ struct Compressor{I}
 end
 @inline (i::Compressor{I})(n) where {I} = @inbounds i.inner[n]
 
+# the compressors a derivative pass uses for element `p` of the block whose
+# SIMDFunction is `f`: the function's own, unless the element carries its
+# source block's (a merged family's `MergedRow`, see merge.jl)
+@inline _comp1(f, p) = f.comp1
+@inline _comp2(f, p) = f.comp2
+
 # `o0`/`o1`/`o2` are running offsets taken from the core's counters, so they are
 # deferred when the core is built against `arg`; `o1step`/`o2step` come from the
 # expression graph's own sparsity and are always concrete.  The offset

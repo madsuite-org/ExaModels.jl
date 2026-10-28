@@ -109,11 +109,12 @@ import ExaModels: instantiate, ArgSource
         @test NLPModels.grad(m, pt) ≈ NLPModels.grad(ref, pt)
         @test NLPModels.cons(m, pt) ≈ NLPModels.cons(ref, pt)
         # The recipe path stores blocks plain while the direct build
-        # family-merges them, and this is a concrete core, where a merged
-        # block keeps one slot per Integer leaf position: `h * x[i] + x[i]`
-        # is one Jacobian entry per row plain and two merged (duplicate
-        # coordinates sum on assembly). The assembled matrices are the
-        # contract; in dynamic storage the counts agree too.
+        # family-merges them; a merged block keeps each source block's own
+        # sparsity (`h * x[i] + x[i]` is one Jacobian entry per row either
+        # way), so the counts agree, and the assembled matrices are the
+        # contract for the values.
+        @test m.meta.nnzj == ref.meta.nnzj
+        @test m.meta.nnzh == ref.meta.nnzh
         _dense(rows, cols, vals, nr, nc) = begin
             A = zeros(nr, nc)
             for (r, c, v) in zip(rows, cols, vals)

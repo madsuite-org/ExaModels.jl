@@ -680,34 +680,18 @@ Performs sparse jacobian evaluation
 """
 function shessian!(y1, y2, f, x, θ, adj1, adj2)
     @simd for k in eachindex(f.itr)
-        @inbounds shessian!(
-            y1,
-            y2,
-            f.f,
-            f.itr[k],
-            x,
-            θ,
-            f.f.comp2,
-            offset2(f, k),
-            adj1,
-            adj2,
-        )
+        @inbounds begin
+            p = f.itr[k]
+            shessian!(y1, y2, f.f, p, x, θ, _comp2(f.f, p), offset2(f, k), adj1, adj2)
+        end
     end
 end
 function shessian!(y1, y2, f, x, θ, adj1s::V, adj2) where {V<:AbstractVector}
     @simd for k in eachindex(f.itr)
-        @inbounds shessian!(
-            y1,
-            y2,
-            f.f,
-            f.itr[k],
-            x,
-            θ,
-            f.f.comp2,
-            offset2(f, k),
-            adj1s[offset0(f, k)],
-            adj2,
-        )
+        @inbounds begin
+            p = f.itr[k]
+            shessian!(y1, y2, f.f, p, x, θ, _comp2(f.f, p), offset2(f, k), adj1s[offset0(f, k)], adj2)
+        end
     end
 end
 

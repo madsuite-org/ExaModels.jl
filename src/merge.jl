@@ -9,11 +9,7 @@
 # the output vectors the way θ reads would).  A later `add_con` / `add_obj`
 # whose tree type matches an existing family appends one segment; the core's
 # type does not change.  All decisions are static: there is no runtime merge
-# heuristic.  In dynamic storage equal-valued Integer leaves of a block share
-# one slot and the sharing pattern is part of the family key (a mismatch
-# starts another family); concrete storage keeps one slot per leaf position so
-# that the family decision stays a function of types (`_slot_pattern`).
-# Stored plain instead: trees containing
+# heuristic.  Stored plain instead: trees containing
 # node kinds outside the hoisting walk (`SumNode`, `ProdNode`, recipe
 # placeholders, registered-function internals), augmentation (`add_con!`)
 # blocks, recipe cores (`nargs > 0`), and pair-headed blocks on device
@@ -21,39 +17,46 @@
 #
 # The slot layout is a function of the tree type (one slot per scalar leaf
 # position), so the merged block's type and all compiled code are identical at
-# any replication count.  Which slots a tree's Integer leaves READ is the
-# family's slot pattern: in dynamic storage leaves holding the same value in
-# the first block read the same slot (`_iv_classes`), which lets two sites
-# that reference the same variable (`x[i+1]` twice) compare `===` in the
-# sparsity probe and share one Jacobian slot, exactly as the plain block did,
-# and the pattern is part of the family key; in concrete storage every leaf
-# position reads its own slot (`_slot_pattern`).  The pattern is carried as
-# data on the iterator, never in a type parameter.  The hoisting walk is
-# three single-purpose dispatch recursions (tree, Integer slots, Float
-# slots); the walk section below says why the split is load-bearing under
-# `juliac --trim`.  A tree relying on ===-shared spliced subtrees (deep
-# `add_expr` chains) still carries one slot per use site; `add_expr(...;
-# lift = true)` is the remedy for such models.
+# any replication count.  Sparsity is the source block's own: each block's
+# nonzero compressors (`comp1`/`comp2`, the leaf-position to nonzero-slot maps
+# its plain form had, computed by the `===` probe over its original tree) and
+# per-row steps travel with its segment and reach the derivative passes
+# through the row element, so two sites that reference the same variable
+# (`x[i+1]` twice) share one Jacobian slot in merged form exactly as they did
+# unmerged, and a family's segments may differ in footprint.  The compressor
+# types are fixed by the tree type (one entry per leaf position), so this
+# costs the family decision nothing: same tree type means merge, in both
+# storage modes.  The hoisting walk is three single-purpose dispatch
+# recursions (tree, Integer slots, Float slots); the walk section below says
+# why the split is load-bearing under `juliac --trim`.
 #
 # Merging is unconditional: there is no off switch, so every core pays the
 # same (statically decided) path and the whole suite exercises merged form.
 
 """
-    MergedRow{K, S, T, D}
+    MergedRow{K, S, T, D, C1, C2}
 
 One row of a merged family: global row offset `o0`, Jacobian/Hessian nonzero
 bases `o1`/`o2`, the `K` hoisted Integer leaves `iv`, the `S` hoisted Float
-leaves `fv` (of type `T`, shared by every row of the segment), and the
-original iterator element `d`.
+leaves `fv` (of type `T`, shared by every row of the segment), the original
+iterator element `d`, and the source block's own nonzero compressors
+`comp1`/`comp2` (shared by every row of the segment).  The derivative passes
+read the compressors from the row (`_comp1`/`_comp2`), never from the
+family's `SIMDFunction`, so each segment keeps the sparsity its plain block
+had.
 """
-struct MergedRow{K, S, T, D}
+struct MergedRow{K, S, T, D, C1, C2}
     o0::Int
     o1::Int
     o2::Int
     iv::NTuple{K, Int}
     fv::NTuple{S, T}
     d::D
+    comp1::C1
+    comp2::C2
 end
+@inline _comp1(f, p::MergedRow) = getfield(p, :comp1)
+@inline _comp2(f, p::MergedRow) = getfield(p, :comp2)
 
 const _MROW_IV = 4  # field position of `iv` in MergedRow
 const _MROW_FV = 5  # field position of `fv` in MergedRow
@@ -62,17 +65,26 @@ const _MROW_D = 6  # field position of `d` in MergedRow
 
 # ── merged iterators ─────────────────────────────────────────────────────────
 
-struct MergedSeg{K, S, T, I}
+struct MergedSeg{K, S, T, I, C1, C2}
     itr::I
     o0::Int
     o1::Int
     o2::Int
     iv::NTuple{K, Int}
     fv::NTuple{S, T}
+    comp1::C1
+    comp2::C2
+    o1step::Int
+    o2step::Int
 end
+# the segment a block contributes: its own offsets, leaves, compressors and steps
+@inline _mergedseg(::Type{T}, f, pars, ivs::NTuple{K, Int}, fvt::NTuple{S, T}) where {K, S, T} =
+    MergedSeg{K, S, T, typeof(pars), typeof(f.comp1), typeof(f.comp2)}(
+        pars, f.o0, f.o1, f.o2, ivs, fvt, f.comp1, f.comp2, f.o1step, f.o2step
+    )
 
 """
-    SegmentedItr{K, S, T, D, I, RF}
+    SegmentedItr{K, S, T, D, I, RF, C1, C2}
 
 Lazy merged iterator for affine-offset families: one `MergedSeg` per source
 block (holding the iterator `_adapt_gen` produced for it), rows materialized
@@ -81,34 +93,34 @@ later arrivals.  Appending copies the segment containers (`_merged_append_itr`)
 so earlier cores and models keep the iterator they had; the copy changes no
 types, so the core's type is stable as a family grows.
 """
-struct SegmentedItr{K, S, T, D, I, RF} <: AbstractVector{MergedRow{K, S, T, D}}
+struct SegmentedItr{K, S, T, D, I, RF, C1, C2} <: AbstractVector{MergedRow{K, S, T, D, C1, C2}}
     rep::RF
-    cls::NTuple{K, Int}         # Integer-slot sharing pattern (`_iv_classes`), part of the family key
-    segs::Vector{MergedSeg{K, S, T, I}}
+    segs::Vector{MergedSeg{K, S, T, I, C1, C2}}
     offs::Vector{Int}           # cumulative row counts
     seglen::Int                 # > 0 when all segments have equal length (copy-on-append: never mutated)
-    o1step::Int
-    o2step::Int
 end
 Base.size(s::SegmentedItr) = (isempty(s.offs) ? 0 : (@inbounds s.offs[end]),)
 Base.IndexStyle(::Type{<:SegmentedItr}) = IndexLinear()
 @inline _segof(s::SegmentedItr, i::Int) =
     s.seglen > 0 ? div(i - 1, s.seglen) + 1 : searchsortedfirst(s.offs, i)
-@inline function Base.getindex(s::SegmentedItr{K, S, T, D}, i::Int) where {K, S, T, D}
+@inline function Base.getindex(s::SegmentedItr, i::Int)
     j = _segof(s, i)
     seg = @inbounds s.segs[j]
     base = j == 1 ? 0 : @inbounds s.offs[j - 1]
-    r = i - base
-    return MergedRow{K, S, T, D}(
+    return _segrow(s, seg, i - base)
+end
+# row `r` of segment `seg` (1-based within the segment)
+@inline function _segrow(s::SegmentedItr, seg, r::Int)
+    return eltype(s)(
         seg.o0 + r,
-        seg.o1 + s.o1step * (r - 1),
-        seg.o2 + s.o2step * (r - 1),
-        seg.iv, seg.fv, (@inbounds seg.itr[r]),
+        seg.o1 + seg.o1step * (r - 1),
+        seg.o2 + seg.o2step * (r - 1),
+        seg.iv, seg.fv, (@inbounds seg.itr[r]), seg.comp1, seg.comp2,
     )
 end
 
 """
-    MergedRows{K, S, T, D, RF}
+    MergedRows{K, S, T, D, RF, C1, C2}
 
 Materialized merged iterator, used on the host for pair-headed families
 (their row targets are data-driven, not affine) and, on device backends, as
@@ -116,10 +128,9 @@ the element array every merged block is finalized into.  Growing a family
 copies the row vector (`_merged_append_itr`), so earlier cores and models keep
 the rows they had.
 """
-struct MergedRows{K, S, T, D, RF} <: AbstractVector{MergedRow{K, S, T, D}}
+struct MergedRows{K, S, T, D, RF, C1, C2} <: AbstractVector{MergedRow{K, S, T, D, C1, C2}}
     rep::RF
-    cls::NTuple{K, Int}         # as in SegmentedItr
-    rows::Vector{MergedRow{K, S, T, D}}
+    rows::Vector{MergedRow{K, S, T, D, C1, C2}}
 end
 Base.size(m::MergedRows) = Base.size(m.rows)
 Base.IndexStyle(::Type{<:MergedRows}) = IndexLinear()
@@ -129,7 +140,7 @@ const _MergedItr = Union{SegmentedItr, MergedRows}
 
 _mrep(s::SegmentedItr) = s.rep
 _mrep(m::MergedRows) = m.rep
-_mrow_dtype(::Type{MergedRow{K, S, T, D}}) where {K, S, T, D} = D
+_mrow_dtype(::Type{MergedRow{K, S, T, D, C1, C2}}) where {K, S, T, D, C1, C2} = D
 
 # ── per-row offsets for merged blocks ────────────────────────────────────────
 @inbounds @inline offset0(f::F, itr::AbstractVector{<:MergedRow}, i, dims) where {F <: SIMDFunction} =
@@ -228,41 +239,40 @@ _short_type(::FvRef) = "FvRef"
 # never in type parameters), everything else is rebuilt as-is.  Slot offsets
 # travel DOWN as plain Int arguments and subtree slot COUNTS come back up in
 # the same recursion, so no separate counting traversal is needed; the return
-# type stays small (a node plus two Ints) at any depth.
-# `cls` is the Integer-slot sharing pattern (`_iv_classes`): the leaf at
-# position p reads slot cls[p], which is the first position holding the same
-# value, so equal-valued leaves become identical `IvRef`s.
-@inline function _stree(a::Node1{F, I}, io::Int, fo::Int, cls) where {F, I}
-    n, k, s = _stree(getfield(a, :inner), io, fo, cls)
+# type stays small (a node plus two Ints) at any depth.  Every leaf position
+# reads its own slot; which positions share a NONZERO is the segment's
+# compressors' business, not the tree's.
+@inline function _stree(a::Node1{F, I}, io::Int, fo::Int) where {F, I}
+    n, k, s = _stree(getfield(a, :inner), io, fo)
     return Node1{F, typeof(n)}(n), k, s
 end
-@inline function _stree(a::Node2{F, I1, I2}, io::Int, fo::Int, cls) where {F, I1, I2}
-    n1, k1, s1 = _stree(getfield(a, :inner1), io, fo, cls)
-    n2, k2, s2 = _stree(getfield(a, :inner2), io + k1, fo + s1, cls)
+@inline function _stree(a::Node2{F, I1, I2}, io::Int, fo::Int) where {F, I1, I2}
+    n1, k1, s1 = _stree(getfield(a, :inner1), io, fo)
+    n2, k2, s2 = _stree(getfield(a, :inner2), io + k1, fo + s1)
     return Node2{F, typeof(n1), typeof(n2)}(n1, n2), k1 + k2, s1 + s2
 end
-@inline function _stree(a::Var, io::Int, fo::Int, cls)
-    n, k, s = _stree(getfield(a, :i), io, fo, cls)
+@inline function _stree(a::Var, io::Int, fo::Int)
+    n, k, s = _stree(getfield(a, :i), io, fo)
     return Var{typeof(n)}(n), k, s
 end
-@inline function _stree(a::ParameterNode, io::Int, fo::Int, cls)
-    n, k, s = _stree(getfield(a, :i), io, fo, cls)
+@inline function _stree(a::ParameterNode, io::Int, fo::Int)
+    n, k, s = _stree(getfield(a, :i), io, fo)
     return ParameterNode{typeof(n)}(n), k, s
 end
-@inline function _stree(a::DataIndexed{I, J}, io::Int, fo::Int, cls) where {I, J}
-    n, k, s = _stree(getfield(a, :inner), io, fo, cls)
+@inline function _stree(a::DataIndexed{I, J}, io::Int, fo::Int) where {I, J}
+    n, k, s = _stree(getfield(a, :inner), io, fo)
     return DataIndexed(n, J), k, s
 end
-@inline _stree(a::DataSource, io::Int, fo::Int, cls) = DataIndexed(DataSource(), _MROW_D), 0, 0
-@inline _stree(a::Constant, io::Int, fo::Int, cls) = a, 0, 0
-@inline _stree(a::VarSource, io::Int, fo::Int, cls) = a, 0, 0
-@inline _stree(a::ParameterSource, io::Int, fo::Int, cls) = a, 0, 0
-@inline _stree(a::Val, io::Int, fo::Int, cls) = a, 0, 0
-@inline _stree(a::Null{Nothing}, io::Int, fo::Int, cls) = a, 0, 0
+@inline _stree(a::DataSource, io::Int, fo::Int) = DataIndexed(DataSource(), _MROW_D), 0, 0
+@inline _stree(a::Constant, io::Int, fo::Int) = a, 0, 0
+@inline _stree(a::VarSource, io::Int, fo::Int) = a, 0, 0
+@inline _stree(a::ParameterSource, io::Int, fo::Int) = a, 0, 0
+@inline _stree(a::Val, io::Int, fo::Int) = a, 0, 0
+@inline _stree(a::Null{Nothing}, io::Int, fo::Int) = a, 0, 0
 # a Null's value is a scalar field like any other: hoist it
-@inline _stree(a::Null{T}, io::Int, fo::Int, cls) where {T <: Real} = FvRef(fo + 1), 0, 1
-@inline _stree(a::T, io::Int, fo::Int, cls) where {T <: Integer} = IvRef(@inbounds cls[io + 1]), 1, 0
-@inline _stree(a::T, io::Int, fo::Int, cls) where {T <: Real} = FvRef(fo + 1), 0, 1
+@inline _stree(a::Null{T}, io::Int, fo::Int) where {T <: Real} = FvRef(fo + 1), 0, 1
+@inline _stree(a::T, io::Int, fo::Int) where {T <: Integer} = IvRef(io + 1), 1, 0
+@inline _stree(a::T, io::Int, fo::Int) where {T <: Real} = FvRef(fo + 1), 0, 1
 
 # the slots.  Concatenating a tuple per node would mint one tuple TYPE per
 # slot, and inference pays for each, so
@@ -322,36 +332,8 @@ end
     return ntuple(i -> (@inbounds out[i]), Val(S))
 end
 
-# Integer-slot sharing pattern of a block: entry p is the first slot whose
-# value equals slot p's, in slot order. Two blocks of one tree type merge only
-# when their patterns agree, so every row of a family satisfies the sharing its
-# merged tree encodes. The tuple's length is the type-level slot count, so this
-# is inferable; only the entries depend on values.
-@inline function _iv_classes(ivs::NTuple{K, Int}) where {K}
-    return ntuple(k -> _first_equal(ivs, k), Val(K))
-end
-@inline function _first_equal(ivs, k::Int)
-    j = 1
-    @inbounds while j < k && ivs[j] != ivs[k]
-        j += 1
-    end
-    return j
-end
-
-# The slot pattern a block is hoisted with depends on the core's block storage.
-# Dynamic (`Vector{Any}`) storage shares slots between equal-valued leaves,
-# and a block whose pattern differs from its family's starts a new family (the
-# block list's type is erased, so that costs nothing). Concrete (tuple)
-# storage keeps one slot per leaf position: there the family decision must be
-# a function of types alone, or the core's type would depend on leaf values
-# and model builders would no longer infer (which `juliac --trim=safe`
-# requires), and a block with a different pattern can neither share the
-# family's merged tree nor start a second family without changing that type.
-@inline _slot_pattern(::Vector{Any}, ivs::NTuple{K, Int}) where {K} = _iv_classes(ivs)
-@inline _slot_pattern(::Tuple, ivs::NTuple{K, Int}) where {K} = ntuple(identity, Val(K))
-
-@inline function _shoist(::Type{T}, b, cls) where {T}
-    return first(_stree(b, 0, 0, cls)), _siv(b), _sfv(T, b)
+@inline function _shoist(::Type{T}, b) where {T}
+    return first(_stree(b, 0, 0)), _siv(b), _sfv(T, b)
 end
 
 # ── block kind ───────────────────────────────────────────────────────────────
@@ -387,8 +369,6 @@ end
 @inline _same_family(a::Objective{F2, I}, f::F, ::Type{E}) where {F2, F, E, I <: _MergedItr} =
     typeof(_mrep(getfield(a, :itr))) == F && _mrow_dtype(eltype(getfield(a, :itr))) == E
 # same Integer-slot sharing pattern: a value-level test, consulted only by the
-# dynamic (`Vector{Any}`) family search (see `_slot_pattern`)
-@inline _same_cls(a, cls) = getfield(getfield(a, :itr), :cls) == cls
 
 # ── block creation and appends ───────────────────────────────────────────────
 
@@ -399,76 +379,78 @@ function _row_o0s(f, pars, dims)
     return Int[offset0(h, r) for r in 1:length(pars)]
 end
 
-# First block of a family: a one-segment merged block.  The merged tree's
-# sparsity (`mf.o1step`/`o2step`) is what the caller accounts nnz with, so
-# the family's footprint is fixed by the type from the start and later
-# arrivals can never mismatch.  Segment bases come from the arriving block's
-# own counters (f.o0/f.o1/f.o2 were taken from the core at this add).
-@inline function _merged_first(::Type{T}, kind, f, pars, dims, tag, backend, cls) where {T}
+# First block of a family: a one-segment merged block.  The segment's bases,
+# compressors and steps are the arriving block's own (f.o0/f.o1/f.o2 were
+# taken from the core at this add; f.comp1/f.comp2/f.o1step/f.o2step came
+# out of the sparsity probe over its original tree), so the caller accounts
+# nnz with the block's own steps, as it would have unmerged.
+@inline function _merged_first(::Type{T}, kind, f, pars, dims, tag, backend) where {T}
     rep = f
-    tree, ivs, fvt = _shoist(T, _family_tree(rep), cls)
-    mf = _simdfunction(T, tree, 0, 0, 0)
-    itr = _merged_first_itr(
-        T, getfield(f, :f), backend, rep, mf, f, pars, dims,
-        ivs, fvt, cls
-    )
-    return _mkblock(kind, mf, itr, length(pars), tag), mf
+    tree, ivs, fvt = _shoist(T, _family_tree(rep))
+    mf = _family_function(T, tree, rep)
+    itr = _merged_first_itr(T, getfield(f, :f), backend, rep, f, pars, dims, ivs, fvt)
+    return _mkblock(kind, mf, itr, length(pars), tag)
 end
+
+# The family's `SIMDFunction`: the merged tree, with every affine field zero.
+# The derivative passes take a row's nonzero bases and compressors from the
+# row element, never from here; the compressor fields hold the first block's
+# (the right type, and the right values for a one-segment family), the steps
+# are zero so that a generic affine reader would address slot 0 rather than
+# a plausible wrong one.  The probe over the merged tree runs once per family
+# and serves one purpose: a source block's compressors address leaf positions
+# of ITS tree, and the check confirms the hoisted tree has the same layout.
+@inline function _family_function(::Type{T}, tree, rep) where {T}
+    probe = _simdfunction(T, tree, 0, 0, 0)
+    _same_layout(probe.comp1, rep.comp1)
+    _same_layout(probe.comp2, rep.comp2)
+    return SIMDFunction(probe.f, rep.comp1, rep.comp2, 0, 0, 0, 0, 0)
+end
+@inline _same_layout(::C, ::C) where {C} = nothing
+# one literal: a `*` over many string pieces is a vararg call that `juliac --trim`
+# cannot resolve, and this error sits on the model-building path
+_same_layout(a, b) = error("internal error: a merged tree's leaf layout differs from its source block's")
 
 # a plain (non-pair) head gets the lazy segmented iterator on every backend;
 # a device backend materializes it into a per-segment device layout at
 # finalization (`DeviceSegItr`)
-@inline function _merged_first_itr(
-        ::Type{T}, head, backend, rep, mf, f, pars, dims,
-        ivs, fvt, cls
-    ) where {T}
+@inline function _merged_first_itr(::Type{T}, head, backend, rep, f, pars, dims, ivs, fvt) where {T}
+    seg = _mergedseg(T, f, pars, ivs, fvt)
     K = length(ivs)
     S = length(fvt)
-    segs = MergedSeg{K, S, T, typeof(pars)}[MergedSeg{K, S, T, typeof(pars)}(pars, f.o0, f.o1, f.o2, ivs, fvt)]
-    return SegmentedItr{K, S, T, eltype(pars), typeof(pars), typeof(rep)}(
-        rep, cls, segs, Int[length(pars)], length(pars), mf.o1step, mf.o2step
+    return SegmentedItr{K, S, T, eltype(pars), typeof(pars), typeof(rep), typeof(f.comp1), typeof(f.comp2)}(
+        rep, [seg], Int[length(pars)], length(pars)
     )
 end
 # pair heads (data-driven row targets) materialize rows; they merge on the
 # host only (`_merge_allowed`)
-@inline _merged_first_itr(
-    ::Type{T}, head::Pair, ::Nothing, rep, mf, f, pars, dims,
-    ivs, fvt, cls
-) where {T} =
-    _merged_rows(T, rep, mf, f, pars, dims, ivs, fvt, cls)
+@inline _merged_first_itr(::Type{T}, head::Pair, ::Nothing, rep, f, pars, dims, ivs, fvt) where {T} =
+    _merged_rows(T, rep, f, pars, dims, ivs, fvt)
 
-@inline function _merged_rows(::Type{T}, rep, mf, f, pars, dims, ivs, fvt, cls) where {T}
-    K = length(ivs)
-    S = length(fvt)
-    o0s = _row_o0s(f, pars, dims)
+@inline function _merged_rows(::Type{T}, rep, f, pars, dims, ivs, fvt) where {T}
     itrc = collect(pars)
-    rows = [
-        MergedRow{K, S, T, eltype(itrc)}(
-                o0s[r], f.o1 + mf.o1step * (r - 1),
-                f.o2 + mf.o2step * (r - 1), ivs, fvt, itrc[r]
+    rows = _block_rows(T, f, pars, dims, ivs, fvt, itrc)
+    return MergedRows{length(ivs), length(fvt), T, eltype(itrc), typeof(rep), typeof(f.comp1), typeof(f.comp2)}(rep, rows)
+end
+# the materialized rows of one block, each with the block's own bases,
+# compressors and steps
+function _block_rows(::Type{T}, f, pars, dims, ivs::NTuple{K, Int}, fvt::NTuple{S, T}, itrc) where {K, S, T}
+    o0s = _row_o0s(f, pars, dims)
+    return [
+        MergedRow{K, S, T, eltype(itrc), typeof(f.comp1), typeof(f.comp2)}(
+                o0s[r], f.o1 + f.o1step * (r - 1), f.o2 + f.o2step * (r - 1),
+                ivs, fvt, itrc[r], f.comp1, f.comp2
             ) for r in eachindex(itrc)
     ]
-    return MergedRows{K, S, T, eltype(itrc), typeof(rep)}(rep, cls, rows)
 end
 
 # A later arrival: extract in the representative's layout, append one
-# segment.  nnz bases again come from the arriving block's own counters.
-# one literal: a `*` over many string pieces is a vararg call that `juliac --trim`
-# cannot resolve, and this error sits on the model-building path
-const _CLS_MISMATCH_MSG = "internal error: a block reached a family whose Integer-slot pattern differs from its own"
-
-@inline function _merged_append(::Type{T}, prev, f, pars, dims, tag, cls) where {T}
+# segment.  Bases, compressors and steps are again the arriving block's own.
+@inline function _merged_append(::Type{T}, prev, f, pars, dims, tag) where {T}
     # same family means same tree type, so the arriving tree's own walk uses
-    # the representative's slot layout by construction; the slot pattern
-    # agrees by construction too (identity in concrete storage, and the dynamic
-    # family search compares it), so the family's merged tree never reads one
-    # slot for two leaves that differ in this block
-    cls == getfield(getfield(prev, :itr), :cls) || error(_CLS_MISMATCH_MSG)
-    _, ivs, fvt = _shoist(T, _family_tree(f), cls)
-    return _merged_append_itr(
-        getfield(prev, :itr), prev, f, pars, dims, tag,
-        ivs, fvt
-    )
+    # the representative's slot layout by construction
+    _, ivs, fvt = _shoist(T, _family_tree(f))
+    return _merged_append_itr(getfield(prev, :itr), prev, f, pars, dims, tag, ivs, fvt)
 end
 
 # Copy-on-append: the core API is persistent, so the previous core — and any
@@ -478,30 +460,20 @@ end
 # see each other's segments. The copy is O(#segments) per add, so the cost
 # still scales with the number of blocks, and the iterator's type does not
 # change, so the core's type stays stable as a family grows.
-@inline function _merged_append_itr(m::SegmentedItr, prev, f, pars, dims, tag, ivs, fvt)
+@inline function _merged_append_itr(m::SegmentedItr{K, S, T}, prev, f, pars, dims, tag, ivs, fvt) where {K, S, T}
     segs = copy(m.segs)
     offs = copy(m.offs)
-    push!(segs, eltype(segs)(pars, f.o0, f.o1, f.o2, ivs, fvt))
+    push!(segs, _mergedseg(T, f, pars, ivs, fvt))
     newlen = length(pars)
     push!(offs, offs[end] + newlen)
     seglen = (m.seglen == newlen) ? newlen : 0
-    m2 = typeof(m)(m.rep, m.cls, segs, offs, seglen, m.o1step, m.o2step)
+    m2 = typeof(m)(m.rep, segs, offs, seglen)
     return _rewrap(prev, prev.f, m2, offs[end], _blocktag(prev))   # the family keeps its first block's tag
 end
-@inline function _merged_append_itr(m::MergedRows, prev, f, pars, dims, tag, ivs, fvt)
-    mf = prev.f
-    o0s = _row_o0s(f, pars, dims)
-    itrc = collect(pars)
+@inline function _merged_append_itr(m::MergedRows{K, S, T}, prev, f, pars, dims, tag, ivs, fvt) where {K, S, T}
     rows = copy(m.rows)
-    for r in eachindex(itrc)
-        push!(
-            rows, eltype(rows)(
-                o0s[r], f.o1 + mf.o1step * (r - 1),
-                f.o2 + mf.o2step * (r - 1), ivs, fvt, itrc[r]
-            )
-        )
-    end
-    m2 = typeof(m)(m.rep, m.cls, rows)
+    Base.append!(rows, _block_rows(T, f, pars, dims, ivs, fvt, collect(pars)))   # ExaModels has its own `append!`
+    m2 = typeof(m)(m.rep, rows)
     return _rewrap(prev, prev.f, m2, length(rows), _blocktag(prev))
 end
 
@@ -515,10 +487,9 @@ end
     _mergeable(typeof(f.f)) || return nothing
     _merge_allowed(getfield(c, :nargs), getfield(f, :f), c.backend) || return nothing
     _merge_itr_ok(pars) || return nothing
-    cls = _slot_pattern(c.cons, _siv(_family_tree(f)))
     return _merge_result(
-        _smerge(T, Constraint, c.cons, f, pars, dims, tag, eltype(pars), cls),
-        T, Constraint, c, c.cons, f, pars, dims, tag, cls
+        _smerge(T, Constraint, c.cons, f, pars, dims, tag, eltype(pars)),
+        T, Constraint, c, c.cons, f, pars, dims, tag
     )
 end
 
@@ -529,10 +500,9 @@ end
     _merge_allowed(getfield(c, :nargs), getfield(f, :f), c.backend) || return nothing
     _merge_itr_ok(pars) || return nothing
     dims = (length(pars),)
-    cls = _slot_pattern(c.obj, _siv(_family_tree(f)))
     return _merge_result(
-        _smerge(T, Objective, c.obj, f, pars, dims, nothing, eltype(pars), cls),
-        T, Objective, c, c.obj, f, pars, dims, nothing, cls
+        _smerge(T, Objective, c.obj, f, pars, dims, nothing, eltype(pars)),
+        T, Objective, c, c.obj, f, pars, dims, nothing
     )
 end
 
@@ -544,11 +514,12 @@ end
 @inline _merge_allowed(::Val{0}, head::Pair, backend) = false
 @inline _merge_allowed(nargs, head, backend) = false
 
-# an existing family absorbed the block, or (on `nothing`) it starts one
-@inline _merge_result(r::Tuple, ::Type, kind, c, blocks, f, pars, dims, tag, cls) = r
-@inline function _merge_result(::Nothing, ::Type{T}, kind, c, blocks, f, pars, dims, tag, cls) where {T}
-    b, mf = _merged_first(T, kind, f, pars, dims, tag, c.backend, cls)
-    return _prep(blocks, b), mf.o1step, mf.o2step
+# an existing family absorbed the block, or (on `nothing`) it starts one;
+# either way the nnz steps are the block's own
+@inline _merge_result(r, ::Type, kind, c, blocks, f, pars, dims, tag) = r, f.o1step, f.o2step
+@inline function _merge_result(::Nothing, ::Type{T}, kind, c, blocks, f, pars, dims, tag) where {T}
+    b = _merged_first(T, kind, f, pars, dims, tag, c.backend)
+    return _prep(blocks, b), f.o1step, f.o2step
 end
 
 @inline _merge_itr_ok(pars) = _merge_itr_ok(Base.IteratorSize(pars))
@@ -556,31 +527,27 @@ end
 @inline _merge_itr_ok(::Base.IteratorSize) = false
 
 # scan + replace in one recursion; typed for tuple storage, dynamic for the
-# Vector{Any} default; the same fold either way
-@inline _smerge(::Type{T}, kind, cons::Tuple{}, f, pars, dims, tag, ::Type{E}, cls) where {T, E} = nothing
-@inline function _smerge(::Type{T}, kind, cons::Tuple, f, pars, dims, tag, ::Type{E}, cls) where {T, E}
+# Vector{Any} default; the same fold either way.  Returns the updated block
+# list, or `nothing` when no family took the block.
+@inline _smerge(::Type{T}, kind, cons::Tuple{}, f, pars, dims, tag, ::Type{E}) where {T, E} = nothing
+@inline function _smerge(::Type{T}, kind, cons::Tuple, f, pars, dims, tag, ::Type{E}) where {T, E}
     b = first(cons)
     rest = Base.tail(cons)
     if _same_family(b, f, E) && _same_tag(_blocktag(b), tag) &&
             _appendable(getfield(b, :itr), pars)
-        nb = _merged_append(T, b, f, pars, dims, tag, cls)
-        mf = getfield(nb, :f)
-        return (nb, rest...), mf.o1step, mf.o2step
+        return (_merged_append(T, b, f, pars, dims, tag), rest...)
     end
-    r = _smerge(T, kind, rest, f, pars, dims, tag, E, cls)
+    r = _smerge(T, kind, rest, f, pars, dims, tag, E)
     r === nothing && return nothing
-    ncons, s1, s2 = r
-    return (b, ncons...), s1, s2
+    return (b, r...)
 end
-function _smerge(::Type{T}, kind, cons::Vector{Any}, f, pars, dims, tag, ::Type{E}, cls) where {T, E}
+function _smerge(::Type{T}, kind, cons::Vector{Any}, f, pars, dims, tag, ::Type{E}) where {T, E}
     for (i, b) in enumerate(cons)
-        if _same_family(b, f, E) && _same_cls(b, cls) && _same_tag(_blocktag(b), tag) &&
+        if _same_family(b, f, E) && _same_tag(_blocktag(b), tag) &&
                 _appendable(getfield(b, :itr), pars)
-            nb = _merged_append(T, b, f, pars, dims, tag, cls)
             out = copy(cons)
-            out[i] = nb
-            mf = getfield(nb, :f)
-            return out, mf.o1step, mf.o2step
+            out[i] = _merged_append(T, b, f, pars, dims, tag)
+            return out
         end
     end
     return nothing
@@ -612,19 +579,22 @@ else on the device; a `MergedRow` per row would carry its own copy of the `K`
 Integer and `S` Float leaves (880 bytes per row against 96 at `K = 94`).
 """
 struct DeviceSegItr{
-        K, S, T, D, VI <: AbstractVector{Int}, VIV <: AbstractVector{NTuple{K, Int}},
-        VFV <: AbstractVector{NTuple{S, T}}, VD <: AbstractVector{D},
-    } <: AbstractVector{MergedRow{K, S, T, D}}
+        K, S, T, D, C1, C2, VI <: AbstractVector{Int}, VIV <: AbstractVector{NTuple{K, Int}},
+        VFV <: AbstractVector{NTuple{S, T}}, VC1 <: AbstractVector{C1}, VC2 <: AbstractVector{C2},
+        VD <: AbstractVector{D},
+    } <: AbstractVector{MergedRow{K, S, T, D, C1, C2}}
     seg_o0::VI
     seg_o1::VI
     seg_o2::VI
     seg_iv::VIV
     seg_fv::VFV
+    seg_comp1::VC1
+    seg_comp2::VC2
+    seg_o1step::VI
+    seg_o2step::VI
     offs::VI                    # cumulative row counts, one per segment
     d::VD                       # all segments' iterator elements, in order
     seglen::Int                 # > 0 when all segments have equal length
-    o1step::Int
-    o2step::Int
     n::Int
 end
 Base.size(s::DeviceSegItr) = (s.n,)
@@ -640,31 +610,33 @@ Base.IndexStyle(::Type{<:DeviceSegItr}) = IndexLinear()
     end
     return lo
 end
-@inline function Base.getindex(s::DeviceSegItr{K, S, T, D}, i::Int) where {K, S, T, D}
+@inline function Base.getindex(s::DeviceSegItr, i::Int)
     j = _segof(s, i)
     base = j == 1 ? 0 : @inbounds s.offs[j - 1]
     r = i - base
-    return @inbounds MergedRow{K, S, T, D}(
+    return @inbounds eltype(s)(
         s.seg_o0[j] + r,
-        s.seg_o1[j] + s.o1step * (r - 1),
-        s.seg_o2[j] + s.o2step * (r - 1),
-        s.seg_iv[j], s.seg_fv[j], s.d[i],
+        s.seg_o1[j] + s.seg_o1step[j] * (r - 1),
+        s.seg_o2[j] + s.seg_o2step[j] * (r - 1),
+        s.seg_iv[j], s.seg_fv[j], s.d[i], s.seg_comp1[j], s.seg_comp2[j],
     )
 end
 # kernels receive the device arrays through Adapt (KernelAbstractions adapts
 # every kernel argument); the Int fields pass through. The parameters are
 # written out: with no Float slots the empty `seg_fv` eltype leaves `T`
 # undetermined for the implicit constructor.
-@inline function _devsegitr(K::Int, S::Int, ::Type{T}, ::Type{D}, o0, o1, o2, iv, fv, offs, d, seglen, o1step, o2step, n) where {T, D}
-    return DeviceSegItr{K, S, T, D, typeof(o0), typeof(iv), typeof(fv), typeof(d)}(
-        o0, o1, o2, iv, fv, offs, d, seglen, o1step, o2step, n,
+@inline function _devsegitr(K::Int, S::Int, ::Type{T}, ::Type{D}, o0, o1, o2, iv, fv, c1, c2, s1, s2, offs, d, seglen, n) where {T, D}
+    return DeviceSegItr{K, S, T, D, eltype(c1), eltype(c2), typeof(o0), typeof(iv), typeof(fv), typeof(c1), typeof(c2), typeof(d)}(
+        o0, o1, o2, iv, fv, c1, c2, s1, s2, offs, d, seglen, n,
     )
 end
 function Adapt.adapt_structure(to, s::DeviceSegItr{K, S, T, D}) where {K, S, T, D}
     return _devsegitr(
         K, S, T, D, Adapt.adapt(to, s.seg_o0), Adapt.adapt(to, s.seg_o1), Adapt.adapt(to, s.seg_o2),
-        Adapt.adapt(to, s.seg_iv), Adapt.adapt(to, s.seg_fv), Adapt.adapt(to, s.offs), Adapt.adapt(to, s.d),
-        s.seglen, s.o1step, s.o2step, s.n,
+        Adapt.adapt(to, s.seg_iv), Adapt.adapt(to, s.seg_fv),
+        Adapt.adapt(to, s.seg_comp1), Adapt.adapt(to, s.seg_comp2),
+        Adapt.adapt(to, s.seg_o1step), Adapt.adapt(to, s.seg_o2step),
+        Adapt.adapt(to, s.offs), Adapt.adapt(to, s.d), s.seglen, s.n,
     )
 end
 
@@ -679,28 +651,31 @@ elements `d` are a device array. A per-thread load of `K` Integer leaves from
 a segment table (the [`DeviceSegItr`](@ref) layout) cost the COPS dirichlet
 PDE block (`K = 94`) about 2x in `jac_coord!`/`hess_coord!` against main.
 """
-struct DeviceSeg1Itr{K, S, T, D, VD <: AbstractVector{D}} <: AbstractVector{MergedRow{K, S, T, D}}
+struct DeviceSeg1Itr{K, S, T, D, C1, C2, VD <: AbstractVector{D}} <: AbstractVector{MergedRow{K, S, T, D, C1, C2}}
     o0::Int
     o1::Int
     o2::Int
     iv::NTuple{K, Int}
     fv::NTuple{S, T}
     d::VD
+    comp1::C1
+    comp2::C2
     o1step::Int
     o2step::Int
     n::Int
 end
 Base.size(s::DeviceSeg1Itr) = (s.n,)
 Base.IndexStyle(::Type{<:DeviceSeg1Itr}) = IndexLinear()
-@inline function Base.getindex(s::DeviceSeg1Itr{K, S, T, D}, i::Int) where {K, S, T, D}
-    return @inbounds MergedRow{K, S, T, D}(
+@inline function Base.getindex(s::DeviceSeg1Itr, i::Int)
+    return @inbounds eltype(s)(
         s.o0 + i, s.o1 + s.o1step * (i - 1), s.o2 + s.o2step * (i - 1), s.iv, s.fv, s.d[i],
+        s.comp1, s.comp2,
     )
 end
-@inline _devseg1itr(::Type{T}, ::Type{D}, o0, o1, o2, iv::NTuple{K, Int}, fv::NTuple{S, T}, d, o1step, o2step, n) where {K, S, T, D} =
-    DeviceSeg1Itr{K, S, T, D, typeof(d)}(o0, o1, o2, iv, fv, d, o1step, o2step, n)
+@inline _devseg1itr(::Type{T}, ::Type{D}, o0, o1, o2, iv::NTuple{K, Int}, fv::NTuple{S, T}, d, c1, c2, o1step, o2step, n) where {K, S, T, D} =
+    DeviceSeg1Itr{K, S, T, D, typeof(c1), typeof(c2), typeof(d)}(o0, o1, o2, iv, fv, d, c1, c2, o1step, o2step, n)
 Adapt.adapt_structure(to, s::DeviceSeg1Itr{K, S, T, D}) where {K, S, T, D} =
-    _devseg1itr(T, D, s.o0, s.o1, s.o2, s.iv, s.fv, Adapt.adapt(to, s.d), s.o1step, s.o2step, s.n)
+    _devseg1itr(T, D, s.o0, s.o1, s.o2, s.iv, s.fv, Adapt.adapt(to, s.d), s.comp1, s.comp2, s.o1step, s.o2step, s.n)
 
 const _DeviceMergedItr = Union{DeviceSegItr, DeviceSeg1Itr}
 # host copy for the host-side passes that read every block's rows
@@ -720,7 +695,7 @@ function _materialize_mergeditr(backend, s::SegmentedItr{K, S, T, D}) where {K, 
         dd = convert_array(vec(collect(D, seg.itr)), backend)   # may rewrite Float64 inside D (Metal)
         return _devseg1itr(
             T, eltype(dd), seg.o0, seg.o1, seg.o2, seg.iv, _fvt(T, seg.fv, backend),
-            dd, s.o1step, s.o2step, length(s),
+            dd, seg.comp1, seg.comp2, seg.o1step, seg.o2step, length(s),
         )
     end
     cv = v -> convert_array(v, backend)
@@ -733,7 +708,9 @@ function _materialize_mergeditr(backend, s::SegmentedItr{K, S, T, D}) where {K, 
         K, S, T, eltype(dd),
         cv(Int[seg.o0 for seg in segs]), cv(Int[seg.o1 for seg in segs]), cv(Int[seg.o2 for seg in segs]),
         cv(NTuple{K, Int}[seg.iv for seg in segs]), cv(NTuple{S, T}[seg.fv for seg in segs]),
-        cv(copy(s.offs)), dd, s.seglen, s.o1step, s.o2step, length(s),
+        cv([seg.comp1 for seg in segs]), cv([seg.comp2 for seg in segs]),
+        cv(Int[seg.o1step for seg in segs]), cv(Int[seg.o2step for seg in segs]),
+        cv(copy(s.offs)), dd, s.seglen, length(s),
     )
 end
 _materialize_mergeditr(backend, m::MergedRows) = convert_array(m.rows, backend)
@@ -800,7 +777,7 @@ _family_segments(::MergedRows) = throw(
     ArgumentError("a merged pair-headed block (`add_con(c, i => expr for ...)`) cannot be expanded into its source blocks"),
 )
 
-_mrow_T(::Type{MergedRow{K, S, T, D}}) where {K, S, T, D} = T
+_mrow_T(::Type{MergedRow{K, S, T, D, C1, C2}}) where {K, S, T, D, C1, C2} = T
 _is_family(b) = false
 _is_family(::Constraint{F, I}) where {F, I <: Union{_MergedItr, _DeviceMergedItr}} = true
 _is_family(::Objective{F, I}) where {F, I <: Union{_MergedItr, _DeviceMergedItr}} = true
@@ -834,15 +811,8 @@ function sjacobian!(y1, y2, f::Constraint{F, I}, x, θ, adj) where {F, I <: Segm
     for j in eachindex(s.segs)
         seg = @inbounds s.segs[j]
         @simd for r in 1:length(seg.itr)
-            el = eltype(s)(
-                seg.o0 + r, seg.o1 + s.o1step * (r - 1),
-                seg.o2 + s.o2step * (r - 1), seg.iv, seg.fv,
-                (@inbounds seg.itr[r])
-            )
-            @inbounds sjacobian!(
-                y1, y2, f.f.f, el, x, θ, f.f.comp1,
-                seg.o0 + r, seg.o1 + s.o1step * (r - 1), adj
-            )
+            el = _segrow(s, seg, r)
+            @inbounds sjacobian!(y1, y2, f.f.f, el, x, θ, seg.comp1, el.o0, el.o1, adj)
         end
     end
     return
@@ -853,15 +823,8 @@ function shessian!(y1, y2, f::Constraint{F, I}, x, θ, adj1, adj2) where {F, I <
     for j in eachindex(s.segs)
         seg = @inbounds s.segs[j]
         @simd for r in 1:length(seg.itr)
-            el = eltype(s)(
-                seg.o0 + r, seg.o1 + s.o1step * (r - 1),
-                seg.o2 + s.o2step * (r - 1), seg.iv, seg.fv,
-                (@inbounds seg.itr[r])
-            )
-            @inbounds shessian!(
-                y1, y2, f.f.f, el, x, θ, f.f.comp2,
-                seg.o2 + s.o2step * (r - 1), adj1, adj2
-            )
+            el = _segrow(s, seg, r)
+            @inbounds shessian!(y1, y2, f.f.f, el, x, θ, seg.comp2, el.o2, adj1, adj2)
         end
     end
     return
@@ -872,15 +835,8 @@ function shessian!(y1, y2, f::Constraint{F, I}, x, θ, adj1s::V, adj2) where {F,
     for j in eachindex(s.segs)
         seg = @inbounds s.segs[j]
         @simd for r in 1:length(seg.itr)
-            el = eltype(s)(
-                seg.o0 + r, seg.o1 + s.o1step * (r - 1),
-                seg.o2 + s.o2step * (r - 1), seg.iv, seg.fv,
-                (@inbounds seg.itr[r])
-            )
-            @inbounds shessian!(
-                y1, y2, f.f.f, el, x, θ, f.f.comp2,
-                seg.o2 + s.o2step * (r - 1), adj1s[seg.o0 + r], adj2
-            )
+            el = _segrow(s, seg, r)
+            @inbounds shessian!(y1, y2, f.f.f, el, x, θ, seg.comp2, el.o2, adj1s[el.o0], adj2)
         end
     end
     return
@@ -891,12 +847,8 @@ function _cons_rows!(g, con::Constraint{F, I}, x, θ) where {F, I <: SegmentedIt
     for j in eachindex(s.segs)
         seg = @inbounds s.segs[j]
         @simd for r in 1:length(seg.itr)
-            el = eltype(s)(
-                seg.o0 + r, seg.o1 + s.o1step * (r - 1),
-                seg.o2 + s.o2step * (r - 1), seg.iv, seg.fv,
-                (@inbounds seg.itr[r])
-            )
-            @inbounds g[seg.o0 + r] += con.f(el, x, θ)
+            el = _segrow(s, seg, r)
+            @inbounds g[el.o0] += con.f(el, x, θ)
         end
     end
     return nothing

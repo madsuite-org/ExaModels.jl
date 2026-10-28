@@ -278,10 +278,10 @@ function _lamjac1!(backend, y, con, x, θ, yv)
     isempty(con.itr) && return nothing
     return kerjs(backend)(y, con.f, con.itr, x, θ, yv, ExaModels._constraint_dims(con); ndrange = length(con.itr))
 end
-# a merged block's row/nonzero offsets live in its MergedRow elements, not in
-# the SIMDFunction's affine fields (f.o1 == 0 there): the generic kerjs would
-# write its nonzeros into the first n * o1step slots of cons_ext, on top of
-# whatever block owns them. Same pattern as `kerj_m` above.
+# a merged block's row/nonzero offsets and compressors live in its MergedRow
+# elements, not in the SIMDFunction's affine fields (f.o1 == 0 there): the
+# generic kerjs would write its nonzeros into the first n * o1step slots of
+# cons_ext, on top of whatever block owns them. Same pattern as `kerj_m`.
 function _lamjac1!(backend, y, con::ExaModels.Constraint{F, I}, x, θ, yv) where
     {F, I <: AbstractVector{<:ExaModels.MergedRow}}
     isempty(con.itr) && return nothing
@@ -293,7 +293,7 @@ end
         el = itr[I]
         ExaModels.jrpass(
             f(el, ExaModels.AdjointNodeSource(x), θ),
-            f.comp1,
+            el.comp1,
             el.o0,
             y1,
             nothing,
@@ -309,12 +309,13 @@ function _grad_structure_host!(::Type{T}, objs, gsp) where {T}
     for obj in objs
         f = obj.f
         for k in eachindex(obj.itr)
+            p = obj.itr[k]
             graph = f.f(
-                obj.itr[k],
+                p,
                 ExaModels.AdjointNodeSource(ExaModels.NaNSource{T}()),
                 ExaModels.NaNSource{T}(),
             )
-            ExaModels.grpass(graph, f.comp1, gsp, ExaModels.offset1(obj, k), 0, T(NaN))
+            ExaModels.grpass(graph, ExaModels._comp1(f, p), gsp, ExaModels.offset1(obj, k), 0, T(NaN))
         end
     end
     return gsp

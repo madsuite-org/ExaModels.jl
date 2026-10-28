@@ -29,6 +29,10 @@ function _build(backend)
     c, _ = add_con!(c, g, i => sin(x[i + 1]) for i in 1:8)
     c, _ = add_con!(c, g, i => sin(z[i + 1]) for i in 1:8)
     c, _ = add_con(c, tanh(x[i]) * exp(z[i]) for i in 1:4; lcon = -3.0, ucon = 3.0)
+    # one tree type, two footprints: the first block's two sites read one
+    # variable (one Jacobian entry per row), the second's read two
+    c, _ = add_con(c, x[i] * x[i] for i in 1:8; lcon = -3.0, ucon = 3.0)
+    c, _ = add_con(c, x[i] * z[i] for i in 1:8; lcon = -3.0, ucon = 3.0)
     # a 2-D generator (its iterator is a Matrix): one single-segment family
     c, _ = add_con(c, x[i] * z[j] - 0.2 for i in 1:3, j in 1:2; lcon = -2.0, ucon = 2.0)
     # an `exa_sum` reduction (SumNode) is statically non-mergeable: stored
@@ -123,12 +127,13 @@ function _test_host_derivatives()
     m = ExaModel(_build(nothing))
     # the fixture's 11 constraint adds collapse to: one range family, one
     # data-tuple family, the named block, the tanh block and the 2-D block
-    # (one-segment families: no sibling), two augmentations (plain) and one
-    # statically non-mergeable plain block (the `exa_sum` reduction); its 9
+    # (one-segment families: no sibling), the mixed-footprint family, two
+    # augmentations (plain) and one statically non-mergeable plain block (the
+    # `exa_sum` reduction); its 9
     # objective adds collapse to the generator objective plus one merged
     # family for the 8 loop-written ones
-    @test length(m.cons) == 8
-    @test count(b -> b.itr isa ExaModels._MergedItr, m.cons) == 5   # five families
+    @test length(m.cons) == 9
+    @test count(b -> b.itr isa ExaModels._MergedItr, m.cons) == 6   # six families
     @test count(b -> b isa ExaModels.ConstraintAugmentation, m.cons) == 2
     @test length(m.objs) == 2
     _check_fd_derivatives(m)
@@ -199,10 +204,10 @@ function _test_backend_matches_host(backend)
             @test length(b.itr.d) == length(b.itr)
         end
     end
-    # five families: the range and data-tuple families have 2 segments; the
+    # six families: the range, data-tuple and mixed-footprint families have 2+ segments; the
     # named block, the tanh block and the 2-D block (a Matrix iterator on the
     # host) are single-segment
-    @test count(b -> b.itr isa ExaModels.DeviceSegItr, mb.cons) == 2
+    @test count(b -> b.itr isa ExaModels.DeviceSegItr, mb.cons) == 3
     @test count(b -> b.itr isa ExaModels.DeviceSeg1Itr, mb.cons) == 3
     # Float32 backends (Metal) carry ~1e-7 roundoff per operation
     tight, loose = eltype(mb.meta.x0) == Float32 ? (1.0e-4, 1.0e-4) : (1.0e-12, 1.0e-10)
@@ -312,10 +317,31 @@ function _test_layout_float32_rewrite()
     return nothing
 end
 
-# Integer-leaf slot sharing: equal-valued leaves of a block read one slot, so
-# two sites that reference the same variable compare === in the sparsity probe
-# and share a Jacobian slot (and Hessian pairs), as the plain block did. The
-# sharing pattern is part of the family key.
+# A merged block keeps each source block's own sparsity: the compressors from
+# the probe over the block's original tree travel with its segment, so two
+# sites that reference the same variable share a Jacobian slot (and Hessian
+# pairs) exactly as in the plain block, and one family's segments may differ
+# in footprint. The reference for "as in the plain block" is a recipe core
+# (`nargs = Val(1)`), whose blocks are stored plain.
+function _recipe_parity(build, concrete)
+    cd = ExaCore(; concrete)
+    cd, xd = add_var(cd, 12; start = 0.3)
+    md = ExaModel(build(cd, xd))
+    cr, _ = ExaCore(; nargs = Val(1), concrete)
+    cr, xr = add_var(cr, 12; start = 0.3)
+    mr = ExaModel(build(cr, xr), (N = 12,))
+    @test all(b -> b.itr isa ExaModels._MergedItr, md.cons)
+    @test !any(b -> b.itr isa ExaModels._MergedItr, mr.cons)
+    @test md.meta.nnzj == mr.meta.nnzj && md.meta.nnzh == mr.meta.nnzh
+    @test NLPModels.jac_structure(md) == NLPModels.jac_structure(mr)
+    @test NLPModels.hess_structure(md) == NLPModels.hess_structure(mr)
+    pt = collect(0.05:0.05:0.6)
+    mult = [0.3 + 0.01k for k in 1:md.meta.ncon]
+    @test NLPModels.jac_coord(md, pt) ≈ NLPModels.jac_coord(mr, pt)
+    @test NLPModels.hess_coord(md, pt, mult) ≈ NLPModels.hess_coord(mr, pt, mult)
+    return md
+end
+
 function _test_slot_sharing()
     # LuksanVlcek: x[i+1] appears 5 times, x[i+2] 3 times, x[i] 2 times per
     # row; the plain-block footprint is 3 Jacobian entries per row and 6
@@ -339,59 +365,52 @@ function _test_slot_sharing()
     @test m.meta.nnzj == 10
     @test m.meta.nnzh == 10
 
-    # same tree type, different sharing pattern: two families, each with its
-    # own footprint; same pattern with other leaf values: one family
-    c = ExaCore()
-    c, x = add_var(c, 12; start = 0.3)
-    c, _ = add_con(c, x[i + 1] * x[i + 1] for i in 1:8)     # pattern (a, b, a, b)
-    c, _ = add_con(c, x[i + 1] * x[i + 2] for i in 1:8)     # pattern (a, b, c, b)
-    c, _ = add_con(c, x[i + 2] * x[i + 2] for i in 1:8)     # (a, b, a, b) again: joins the first
-    c, _ = add_obj(c, x[i]^2 for i in 1:12)
-    m = ExaModel(c)
-    @test length(m.cons) == 2
-    @test sort([length(b.itr) for b in m.cons]) == [8, 16]
-    # slot references print as ⟨i k⟩ / ⟨f k⟩, with and without the type header
-    @test occursin("⟨i", sprint(show, m.cons[1].f.f))
-    @test sprint(show, MIME"text/plain"(), ExaModels.IvRef(1)) isa String
-    @test m.meta.nnzj == 16 * 1 + 8 * 2
-    @test m.meta.ncon == 24
-    _check_fd_derivatives(m)
-
-    # dynamic storage: a recipe (plain) build and the direct (merged) build of
-    # one model agree exactly on nnz, structures and coordinate order
-    function hx(c, x, N)
-        h = 1 / (N + 1)
-        c, _ = add_obj(c, h * (x[i] - 2.0)^2 for i in collect(1:N))
-        c, _ = add_con(c, h * x[i] + x[i] for i in collect(1:N); lcon = 0.0, ucon = Inf)
+    # same tree type, different sharing: ONE family whose segments keep their
+    # own footprints (one Jacobian entry per row for x[i+1]*x[i+1], two for
+    # x[i+1]*x[i+2]), in both storage modes; the recipe build is the reference
+    function sharing(c, x)
+        c, _ = add_con(c, x[i + 1] * x[i + 1] for i in 1:8)
+        c, _ = add_con(c, x[i + 1] * x[i + 2] for i in 1:8)
+        c, _ = add_con(c, x[i + 2] * x[i + 2] for i in 1:8)
+        c, _ = add_obj(c, x[i]^2 for i in 1:12)
         return c
     end
-    cd = ExaCore()
-    cd, xd = add_var(cd, 6; start = 1.0)
-    md = ExaModel(hx(cd, xd, 6))
-    cr, _ = ExaCore(nargs = Val(1))
-    cr, xr = add_var(cr, 6; start = 1.0)
-    mr = ExaModel(hx(cr, xr, 6), (N = 6,))
-    @test md.cons[1].itr isa ExaModels._MergedItr && !(mr.cons[1].itr isa ExaModels._MergedItr)
-    @test md.meta.nnzj == mr.meta.nnzj && md.meta.nnzh == mr.meta.nnzh
-    @test NLPModels.jac_structure(md) == NLPModels.jac_structure(mr)
-    @test NLPModels.hess_structure(md) == NLPModels.hess_structure(mr)
-    pt = collect(0.1:0.1:0.6)
-    mult = collect(0.6:-0.1:0.1)
-    @test NLPModels.jac_coord(md, pt) ≈ NLPModels.jac_coord(mr, pt)
-    @test NLPModels.hess_coord(md, pt, mult) ≈ NLPModels.hess_coord(mr, pt, mult)
+    for concrete in (Val(false), Val(true))
+        m = _recipe_parity(sharing, concrete)
+        @test length(m.cons) == 1 && length(m.cons[1].itr) == 24
+        @test m.meta.nnzj == 8 * 1 + 8 * 2 + 8 * 1
+        @test m.meta.ncon == 24
+        # slot references print as ⟨i k⟩ / ⟨f k⟩, with and without the type header
+        @test occursin("⟨i", sprint(show, m.cons[1].f.f))
+        @test sprint(show, MIME"text/plain"(), ExaModels.IvRef(1)) isa String
+        _check_fd_derivatives(m)
+    end
 
-    # concrete storage keeps one slot per leaf position (the family decision
-    # must stay a function of types), so the same two blocks form ONE family
-    # there and each row carries two Jacobian entries
-    cc = ExaCore(concrete = Val(true))
-    cc, xx = add_var(cc, 12; start = 0.3)
-    cc, _ = add_con(cc, xx[i + 1] * xx[i + 1] for i in 1:8)
-    cc, _ = add_con(cc, xx[i + 1] * xx[i + 2] for i in 1:8)
-    cc, _ = add_obj(cc, xx[i]^2 for i in 1:12)
-    mc = ExaModel(cc)
-    @test length(mc.cons) == 1 && length(mc.cons[1].itr) == 16
-    @test mc.meta.nnzj == 16 * 2
-    _check_fd_derivatives(mc)
+    # a recipe (plain) build and the direct (merged) build of one model agree
+    # exactly on nnz, structures and coordinate order, with Float leaves too
+    function hx(c, x)
+        h = 1 / 7
+        c, _ = add_obj(c, h * (x[i] - 2.0)^2 for i in collect(1:6))
+        c, _ = add_con(c, h * x[i] + x[i] for i in collect(1:6); lcon = 0.0, ucon = Inf)
+        return c
+    end
+    for concrete in (Val(false), Val(true))
+        _recipe_parity(hx, concrete)
+    end
+
+    # an inlined subexpression spliced at two reference sites: the sites'
+    # leaves compare === in the probe over the source tree, so the merged
+    # block carries one entry per variable, as the plain block does
+    function spliced(c, x)
+        c, e = add_expr(c, x[i] * x[i + 1] + 0.5 for i in 1:6)
+        c, _ = add_con(c, e[i] * x[i] + e[i] for i in 1:6)
+        c, _ = add_obj(c, e[i]^2 for i in 1:6)
+        return c
+    end
+    for concrete in (Val(false), Val(true))
+        m = _recipe_parity(spliced, concrete)
+        @test m.meta.nnzj == 6 * 2
+    end
     return nothing
 end
 
