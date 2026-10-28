@@ -40,6 +40,11 @@ jobs:
         run: |
           julia --startup-file=no --color=yes --code-coverage=user --project=./test -e '
             using Pkg
+            Pkg.add([
+              PackageSpec(name="MathOptInterface", rev="bl/qp_block_data"),
+              PackageSpec(name="Ipopt", rev="bl/qp_block_data"),
+              PackageSpec(name="NLPModelsJuMP", rev="bl/qp_block_data"),
+            ])
             Pkg.develop(path=".")
             Pkg.instantiate()
             include("test/runtests.jl")'
@@ -87,6 +92,11 @@ jobs:
           using Pkg
           Pkg.Registry.update()
           ${{ matrix.backend == 'pocl' && 'Pkg.add(["OpenCL", "pocl_jll"])' || '' }}
+          Pkg.add([
+            PackageSpec(name="MathOptInterface", rev="bl/qp_block_data"),
+            PackageSpec(name="Ipopt", rev="bl/qp_block_data"),
+            PackageSpec(name="NLPModelsJuMP", rev="bl/qp_block_data"),
+          ])
           Pkg.develop(path=".")
           Pkg.instantiate()'
     - name: Run tests
@@ -155,6 +165,11 @@ jobs:
           using Pkg
           Pkg.Registry.update()
           Pkg.add("${{ matrix.backend == 'cuda' && 'CUDA' || matrix.backend == 'amdgpu' && 'AMDGPU' || 'oneAPI' }}")
+          Pkg.add([
+            PackageSpec(name="MathOptInterface", rev="bl/qp_block_data"),
+            PackageSpec(name="Ipopt", rev="bl/qp_block_data"),
+            PackageSpec(name="NLPModelsJuMP", rev="bl/qp_block_data"),
+          ])
           Pkg.develop(path=".")
           Pkg.instantiate()'
     - name: Run tests
@@ -210,6 +225,11 @@ jobs:
             using Pkg
             Pkg.Registry.update()
             Pkg.add("Metal")
+            Pkg.add([
+              PackageSpec(name="MathOptInterface", rev="bl/qp_block_data"),
+              PackageSpec(name="Ipopt", rev="bl/qp_block_data"),
+              PackageSpec(name="NLPModelsJuMP", rev="bl/qp_block_data"),
+            ])
             Pkg.develop(path=".")
             Pkg.instantiate()'
       - name: Show platform info
