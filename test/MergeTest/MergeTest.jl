@@ -17,13 +17,13 @@ function _build(backend)
     c = ExaCore(; backend)
     c, x = add_var(c, n; start = 0.3)
     c, z = add_var(c, n; start = 0.8)
-    c, _ = add_con(c, sin(x[i]) * x[i+1] - 0.1 for i in 1:(n-1); lcon = -2.0, ucon = 2.0)
-    c, _ = add_con(c, sin(z[i]) * z[i+1] - 0.1 for i in 1:(n-1); lcon = -2.0, ucon = 2.0)
-    c, _ = add_con(c, sin(x[i]) * x[i+1] - 0.7 for i in 1:(n-1); lcon = -2.0, ucon = 2.0)
-    data1 = [(i = i, a = 0.5 + 0.001i, b = 0.1) for i in 1:(n-1)]
-    data2 = [(i = i, a = 0.25 + 0.002i, b = 0.2) for i in 1:(n-1)]
-    c, _ = add_con(c, d.a * exp(0.01 * x[d.i]) + d.b * z[d.i+1] for d in data1; lcon = -5.0, ucon = 5.0)
-    c, _ = add_con(c, d.a * exp(0.01 * x[d.i]) + d.b * z[d.i+1] for d in data2; lcon = -5.0, ucon = 5.0)
+    c, _ = add_con(c, sin(x[i]) * x[i + 1] - 0.1 for i in 1:(n - 1); lcon = -2.0, ucon = 2.0)
+    c, _ = add_con(c, sin(z[i]) * z[i + 1] - 0.1 for i in 1:(n - 1); lcon = -2.0, ucon = 2.0)
+    c, _ = add_con(c, sin(x[i]) * x[i + 1] - 0.7 for i in 1:(n - 1); lcon = -2.0, ucon = 2.0)
+    data1 = [(i = i, a = 0.5 + 0.001i, b = 0.1) for i in 1:(n - 1)]
+    data2 = [(i = i, a = 0.25 + 0.002i, b = 0.2) for i in 1:(n - 1)]
+    c, _ = add_con(c, d.a * exp(0.01 * x[d.i]) + d.b * z[d.i + 1] for d in data1; lcon = -5.0, ucon = 5.0)
+    c, _ = add_con(c, d.a * exp(0.01 * x[d.i]) + d.b * z[d.i + 1] for d in data2; lcon = -5.0, ucon = 5.0)
     c, g = add_con(c, x[i] + z[i] for i in 1:8; lcon = -1.0, ucon = 1.0, name = Val(:gnamed))
     c, _ = add_con!(c, g, i => sin(x[i + 1]) for i in 1:8)
     c, _ = add_con!(c, g, i => sin(z[i + 1]) for i in 1:8)
@@ -32,10 +32,10 @@ function _build(backend)
     # loop-written objectives: one scalar add per iteration, two variable
     # blocks, collapsing into a single objective family
     for k in 1:4
-        c, _ = add_obj(c, 0.25 * abs2(x[k]) - 0.1 * z[k+1])
+        c, _ = add_obj(c, 0.25 * abs2(x[k]) - 0.1 * z[k + 1])
     end
     for k in 1:4
-        c, _ = add_obj(c, 0.25 * abs2(z[k]) - 0.1 * x[k+1])
+        c, _ = add_obj(c, 0.25 * abs2(z[k]) - 0.1 * x[k + 1])
     end
     return c
 end
@@ -70,7 +70,7 @@ end
 function _fd_jac(m, x0)
     n = length(x0)
     J = zeros(m.meta.ncon, n)
-    h = 1e-6
+    h = 1.0e-6
     cp = zeros(m.meta.ncon)
     cm = zeros(m.meta.ncon)
     for j in 1:n
@@ -120,7 +120,7 @@ function _check_fd_derivatives(m)
     for k in 1:m.meta.nnzj
         J[jr[k], jc[k]] += jv[k]
     end
-    @test isapprox(J, _fd_jac(m, x0); rtol = 1e-6, atol = 1e-8)
+    @test isapprox(J, _fd_jac(m, x0); rtol = 1.0e-6, atol = 1.0e-8)
     # Lagrangian Hessian values against central finite differences of
     # grad(obj) + J(x)'y (the Jacobian is validated just above)
     y = fill!(zeros(m.meta.ncon), 1.0)
@@ -133,14 +133,14 @@ function _check_fd_derivatives(m)
         H[hr[k], hc[k]] += hv[k]
         hr[k] != hc[k] && (H[hc[k], hr[k]] += hv[k])
     end
-    h = 1e-5
+    h = 1.0e-5
     Hfd = zeros(length(x0), length(x0))
     for j in 1:length(x0)
         xp = copy(x0); xp[j] += h
         xm = copy(x0); xm[j] -= h
         Hfd[:, j] .= (_gradL(m, xp, y) .- _gradL(m, xm, y)) ./ (2h)
     end
-    @test isapprox(H, Hfd; rtol = 1e-4, atol = 1e-6)
+    return @test isapprox(H, Hfd; rtol = 1.0e-4, atol = 1.0e-6)
 end
 
 function _test_backend_matches_host(backend)
@@ -157,6 +157,7 @@ function _test_backend_matches_host(backend)
     for k in (4, 5, 7, 8)                       # sparsity coordinates
         @test sort(rb[k]) == sort(rh[k])
     end
+    return
 end
 
 # The core API is persistent: a later add on a core must not change models
@@ -234,7 +235,7 @@ function _test_merged_row_float32_rewrite()
     @test eltype(r2) <: ExaModels.MergedRow{K, S, Float32}   # K, S kept; T rewritten, not Union{}
     @test r2[1].d === (1, 0.5f0)
     @test r2[2].d === (2, 1.0f0)
-    @test r2[1].iv == rows[1].iv && r2[1].o0 == rows[1].o0 && r2[1].o1 == rows[1].o1 && r2[1].o2 == rows[1].o2
+    return @test r2[1].iv == rows[1].iv && r2[1].o0 == rows[1].o0 && r2[1].o1 == rows[1].o1 && r2[1].o2 == rows[1].o2
 end
 
 # Integer-leaf slot sharing: equal-valued leaves of a block read one slot, so
@@ -282,7 +283,7 @@ function _test_slot_sharing()
 end
 
 function runtests()
-    @testset "Family merge" begin
+    return @testset "Family merge" begin
         @testset "Integer-leaf slot sharing" begin
             _test_slot_sharing()
         end
@@ -303,18 +304,18 @@ function runtests()
             c = ExaCore()
             c, x = add_var(c, 10; start = 0.3)
             c, y = add_var(c, 10; start = 0.8)
-            c, _ = add_con(c, sin(x[i]) * x[i+1] - 0.1 for i in 1:9; lcon = -2.0, ucon = 2.0)
-            c, _ = add_con(c, sin(y[i]) * y[i+1] - 0.1 for i in 1:9; lcon = -2.0, ucon = 2.0)
-            c, _ = add_con(c, sin(x[i]) * x[i+1] - 0.7 for i in 1:9; lcon = -2.0, ucon = 2.0)
+            c, _ = add_con(c, sin(x[i]) * x[i + 1] - 0.1 for i in 1:9; lcon = -2.0, ucon = 2.0)
+            c, _ = add_con(c, sin(y[i]) * y[i + 1] - 0.1 for i in 1:9; lcon = -2.0, ucon = 2.0)
+            c, _ = add_con(c, sin(x[i]) * x[i + 1] - 0.7 for i in 1:9; lcon = -2.0, ucon = 2.0)
             c, _ = add_obj(c, abs2(x[i] - y[i]) for i in 1:10)
             m = ExaModel(c)
             @test length(m.cons) == 1
             x0 = copy(m.meta.x0)
             cv = zeros(m.meta.ncon)
             NLPModels.cons!(m, x0, cv)
-            @test cv[1:9] ≈ fill(sin(0.3) * 0.3 - 0.1, 9) atol = 1e-15
-            @test cv[10:18] ≈ fill(sin(0.8) * 0.8 - 0.1, 9) atol = 1e-15
-            @test cv[19:27] ≈ fill(sin(0.3) * 0.3 - 0.7, 9) atol = 1e-15
+            @test cv[1:9] ≈ fill(sin(0.3) * 0.3 - 0.1, 9) atol = 1.0e-15
+            @test cv[10:18] ≈ fill(sin(0.8) * 0.8 - 0.1, 9) atol = 1.0e-15
+            @test cv[19:27] ≈ fill(sin(0.3) * 0.3 - 0.7, 9) atol = 1.0e-15
             jr = zeros(Int, m.meta.nnzj); jc = zeros(Int, m.meta.nnzj)
             jv = zeros(m.meta.nnzj)
             NLPModels.jac_structure!(m, jr, jc)
@@ -346,7 +347,7 @@ function runtests()
                 c, x = add_var(c, 10U; start = 0.5)
                 for u in 1:U
                     lo = 10 * (u - 1)
-                    c, _ = add_con(c, sin(x[i]) * x[i+1] for i in (lo+1):(lo+9); lcon = -2.0, ucon = 2.0)
+                    c, _ = add_con(c, sin(x[i]) * x[i + 1] for i in (lo + 1):(lo + 9); lcon = -2.0, ucon = 2.0)
                     d = [(i = lo + i, a = 0.1u + 0.01i) for i in 1:9]
                     c, _ = add_con(c, e.a * exp(0.01 * x[e.i]) for e in d; lcon = -2.0, ucon = 2.0)
                 end
@@ -362,33 +363,33 @@ function runtests()
         @testset "loop-written objectives merge" begin
             N = 16
             c = ExaCore()
-            c, x = add_var(c, N+1; start = 0.5)
-            c, y = add_var(c, N+1; start = 0.25)
+            c, x = add_var(c, N + 1; start = 0.5)
+            c, y = add_var(c, N + 1; start = 0.25)
             for i in 1:N
-                c, _ = add_obj(c, 2.0 * abs2(x[i]) - 0.5 * x[i+1])
+                c, _ = add_obj(c, 2.0 * abs2(x[i]) - 0.5 * x[i + 1])
             end
             for i in 1:N                     # same pattern, other variables
-                c, _ = add_obj(c, 2.0 * abs2(y[i]) - 0.5 * y[i+1])
+                c, _ = add_obj(c, 2.0 * abs2(y[i]) - 0.5 * y[i + 1])
             end
-            c, _ = add_con(c, x[i] + y[i] - 1.0 for i in 1:N; lcon=-1.0, ucon=1.0)
+            c, _ = add_con(c, x[i] + y[i] - 1.0 for i in 1:N; lcon = -1.0, ucon = 1.0)
             m = ExaModel(c)
             @test length(m.objs) == 1
             x0 = copy(m.meta.x0)
             # closed form at the starting point
             want = N * (2 * 0.5^2 - 0.5 * 0.5) + N * (2 * 0.25^2 - 0.5 * 0.25)
-            @test NLPModels.obj(m, x0) ≈ want rtol = 1e-14
+            @test NLPModels.obj(m, x0) ≈ want rtol = 1.0e-14
             g = zeros(length(x0))
             NLPModels.grad!(m, x0, g)
             # d/dx[i] = 4x[i] for i <= N, and -0.5 lands on x[i+1]
-            @test g[1] ≈ 4 * 0.5 rtol = 1e-14
-            @test g[N+1] ≈ -0.5 rtol = 1e-14
-            @test g[N+2] ≈ 4 * 0.25 rtol = 1e-14
-            @test g[2N+2] ≈ -0.5 rtol = 1e-14
+            @test g[1] ≈ 4 * 0.5 rtol = 1.0e-14
+            @test g[N + 1] ≈ -0.5 rtol = 1.0e-14
+            @test g[N + 2] ≈ 4 * 0.25 rtol = 1.0e-14
+            @test g[2N + 2] ≈ -0.5 rtol = 1.0e-14
             hr = zeros(Int, m.meta.nnzh); hc = zeros(Int, m.meta.nnzh)
             hv = zeros(m.meta.nnzh)
             NLPModels.hess_structure!(m, hr, hc)
             NLPModels.hess_coord!(m, x0, ones(m.meta.ncon), hv)
-            @test sum(hv) ≈ 4.0 * 2N rtol = 1e-14
+            @test sum(hv) ≈ 4.0 * 2N rtol = 1.0e-14
             # every Hessian entry is a diagonal of one of the two blocks
             @test all(hr .== hc)
         end
@@ -408,7 +409,7 @@ function runtests()
                 c, x = add_var(c, 10; start = 1.0)
                 c, e1 = add_expr(c, (sin(x[j]) + cos(x[j]) for j in 1:10); lift = mode)
                 c, e2 = add_expr(c, (sin(e1[j]) + cos(e1[j]) for j in 1:10); lift = mode)
-                c, _ = add_con(c, (exp(e2[j]) + abs2(e2[j+1]) for j in 1:9); lcon = 0.0, ucon = 0.0)
+                c, _ = add_con(c, (exp(e2[j]) + abs2(e2[j + 1]) for j in 1:9); lcon = 0.0, ucon = 0.0)
                 c, _ = add_obj(c, x[1])
                 ExaModel(c)
             end
@@ -421,12 +422,12 @@ function runtests()
             e2v = sin.(e1v) .+ cos.(e1v)
             cS = NLPModels.cons(mS, x0)
             cL = NLPModels.cons(mL, vcat(x0, e1v, e2v))
-            @test maximum(abs, cL[1:20]) < 1e-14          # defining rows at consistent point
-            @test cL[21:end] ≈ cS atol = 1e-14
+            @test maximum(abs, cL[1:20]) < 1.0e-14          # defining rows at consistent point
+            @test cL[21:end] ≈ cS atol = 1.0e-14
             # each lifted layer is pinned by its OWN equation
             cL2 = NLPModels.cons(mL, vcat(x0, e1v, e2v .+ 0.5))
-            @test all(abs.(cL2[11:20] .- 0.5) .< 1e-14)
-            @test maximum(abs, cL2[1:10]) < 1e-14
+            @test all(abs.(cL2[11:20] .- 0.5) .< 1.0e-14)
+            @test maximum(abs, cL2[1:10]) < 1.0e-14
         end
 
         @testset "non-concrete refs storage" begin
@@ -458,8 +459,8 @@ function runtests()
             @test length(m.cons) == 1
             cv = zeros(m.meta.ncon)
             NLPModels.cons!(m, copy(m.meta.x0), cv)
-            @test cv[1:9] ≈ fill(sin(0.5) - 0.1, 9) atol = 1e-15
-            @test cv[10:18] ≈ fill(sin(0.5) - 0.4, 9) atol = 1e-15
+            @test cv[1:9] ≈ fill(sin(0.5) - 0.1, 9) atol = 1.0e-15
+            @test cv[10:18] ≈ fill(sin(0.5) - 0.4, 9) atol = 1.0e-15
         end
     end
 end

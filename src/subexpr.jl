@@ -35,19 +35,19 @@ Gradient-pass leaf for a buffered subexpression element.
   adjoint buffer)
 - `x::T`: buffered primal value `θ[i]`
 """
-struct AdjointNodeSubexpr{I,T} <: AbstractAdjointNode
+struct AdjointNodeSubexpr{I, T} <: AbstractAdjointNode
     i::I
     x::T
 end
 
 # Primal evaluation reads the buffer.  Index expressions contain only
 # data/constant leaves, so they evaluate to integers in every mode.
-@inline (v::SubexprNode{I})(i, x, θ) where {I<:AbstractNode} =
+@inline (v::SubexprNode{I})(i, x, θ) where {I <: AbstractNode} =
     @inbounds θ[v.i(i, x, θ)]
 @inline (v::SubexprNode{I})(i, x, θ) where {I} = @inbounds θ[v.i]
 
 # First-order adjoint mode: produce the leaf carrying the slot and the value.
-@inline function (v::SubexprNode{I})(i, x::AdjointNodeSource, θ) where {I<:AbstractNode}
+@inline function (v::SubexprNode{I})(i, x::AdjointNodeSource, θ) where {I <: AbstractNode}
     j = v.i(i, x, θ)
     return @inbounds AdjointNodeSubexpr(j, θ[j])
 end
@@ -59,7 +59,7 @@ end
 # (mirroring Var, whose probe stores the index expression).  Evaluating the
 # index here would yield NaN (or a plain Int colliding with Var indices) and
 # conflate distinct slots.
-@inline (v::SubexprNode{I})(i::Identity, x::AdjointNodeSource, θ) where {I<:AbstractNode} =
+@inline (v::SubexprNode{I})(i::Identity, x::AdjointNodeSource, θ) where {I <: AbstractNode} =
     AdjointNodeSubexpr(v, eltype(θ)(NaN))
 @inline (v::SubexprNode{I})(i::Identity, x::AdjointNodeSource, θ) where {I} =
     AdjointNodeSubexpr(v, eltype(θ)(NaN))
@@ -73,19 +73,19 @@ coordinate of the extended (x, s) space — the second-order analogue of
 negated θ-slot; build-time elimination composes the entries with the stage
 Jacobians and stage Hessians.
 """
-struct SecondAdjointNodeSubexpr{I,T} <: AbstractSecondAdjointNode
+struct SecondAdjointNodeSubexpr{I, T} <: AbstractSecondAdjointNode
     i::I
     x::T
 end
 
-@inline function (v::SubexprNode{I})(i, x::SecondAdjointNodeSource, θ) where {I<:AbstractNode}
+@inline function (v::SubexprNode{I})(i, x::SecondAdjointNodeSource, θ) where {I <: AbstractNode}
     j = v.i(i, x, θ)
     return @inbounds SecondAdjointNodeSubexpr(j, θ[j])
 end
 @inline (v::SubexprNode{I})(i, x::SecondAdjointNodeSource, θ) where {I} =
     @inbounds SecondAdjointNodeSubexpr(v.i, θ[v.i])
 # Identity probe: keep the node for identity-based pair deduplication.
-@inline (v::SubexprNode{I})(i::Identity, x::SecondAdjointNodeSource, θ) where {I<:AbstractNode} =
+@inline (v::SubexprNode{I})(i::Identity, x::SecondAdjointNodeSource, θ) where {I <: AbstractNode} =
     SecondAdjointNodeSubexpr(v, eltype(θ)(NaN))
 @inline (v::SubexprNode{I})(i::Identity, x::SecondAdjointNodeSource, θ) where {I} =
     SecondAdjointNodeSubexpr(v, eltype(θ)(NaN))
@@ -102,24 +102,24 @@ A dedicated struct (rather than a tuple) is used because `drpass`'s
 `AdjointNodeVar` leaf method indexes its target with `y[d.i]`, and a tuple
 would accept that indexing silently.
 """
-struct GradTarget{Y,A}
+struct GradTarget{Y, A}
     y::Y
     abuf::A
 end
 # The gradient driver seeds the reverse pass with one(eltype(target)).
-Base.eltype(::Type{GradTarget{Y,A}}) where {Y,A} = eltype(Y)
+Base.eltype(::Type{GradTarget{Y, A}}) where {Y, A} = eltype(Y)
 
-@inline function drpass(d::D, t::GradTarget, adj) where {D<:AdjointNodeVar}
+@inline function drpass(d::D, t::GradTarget, adj) where {D <: AdjointNodeVar}
     @inbounds t.y[d.i] += adj
-    nothing
+    return nothing
 end
-@inline function drpass(d::D, t::GradTarget, adj) where {D<:AdjointNodeSubexpr}
+@inline function drpass(d::D, t::GradTarget, adj) where {D <: AdjointNodeSubexpr}
     @inbounds t.abuf[d.i] += adj
-    nothing
+    return nothing
 end
 # A buffered leaf reached without a GradTarget means a driver was not routed
 # through the buffered-gradient path — fail loudly rather than corrupt.
-@inline drpass(d::D, y, adj) where {D<:AdjointNodeSubexpr} = throw(
+@inline drpass(d::D, y, adj) where {D <: AdjointNodeSubexpr} = throw(
     ArgumentError(
         "buffered subexpression leaf reached by a non-buffered reverse pass",
     ),
@@ -130,18 +130,18 @@ end
 # AdjointNodeVar.  Structure passes mark the subexpression coordinate with a
 # NEGATED column (-θslot); the build-time elimination in _build_subexpr_jac
 # rewrites those entries into x-columns using the stage Jacobians.
-@inline function grpass(d::D, comp::Nothing, y, o1, cnt::Vector, adj) where {D<:AdjointNodeSubexpr}
+@inline function grpass(d::D, comp::Nothing, y, o1, cnt::Vector, adj) where {D <: AdjointNodeSubexpr}
     push!(cnt, d.i)
     return cnt
 end
 @inline function grpass(
-    d::D,
-    comp::Nothing,
-    y,
-    o1,
-    cnt::Tuple{<:Tuple,<:Tuple},
-    adj,
-) where {D<:AdjointNodeSubexpr}
+        d::D,
+        comp::Nothing,
+        y,
+        o1,
+        cnt::Tuple{<:Tuple, <:Tuple},
+        adj,
+    ) where {D <: AdjointNodeSubexpr}
     mapping, uniques = cnt
     idx = _grpass_find_ident(d.i, uniques, 1)
     if idx === 0
@@ -153,42 +153,42 @@ end
 
 # Value mode (sparse gradient slots, used by the KA gradient path): write the
 # local adjoint into the compressed slot, like a Var.
-@inline function grpass(d::D, comp, y, o1, cnt, adj) where {D<:AdjointNodeSubexpr}
-    @inbounds y[o1+comp(cnt+=1)] += adj
+@inline function grpass(d::D, comp, y, o1, cnt, adj) where {D <: AdjointNodeSubexpr}
+    @inbounds y[o1 + comp(cnt += 1)] += adj
     return cnt
 end
 # Gradient-scatter structure collection: the dense target of a subexpression
 # leaf is the adjoint buffer, not the gradient; mark it with the negated slot
 # (the extension shifts it to nvar + slot when assembling the extended target).
 @inline function grpass(
-    d::D,
-    comp,
-    y::V,
-    o1,
-    cnt,
-    adj,
-) where {D<:AdjointNodeSubexpr,V<:AbstractVector{Tuple{Int,Int}}}
+        d::D,
+        comp,
+        y::V,
+        o1,
+        cnt,
+        adj,
+    ) where {D <: AdjointNodeSubexpr, V <: AbstractVector{Tuple{Int, Int}}}
     ind = o1 + comp(cnt += 1)
     @inbounds y[ind] = (-d.i, ind)
     return cnt
 end
 
 # Value mode: write the local adjoint into the extended slot (like a Var).
-@inline function jrpass(d::D, comp, i, y1, y2, o1, cnt, adj) where {D<:AdjointNodeSubexpr}
-    @inbounds y1[o1+comp(cnt+=1)] += adj
+@inline function jrpass(d::D, comp, i, y1, y2, o1, cnt, adj) where {D <: AdjointNodeSubexpr}
+    @inbounds y1[o1 + comp(cnt += 1)] += adj
     return cnt
 end
 # Structure mode: record the row and the NEGATED θ-slot as the column marker.
 @inline function jrpass(
-    d::D,
-    comp,
-    i,
-    y1::V,
-    y2::V,
-    o1,
-    cnt,
-    adj,
-) where {D<:AdjointNodeSubexpr,I<:Integer,V<:AbstractVector{I}}
+        d::D,
+        comp,
+        i,
+        y1::V,
+        y2::V,
+        o1,
+        cnt,
+        adj,
+    ) where {D <: AdjointNodeSubexpr, I <: Integer, V <: AbstractVector{I}}
     ind = o1 + comp(cnt += 1)
     @inbounds y1[ind] = i
     @inbounds y2[ind] = -d.i
@@ -210,11 +210,56 @@ buffered adjoint seed down to variable leaves and deeper stages.
 - `itr::I`: the collected iterator
 - `offset::Int`: θ offset; values live at `θ[offset+1 : offset+length(itr)]`
 """
-struct SubexprStage{F,I}
+struct SubexprStage{F, I}
     f::F
     itr::I
     offset::Int
 end
+
+"""
+    SubexprSumStage{VT, VI}
+
+A buffered sum stage created by [`add_sum`](@ref): slot `j` holds a
+constant-coefficient linear combination
+
+    θ[offset + j] = init[j] + Σₘ w[m] · source(m)    for m in ptr[j]:ptr[j+1]-1
+
+where `source(m)` is `x[src[m]]` when `src[m] > 0` and `θ[-src[m]]` (an older
+buffered slot) when `src[m] < 0`.  Terms are stored CSR-style by destination
+slot, so evaluation is one loop over data — no expression tree is ever traced
+and the stage is ONE concrete type regardless of the number of terms.  This is
+what makes summing thousands of elements into a slot O(1) in kernel types
+(the flat fan-in and chained-accumulation alternatives both put the term count
+into consumer tree types; see issue #331).
+
+Derivatives need no kernels either: the stage's one-level Jacobian is the
+constant `w`, so the build-time elimination consumes it like any other stage,
+and the μ·∇v∇vᵀ curvature of each slot is accumulated in x-space from the
+slot's resolved gradient, with one Hessian-index table per distinct x-support
+— see the `rk_*`/`pat_*` fields of [`SubexprHess`](@ref).
+
+# Fields
+- `offset::Int`: θ offset; slot `j` lives at `θ[offset + j]`
+- `n::Int`: number of slots
+- `init::VT`: length-`n` constant base values
+- `ptr::VI`: length `n + 1`; slot `j`'s terms are `ptr[j]:ptr[j+1]-1`
+- `src::VI`: signed sources (`> 0` variable index, `< 0` negated θ slot)
+- `w::VT`: constant term weights
+"""
+struct SubexprSumStage{VT <: AbstractVector, VI <: AbstractVector{Int}}
+    offset::Int
+    n::Int
+    init::VT
+    ptr::VI
+    src::VI
+    w::VT
+end
+
+@inline _stage_len(s::SubexprStage) = length(s.itr)
+@inline _stage_len(s::SubexprSumStage) = s.n
+# per-element slot counts in the hess_ext program buffer
+@inline _stage_o2len(s::SubexprStage) = length(s.itr) * s.f.o2step
+@inline _stage_o2len(s::SubexprSumStage) = 0
 
 # Stage tuples are built newest-first (prepended, like `cons`/`objs`), and a
 # stage can only reference stages added before it.  Forward sync therefore
@@ -222,9 +267,23 @@ end
 _sync_subexprs!(stages::Tuple{}, x, θ) = nothing
 @inline function _sync_subexprs!(stages::Tuple, x, θ)
     _sync_subexprs!(Base.tail(stages), x, θ)
-    s = first(stages)
+    _sync_stage!(first(stages), x, θ)
+    return nothing
+end
+@inline function _sync_stage!(s::SubexprStage, x, θ)
     @simd for k in eachindex(s.itr)
-        @inbounds θ[s.offset+k] = s.f(s.itr[k], x, θ)
+        @inbounds θ[s.offset + k] = s.f(s.itr[k], x, θ)
+    end
+    return nothing
+end
+@inline function _sync_stage!(s::SubexprSumStage, x, θ)
+    @inbounds for j in 1:s.n
+        acc = s.init[j]
+        for m in s.ptr[j]:(s.ptr[j + 1] - 1)
+            sc = s.src[m]
+            acc += sc > 0 ? s.w[m] * x[sc] : s.w[m] * θ[-sc]
+        end
+        θ[s.offset + j] = acc
     end
     return nothing
 end
@@ -241,19 +300,19 @@ _make_abuf(::Tuple, θ) = fill!(similar(θ), zero(eltype(θ)))
 # classify entries by sign alone.
 
 # Recursion combos: subexpr leaf against interior nodes.
-@inline function hdrpass(t1::T1, t2::T2, comp, y1, y2, o2, cnt, adj) where {T1<:SecondAdjointNodeSubexpr,T2<:SecondAdjointNode1}
+@inline function hdrpass(t1::T1, t2::T2, comp, y1, y2, o2, cnt, adj) where {T1 <: SecondAdjointNodeSubexpr, T2 <: SecondAdjointNode1}
     return hdrpass(t1, t2.inner, comp, y1, y2, o2, cnt, adj * t2.y)
 end
 @inline function hdrpass(t1::SecondAdjointNodeSubexpr, t2::SecondAdjointNode1, comp::Nothing, y1, y2, o2, cnt, adj)  # despecialized
     return hdrpass(t1, t2.inner, comp, y1, y2, o2, cnt, adj * t2.y)
 end
-@inline function hdrpass(t1::T1, t2::T2, comp, y1, y2, o2, cnt, adj) where {T1<:SecondAdjointNode1,T2<:SecondAdjointNodeSubexpr}
+@inline function hdrpass(t1::T1, t2::T2, comp, y1, y2, o2, cnt, adj) where {T1 <: SecondAdjointNode1, T2 <: SecondAdjointNodeSubexpr}
     return hdrpass(t1.inner, t2, comp, y1, y2, o2, cnt, adj * t1.y)
 end
 @inline function hdrpass(t1::SecondAdjointNode1, t2::SecondAdjointNodeSubexpr, comp::Nothing, y1, y2, o2, cnt, adj)  # despecialized
     return hdrpass(t1.inner, t2, comp, y1, y2, o2, cnt, adj * t1.y)
 end
-@inline function hdrpass(t1::T1, t2::T2, comp, y1, y2, o2, cnt, adj) where {T1<:SecondAdjointNodeSubexpr,T2<:SecondAdjointNode2}
+@inline function hdrpass(t1::T1, t2::T2, comp, y1, y2, o2, cnt, adj) where {T1 <: SecondAdjointNodeSubexpr, T2 <: SecondAdjointNode2}
     cnt = hdrpass(t1, t2.inner1, comp, y1, y2, o2, cnt, adj * t2.y1)
     cnt = hdrpass(t1, t2.inner2, comp, y1, y2, o2, cnt, adj * t2.y2)
     return cnt
@@ -263,7 +322,7 @@ end
     cnt = hdrpass(t1, t2.inner2, comp, y1, y2, o2, cnt, adj * t2.y2)
     return cnt
 end
-@inline function hdrpass(t1::T1, t2::T2, comp, y1, y2, o2, cnt, adj) where {T1<:SecondAdjointNode2,T2<:SecondAdjointNodeSubexpr}
+@inline function hdrpass(t1::T1, t2::T2, comp, y1, y2, o2, cnt, adj) where {T1 <: SecondAdjointNode2, T2 <: SecondAdjointNodeSubexpr}
     cnt = hdrpass(t1.inner1, t2, comp, y1, y2, o2, cnt, adj * t1.y1)
     cnt = hdrpass(t1.inner2, t2, comp, y1, y2, o2, cnt, adj * t1.y2)
     return cnt
@@ -275,39 +334,39 @@ end
 end
 
 # Leaf pairs: value mode.
-@inline function hdrpass(t1::T1, t2::T2, comp, y1, y2, o2, cnt, adj) where {T1<:SecondAdjointNodeSubexpr,T2<:SecondAdjointNodeSubexpr}
+@inline function hdrpass(t1::T1, t2::T2, comp, y1, y2, o2, cnt, adj) where {T1 <: SecondAdjointNodeSubexpr, T2 <: SecondAdjointNodeSubexpr}
     i, j = t1.i, t2.i
     @inbounds if i == j
-        y1[o2+comp(cnt+=1)] += 2 * adj
+        y1[o2 + comp(cnt += 1)] += 2 * adj
     else
-        y1[o2+comp(cnt+=1)] += adj
+        y1[o2 + comp(cnt += 1)] += adj
     end
     return cnt
 end
-@inline function hdrpass(t1::T1, t2::T2, comp, y1, y2, o2, cnt, adj) where {T1<:SecondAdjointNodeVar,T2<:SecondAdjointNodeSubexpr}
-    @inbounds y1[o2+comp(cnt+=1)] += adj
+@inline function hdrpass(t1::T1, t2::T2, comp, y1, y2, o2, cnt, adj) where {T1 <: SecondAdjointNodeVar, T2 <: SecondAdjointNodeSubexpr}
+    @inbounds y1[o2 + comp(cnt += 1)] += adj
     return cnt
 end
-@inline function hdrpass(t1::T1, t2::T2, comp, y1, y2, o2, cnt, adj) where {T1<:SecondAdjointNodeSubexpr,T2<:SecondAdjointNodeVar}
-    @inbounds y1[o2+comp(cnt+=1)] += adj
+@inline function hdrpass(t1::T1, t2::T2, comp, y1, y2, o2, cnt, adj) where {T1 <: SecondAdjointNodeSubexpr, T2 <: SecondAdjointNodeVar}
+    @inbounds y1[o2 + comp(cnt += 1)] += adj
     return cnt
 end
 
 # Leaf pairs: structure mode (negated subexpression coordinates; x-coordinate
 # first for mixed pairs).
-@inline function hdrpass(t1::T1, t2::T2, comp, y1::V, y2::V, o2, cnt, adj) where {T1<:SecondAdjointNodeSubexpr,T2<:SecondAdjointNodeSubexpr,I<:Integer,V<:AbstractVector{I}}
+@inline function hdrpass(t1::T1, t2::T2, comp, y1::V, y2::V, o2, cnt, adj) where {T1 <: SecondAdjointNodeSubexpr, T2 <: SecondAdjointNodeSubexpr, I <: Integer, V <: AbstractVector{I}}
     ind = o2 + comp(cnt += 1)
     @inbounds y1[ind] = -t1.i
     @inbounds y2[ind] = -t2.i
     return cnt
 end
-@inline function hdrpass(t1::T1, t2::T2, comp, y1::V, y2::V, o2, cnt, adj) where {T1<:SecondAdjointNodeVar,T2<:SecondAdjointNodeSubexpr,I<:Integer,V<:AbstractVector{I}}
+@inline function hdrpass(t1::T1, t2::T2, comp, y1::V, y2::V, o2, cnt, adj) where {T1 <: SecondAdjointNodeVar, T2 <: SecondAdjointNodeSubexpr, I <: Integer, V <: AbstractVector{I}}
     ind = o2 + comp(cnt += 1)
     @inbounds y1[ind] = t1.i
     @inbounds y2[ind] = -t2.i
     return cnt
 end
-@inline function hdrpass(t1::T1, t2::T2, comp, y1::V, y2::V, o2, cnt, adj) where {T1<:SecondAdjointNodeSubexpr,T2<:SecondAdjointNodeVar,I<:Integer,V<:AbstractVector{I}}
+@inline function hdrpass(t1::T1, t2::T2, comp, y1::V, y2::V, o2, cnt, adj) where {T1 <: SecondAdjointNodeSubexpr, T2 <: SecondAdjointNodeVar, I <: Integer, V <: AbstractVector{I}}
     ind = o2 + comp(cnt += 1)
     @inbounds y1[ind] = t2.i
     @inbounds y2[ind] = -t1.i
@@ -329,7 +388,7 @@ end
 end
 
 # Leaf pairs: tuple-based sparsity probe (juliac path).
-@inline function hdrpass(t1::T1, t2::T2, comp::Nothing, y1, y2, o2, cnt::Tuple{<:Tuple,<:Tuple}, adj) where {T1<:Union{SecondAdjointNodeVar,SecondAdjointNodeSubexpr},T2<:SecondAdjointNodeSubexpr}
+@inline function hdrpass(t1::T1, t2::T2, comp::Nothing, y1, y2, o2, cnt::Tuple{<:Tuple, <:Tuple}, adj) where {T1 <: Union{SecondAdjointNodeVar, SecondAdjointNodeSubexpr}, T2 <: SecondAdjointNodeSubexpr}
     pair = (t1.i, t2.i)
     mapping, uniques = cnt
     idx = _hpass_find_pair(pair, uniques, 1)
@@ -339,7 +398,7 @@ end
         return ((mapping..., idx), uniques)
     end
 end
-@inline function hdrpass(t1::T1, t2::T2, comp::Nothing, y1, y2, o2, cnt::Tuple{<:Tuple,<:Tuple}, adj) where {T1<:SecondAdjointNodeSubexpr,T2<:SecondAdjointNodeVar}
+@inline function hdrpass(t1::T1, t2::T2, comp::Nothing, y1, y2, o2, cnt::Tuple{<:Tuple, <:Tuple}, adj) where {T1 <: SecondAdjointNodeSubexpr, T2 <: SecondAdjointNodeVar}
     pair = (t1.i, t2.i)
     mapping, uniques = cnt
     idx = _hpass_find_pair(pair, uniques, 1)
@@ -351,11 +410,11 @@ end
 end
 
 # hrpass leaf: second-order diagonal of the subexpression coordinate.
-@inline function hrpass(t::T, comp, y1, y2, o2, cnt, adj, adj2) where {T<:SecondAdjointNodeSubexpr}
-    @inbounds y1[o2+comp(cnt+=1)] += adj2
+@inline function hrpass(t::T, comp, y1, y2, o2, cnt, adj, adj2) where {T <: SecondAdjointNodeSubexpr}
+    @inbounds y1[o2 + comp(cnt += 1)] += adj2
     return cnt
 end
-@inline function hrpass(t::T, comp, y1::V, y2::V, o2, cnt, adj, adj2) where {T<:SecondAdjointNodeSubexpr,I<:Integer,V<:AbstractVector{I}}
+@inline function hrpass(t::T, comp, y1::V, y2::V, o2, cnt, adj, adj2) where {T <: SecondAdjointNodeSubexpr, I <: Integer, V <: AbstractVector{I}}
     ind = o2 + comp(cnt += 1)
     @inbounds y1[ind] = -t.i
     @inbounds y2[ind] = -t.i
@@ -365,7 +424,7 @@ function hrpass(t::SecondAdjointNodeSubexpr, comp::Nothing, y1, y2, o2, cnt::Vec
     push!(cnt, (t.i, t.i))
     return cnt
 end
-@inline function hrpass(t::T, comp::Nothing, y1, y2, o2, cnt::Tuple{<:Tuple,<:Tuple}, adj, adj2) where {T<:SecondAdjointNodeSubexpr}
+@inline function hrpass(t::T, comp::Nothing, y1, y2, o2, cnt::Tuple{<:Tuple, <:Tuple}, adj, adj2) where {T <: SecondAdjointNodeSubexpr}
     pair = (t.i, t.i)
     mapping, uniques = cnt
     idx = _hpass_find_pair(pair, uniques, 1)
@@ -378,8 +437,8 @@ end
 
 # hrpass0: a top-level linear occurrence of a subexpression contributes no
 # second-order slot (its curvature enters through the stage seed instead).
-@inline hrpass0(t::T, comp, y1, y2, o2, cnt, adj, adj2) where {T<:SecondAdjointNodeSubexpr} = cnt
-@inline hrpass0(t::T, comp::Nothing, y1, y2, o2, cnt, adj, adj2) where {T<:SecondAdjointNodeSubexpr} = cnt
+@inline hrpass0(t::T, comp, y1, y2, o2, cnt, adj, adj2) where {T <: SecondAdjointNodeSubexpr} = cnt
+@inline hrpass0(t::T, comp::Nothing, y1, y2, o2, cnt, adj, adj2) where {T <: SecondAdjointNodeSubexpr} = cnt
 
 # Second-order slot counting (type-level, mirrors SecondAdjointNodeVar).
 _hr0_val(::Type{<:SecondAdjointNodeSubexpr}) = Val(0)
@@ -387,13 +446,13 @@ _hrpass_val(::Type{<:SecondAdjointNodeSubexpr}) = Val(1)
 _hdrpass_val(::Type{<:SecondAdjointNodeSubexpr}, ::Type{<:SecondAdjointNodeSubexpr}) = Val(1)
 _hdrpass_val(::Type{<:SecondAdjointNodeVar}, ::Type{<:SecondAdjointNodeSubexpr}) = Val(1)
 _hdrpass_val(::Type{<:SecondAdjointNodeSubexpr}, ::Type{<:SecondAdjointNodeVar}) = Val(1)
-_hdrpass_val(::Type{<:SecondAdjointNodeSubexpr}, ::Type{SecondAdjointNode1{F,T,I}}) where {F,T,I} =
+_hdrpass_val(::Type{<:SecondAdjointNodeSubexpr}, ::Type{SecondAdjointNode1{F, T, I}}) where {F, T, I} =
     _hdrpass_fixedvar_val(I)
-_hdrpass_val(::Type{SecondAdjointNode1{F,T,I}}, ::Type{<:SecondAdjointNodeSubexpr}) where {F,T,I} =
+_hdrpass_val(::Type{SecondAdjointNode1{F, T, I}}, ::Type{<:SecondAdjointNodeSubexpr}) where {F, T, I} =
     _hdrpass_fixedvar_val(I)
-_hdrpass_val(::Type{<:SecondAdjointNodeSubexpr}, ::Type{SecondAdjointNode2{F,T,I1,I2}}) where {F,T,I1,I2} =
+_hdrpass_val(::Type{<:SecondAdjointNodeSubexpr}, ::Type{SecondAdjointNode2{F, T, I1, I2}}) where {F, T, I1, I2} =
     _add_vals(_hdrpass_fixedvar_val(I1), _hdrpass_fixedvar_val(I2))
-_hdrpass_val(::Type{SecondAdjointNode2{F,T,I1,I2}}, ::Type{<:SecondAdjointNodeSubexpr}) where {F,T,I1,I2} =
+_hdrpass_val(::Type{SecondAdjointNode2{F, T, I1, I2}}, ::Type{<:SecondAdjointNodeSubexpr}) where {F, T, I1, I2} =
     _add_vals(_hdrpass_fixedvar_val(I1), _hdrpass_fixedvar_val(I2))
 _hdrpass_fixedvar_val(::Type{<:SecondAdjointNodeSubexpr}) = Val(1)
 
@@ -408,62 +467,62 @@ _hdrpass_fixedvar_val(::Type{<:SecondAdjointNodeSubexpr}) = Val(1)
 # λⱼ·∇²sⱼ + μⱼ·∇sⱼ∇sⱼᵀ natively and chains through nested stages.  Only the
 # CROSS couplings (pairs of different coordinates) remain for the build-time
 # composition maps.
-struct HessTarget{Y,A}
+struct HessTarget{Y, A}
     ext::Y
     abuf::A
     abuf2::A
 end
 Base.@propagate_inbounds Base.getindex(t::HessTarget, i) = t.ext[i]
 Base.@propagate_inbounds Base.setindex!(t::HessTarget, v, i) = (t.ext[i] = v; v)
-Base.eltype(::Type{HessTarget{Y,A}}) where {Y,A} = eltype(Y)
+Base.eltype(::Type{HessTarget{Y, A}}) where {Y, A} = eltype(Y)
 
 # Buffered leaf under a HessTarget: accumulate seeds instead of writing slots.
 # The slot counter still advances where the probe allocated one, keeping the
 # compressor aligned; the corresponding ext slots stay zero and the build emits
 # no programs for (-j,-j) entries.
 @inline function hrpass(
-    t::T,
-    comp,
-    y1::HessTarget,
-    y2,
-    o2,
-    cnt,
-    adj,
-    adj2,
-) where {T<:SecondAdjointNodeSubexpr}
+        t::T,
+        comp,
+        y1::HessTarget,
+        y2,
+        o2,
+        cnt,
+        adj,
+        adj2,
+    ) where {T <: SecondAdjointNodeSubexpr}
     @inbounds y1.abuf[t.i] += adj
     @inbounds y1.abuf2[t.i] += adj2
     return cnt + 1
 end
 @inline function hrpass0(
-    t::T,
-    comp,
-    y1::HessTarget,
-    y2,
-    o2,
-    cnt,
-    adj,
-    adj2,
-) where {T<:SecondAdjointNodeSubexpr}
+        t::T,
+        comp,
+        y1::HessTarget,
+        y2,
+        o2,
+        cnt,
+        adj,
+        adj2,
+    ) where {T <: SecondAdjointNodeSubexpr}
     @inbounds y1.abuf[t.i] += adj
     return cnt
 end
 @inline function hdrpass(
-    t1::T1,
-    t2::T2,
-    comp,
-    y1::HessTarget,
-    y2,
-    o2,
-    cnt,
-    adj,
-) where {T1<:SecondAdjointNodeSubexpr,T2<:SecondAdjointNodeSubexpr}
+        t1::T1,
+        t2::T2,
+        comp,
+        y1::HessTarget,
+        y2,
+        o2,
+        cnt,
+        adj,
+    ) where {T1 <: SecondAdjointNodeSubexpr, T2 <: SecondAdjointNodeSubexpr}
     i, j = t1.i, t2.i
     @inbounds if i == j
         y1.abuf2[i] += 2 * adj
         cnt += 1
     else
-        y1[o2+comp(cnt+=1)] += adj
+        y1[o2 + comp(cnt += 1)] += adj
     end
     return cnt
 end
@@ -556,9 +615,52 @@ end
 _host_array(x::Array) = x
 _host_array(x) = Array(x)
 _host_block(s::SubexprStage) = SubexprStage(s.f, _host_array(s.itr), s.offset)
+_host_block(s::SubexprSumStage) = SubexprSumStage(
+    s.offset,
+    s.n,
+    _host_array(s.init),
+    _host_array(s.ptr),
+    _host_array(s.src),
+    _host_array(s.w),
+)
 _host_blocks(t::Tuple) = map(_host_block, t)
 # _host_block methods for Objective/Constraint/ConstraintAugmentation are in
 # nlp.jl (those types are defined after this file is included).
+
+# Extended-space structure of one stage's one-level Jacobian (host blocks):
+# one (row = θ slot, col = signed coordinate) pair per stage_ext program slot.
+function _stage_jac_structure(::Type{T}, s::SubexprStage) where {T}
+    n = length(s.itr)
+    step = s.f.o1step
+    erows = zeros(Int, n * step)
+    ecols = zeros(Int, n * step)
+    for k in eachindex(s.itr)
+        sjacobian!(
+            erows,
+            ecols,
+            s.f,
+            s.itr[k],
+            NaNSource{T}(),
+            NaNSource{T}(),
+            s.f.comp1,
+            s.offset + k,
+            (k - 1) * step,
+            T(NaN),
+        )
+    end
+    return erows, ecols
+end
+# A sum stage's structure is its term table: slot rows expanded from the CSR
+# pointers, signed sources used as columns directly (same sign convention).
+function _stage_jac_structure(::Type{T}, s::SubexprSumStage) where {T}
+    erows = zeros(Int, length(s.src))
+    for j in 1:s.n
+        for m in s.ptr[j]:(s.ptr[j + 1] - 1)
+            erows[m] = s.offset + j
+        end
+    end
+    return erows, copy(s.src)
+end
 
 _build_subexpr_jac(::Type{T}, stages::Tuple{}, cons, nnzj_ext) where {T} =
     (nothing, nothing, nothing)
@@ -567,14 +669,14 @@ function _build_subexpr_jac(::Type{T}, stages::Tuple, cons, nnzj_ext) where {T}
     cons = _host_blocks(cons)
     ordered = reverse(collect(Any, _host_blocks(stages)))   # oldest first
     # θ-slot → [(xcol, res index)] : stage Jacobians fully resolved to x-columns
-    resolved = Dict{Int,Vector{Tuple{Int,Int}}}()
+    resolved = Dict{Int, Vector{Tuple{Int, Int}}}()
     # θ-slot → [(signed col, stage_ext index)] : ONE-level (local) rows, used by
     # the sequential Hessian elimination
-    localrows = Dict{Int,Vector{Tuple{Int,Int}}}()
+    localrows = Dict{Int, Vector{Tuple{Int, Int}}}()
     res_copy_dst = Int[]; res_copy_src = Int[]
     res_prod_dst = Int[]; res_prod_a = Int[]; res_prod_b = Int[]
     res_n = 0
-    rowmaps = Dict{Int,Dict{Int,Int}}()
+    rowmaps = Dict{Int, Dict{Int, Int}}()
     stage_o1 = Int[]
     lvl_res_copy = UnitRange{Int}[]
     lvl_res_prod = UnitRange{Int}[]
@@ -583,35 +685,18 @@ function _build_subexpr_jac(::Type{T}, stages::Tuple, cons, nnzj_ext) where {T}
         push!(stage_o1, off)
         rc0 = length(res_copy_dst)
         rp0 = length(res_prod_dst)
-        n = length(s.itr)
-        step = s.f.o1step
-        erows = zeros(Int, n * step)
-        ecols = zeros(Int, n * step)
-        for k in eachindex(s.itr)
-            sjacobian!(
-                erows,
-                ecols,
-                s.f,
-                s.itr[k],
-                NaNSource{T}(),
-                NaNSource{T}(),
-                s.f.comp1,
-                s.offset + k,
-                (k - 1) * step,
-                T(NaN),
-            )
-        end
-        for ind in 1:(n*step)
+        erows, ecols = _stage_jac_structure(T, s)
+        for ind in 1:length(erows)
             row = erows[ind]
             col = ecols[ind]
             col == 0 && continue
-            push!(get!(() -> Tuple{Int,Int}[], localrows, row), (col, off + ind))
+            push!(get!(() -> Tuple{Int, Int}[], localrows, row), (col, off + ind))
             # Merge resolved entries per (row, x-column): one res slot per
             # distinct column, contributions accumulated (+=) at evaluation.
             # Without merging the row width enumerates PATHS (2^depth on a
             # chain) instead of columns.
-            lst = get!(() -> Tuple{Int,Int}[], resolved, row)
-            rmap = get!(() -> Dict{Int,Int}(), rowmaps, row)
+            lst = get!(() -> Tuple{Int, Int}[], resolved, row)
+            rmap = get!(() -> Dict{Int, Int}(), rowmaps, row)
             getres!(xc) = get!(rmap, xc) do
                 res_n += 1
                 push!(lst, (xc, res_n))
@@ -621,16 +706,16 @@ function _build_subexpr_jac(::Type{T}, stages::Tuple, cons, nnzj_ext) where {T}
                 push!(res_copy_dst, getres!(col))
                 push!(res_copy_src, off + ind)
             elseif col < 0
-                for (xc, b) in get(resolved, -col, Tuple{Int,Int}[])
+                for (xc, b) in get(resolved, -col, Tuple{Int, Int}[])
                     push!(res_prod_dst, getres!(xc))
                     push!(res_prod_a, off + ind)
                     push!(res_prod_b, b)
                 end
             end
         end
-        off += n * step
-        push!(lvl_res_copy, (rc0+1):length(res_copy_dst))
-        push!(lvl_res_prod, (rp0+1):length(res_prod_dst))
+        off += length(erows)
+        push!(lvl_res_copy, (rc0 + 1):length(res_copy_dst))
+        push!(lvl_res_prod, (rp0 + 1):length(res_prod_dst))
     end
     reverse!(stage_o1)   # match the newest-first stage tuple order
 
@@ -643,7 +728,7 @@ function _build_subexpr_jac(::Type{T}, stages::Tuple, cons, nnzj_ext) where {T}
     # Deduplicate (row, col) pairs: programs accumulate (+=) into shared slots,
     # so the final COO stays at the true-pattern size instead of one entry per
     # (consumer entry × resolved stage entry) product.
-    slot = Dict{Tuple{Int,Int},Int}()
+    slot = Dict{Tuple{Int, Int}, Int}()
     emit(r, c) = get!(slot, (r, c)) do
         push!(rows, r); push!(cols, c)
         length(rows)
@@ -655,7 +740,7 @@ function _build_subexpr_jac(::Type{T}, stages::Tuple, cons, nnzj_ext) where {T}
             push!(jac_copy_dst, emit(r, c))
             push!(jac_copy_src, ind)
         elseif c < 0
-            for (xc, b) in get(resolved, -c, Tuple{Int,Int}[])
+            for (xc, b) in get(resolved, -c, Tuple{Int, Int}[])
                 push!(jac_prod_dst, emit(r, xc))
                 push!(jac_prod_a, ind)
                 push!(jac_prod_b, b)
@@ -691,8 +776,11 @@ end
 
 _stage_jac_fill!(stages::Tuple{}, o1s, i, sj, x, θ) = nothing
 @inline function _stage_jac_fill!(stages::Tuple, o1s, i, sj, x, θ)
-    s = first(stages)
-    off = o1s[i]
+    _stage_jac_fill1!(first(stages), o1s[i], sj, x, θ)
+    _stage_jac_fill!(Base.tail(stages), o1s, i + 1, sj, x, θ)
+    return nothing
+end
+@inline function _stage_jac_fill1!(s::SubexprStage, off, sj, x, θ)
     step = s.f.o1step
     for k in eachindex(s.itr)
         sjacobian!(
@@ -708,7 +796,13 @@ _stage_jac_fill!(stages::Tuple{}, o1s, i, sj, x, θ) = nothing
             one(eltype(x)),
         )
     end
-    _stage_jac_fill!(Base.tail(stages), o1s, i + 1, sj, x, θ)
+    return nothing
+end
+# A sum stage's one-level Jacobian values are its constant weights.
+@inline function _stage_jac_fill1!(s::SubexprSumStage, off, sj, x, θ)
+    @inbounds for m in eachindex(s.w)
+        sj.stage_ext[off + m] = s.w[m]
+    end
     return nothing
 end
 
@@ -793,6 +887,20 @@ struct SubexprHess{T}
     hmul_src::Vector{Int}
     hmul_a::Vector{Int}
     hmul_c::Vector{T}
+    # Sum-slot curvature μ·∇v∇vᵀ, with ∇v resolved to x-columns (the
+    # SubexprJac `res` entries of the slot).  Each slot lists its resolved
+    # entries in ascending x-column order; slots with the same x-support share
+    # one table of Hessian destinations over the lower-triangle pairs of that
+    # support, so build storage scales with the distinct supports, not with
+    # the number of slots or of source pairs.
+    rk_slot::Vector{Int}       # θ-slot whose μ seed (abuf2) scales the term
+    rk_ptr::Vector{Int}        # CSR into rk_res, one segment per slot
+    rk_res::Vector{Int}        # SubexprJac.res indices, ascending x-column
+    rk_pat::Vector{Int}        # support table of each slot
+    pat_ptr::Vector{Int}       # CSR into pat_dst / pat_a / pat_b
+    pat_dst::Vector{Int}       # hess[dst] += μ * res[seg[a]] * res[seg[b]]
+    pat_a::Vector{Int}         # positions within the slot's rk_res segment
+    pat_b::Vector{Int}
     hess_copy_dst::Vector{Int} # hess[dst] += hess_ext[src]  (direct xx)
     hess_copy_src::Vector{Int}
     rows::Vector{Int}
@@ -800,10 +908,33 @@ struct SubexprHess{T}
     vals::Vector{T}            # scratch for COO-based hprod
 end
 
-_build_subexpr_hess(::Type{T}, stages::Tuple{}, objs, cons, nnzh_ext, localrows, nθ) where {T} =
+_build_subexpr_hess(::Type{T}, stages::Tuple{}, objs, cons, nnzh_ext, localrows, resolved, nθ) where {T} =
     nothing
 
-function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, localrows, nθ) where {T}
+# Extended-space structure of one stage's replay Hessian (host blocks), written
+# into the stage's hess_ext segment starting at `base`.  A sum stage has no
+# replay (its ∇² is zero in the extended coordinates) and contributes nothing.
+function _stage_hess_structure!(::Type{T}, erows, ecols, s::SubexprStage, base) where {T}
+    step = s.f.o2step
+    for k in eachindex(s.itr)
+        _stage_shessian!(
+            erows,
+            ecols,
+            s.f,
+            s.itr[k],
+            NaNSource{T}(),
+            NaNSource{T}(),
+            s.f.comp2,
+            base + (k - 1) * step,
+            T(NaN),
+            T(NaN),
+        )
+    end
+    return nothing
+end
+_stage_hess_structure!(::Type{T}, erows, ecols, s::SubexprSumStage, base) where {T} = nothing
+
+function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, localrows, resolved, nθ) where {T}
     objs = _host_blocks(objs)
     cons = _host_blocks(cons)
     ordered = reverse(collect(Any, _host_blocks(stages)))   # oldest first: levels 1..nlv
@@ -812,39 +943,30 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, loc
     total = nnzh_ext
     for s in ordered
         push!(stage_o2, total)
-        total += length(s.itr) * s.f.o2step
+        total += _stage_o2len(s)
     end
     erows = zeros(Int, total)
     ecols = zeros(Int, total)
     _obj_hess_structure!(T, objs, erows, ecols)
     _con_hess_structure!(T, cons, erows, ecols)
     for (si, s) in enumerate(ordered)
-        step = s.f.o2step
-        for k in eachindex(s.itr)
-            _stage_shessian!(
-                erows,
-                ecols,
-                s.f,
-                s.itr[k],
-                NaNSource{T}(),
-                NaNSource{T}(),
-                s.f.comp2,
-                stage_o2[si] + (k - 1) * step,
-                T(NaN),
-                T(NaN),
-            )
-        end
+        _stage_hess_structure!(T, erows, ecols, s, stage_o2[si])
     end
 
     slotlvl = zeros(Int, nθ)
     for (i, s) in enumerate(ordered)
-        slotlvl[(s.offset+1):(s.offset+length(s.itr))] .= i
+        slotlvl[(s.offset + 1):(s.offset + _stage_len(s))] .= i
     end
     lvlof(ξ) = ξ > 0 ? 0 : slotlvl[-ξ]
     normp(a, b) = a >= b ? (a, b) : (b, a)
+    # Slots whose μ seed (abuf2) can be nonzero at runtime: seeded below from the
+    # (-j,-j) diagonal structure entries, and extended during the level sweep by
+    # amul / q-program targets (which always point at strictly older slots, so a
+    # level's set is complete before that level is processed).
+    muactive = falses(nθ)
 
     rows = Int[]; cols = Int[]
-    final = Dict{Tuple{Int,Int},Int}()
+    final = Dict{Tuple{Int, Int}, Int}()
     emit(i, j) = get!(final, (max(i, j), min(i, j))) do
         push!(rows, max(i, j)); push!(cols, min(i, j))
         length(rows)
@@ -852,13 +974,16 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, loc
 
     # pair → C index, per level; programs collected per level, flattened in
     # iteration (newest-first) order at the end.
-    entries = [Dict{Tuple{Int,Int},Int}() for _ in 1:nlv]
+    entries = [Dict{Tuple{Int, Int}, Int}() for _ in 1:nlv]
     Cn = Ref(0)
     getC!(p, l) = get!(() -> (Cn[] += 1), entries[l], p)
-    ccopyL = [Tuple{Int,Int}[] for _ in 1:nlv]
-    cmulL = [NTuple{3,Int}[] for _ in 1:nlv]
-    amulL = [NTuple{3,Int}[] for _ in 1:nlv]
-    hmulL = [Tuple{Int,Int,Int,T}[] for _ in 1:nlv]
+    ccopyL = [Tuple{Int, Int}[] for _ in 1:nlv]
+    cmulL = [NTuple{3, Int}[] for _ in 1:nlv]
+    amulL = [NTuple{3, Int}[] for _ in 1:nlv]
+    hmulL = [Tuple{Int, Int, Int, T}[] for _ in 1:nlv]
+    rk_slot = Int[]; rk_ptr = Int[1]; rk_res = Int[]; rk_pat = Int[]
+    pat_ptr = Int[1]; pat_dst = Int[]; pat_a = Int[]; pat_b = Int[]
+    pats = Dict{Vector{Int}, Int}()
     hess_copy_dst = Int[]; hess_copy_src = Int[]
 
     # Seed: classify every extended entry.
@@ -871,6 +996,7 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, loc
             push!(hess_copy_src, ind)
         elseif r < 0 && r == c
             # slot diagonal: redirected to the μ buffer at runtime; dead slot
+            muactive[-r] = true
             continue
         else
             p = normp(r, c)
@@ -880,12 +1006,51 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, loc
         end
     end
 
-    nores = Tuple{Int,Int}[]
+    nores = Tuple{Int, Int}[]
     cmul_phL = Int[]
+    # μ·∇v∇vᵀ of one sum stage's slots, written straight into x-space from
+    # each slot's resolved gradient.  It must not be lowered through C by
+    # pairing the slot's sources: slots with disjoint sources never share those
+    # pairs, so every slot summing k element slots would cost O(k²) build
+    # entries of its own, whereas slots with one x-support share one table.
+    # The pair value is the MATRIX entry counted once (a diagonal pair is the
+    # plain square, no doubling), matching `emit`.
+    _emit_sum_rank1!(s::SubexprStage, muactive) = nothing
+    function _emit_sum_rank1!(s::SubexprSumStage, muactive)
+        for j in 1:s.n
+            slot = s.offset + j
+            muactive[slot] || continue
+            lst = sort(get(resolved, slot, nores); by = first)
+            isempty(lst) && continue
+            key = first.(lst)
+            q = get!(pats, key) do
+                k = length(key)
+                for a in 1:k, b in 1:a
+                    push!(pat_dst, emit(key[a], key[b]))
+                    push!(pat_a, a)
+                    push!(pat_b, b)
+                end
+                push!(pat_ptr, length(pat_dst) + 1)
+                length(pat_ptr) - 1
+            end
+            push!(rk_slot, slot)
+            for (_, r) in lst
+                push!(rk_res, r)
+            end
+            push!(rk_ptr, length(rk_res) + 1)
+            push!(rk_pat, q)
+        end
+        return nothing
+    end
     # Eliminate levels newest → oldest.  Within a level: rank-2 pairs (both
     # coordinates at this level) first — they produce rank-1 pairs at the same
     # level — then rank-1 pairs, which only produce strictly older pairs.
     for l in nlv:-1:1
+        # μ·∇v∇vᵀ of this level's sum slots (if any): by the time level l is
+        # reached, every writer of abuf2[slot] for a level-l slot has been
+        # emitted (consumer/stage seeds at classification, amul targets from
+        # newer levels), so `muactive` is final for this level's slots.
+        _emit_sum_rank1!(ordered[l], muactive)
         d = entries[l]
         expand(p, cp) = begin
             ξexp, oth = lvlof(p[1]) == l ? (p[1], p[2]) : (p[2], p[1])
@@ -894,6 +1059,7 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, loc
                     push!(hmulL[l], (emit(ccol, oth), cp, aidx, ccol == oth ? T(2) : T(1)))
                 elseif ccol < 0 && ccol == oth
                     push!(amulL[l], (-ccol, cp, aidx))
+                    muactive[-ccol] = true
                 else
                     np = normp(ccol, oth)
                     l2 = max(lvlof(np[1]), lvlof(np[2]))
@@ -922,23 +1088,23 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, loc
         for (dst, s) in ccopyL[l]
             push!(ccopy_dst, dst); push!(ccopy_src, s)
         end
-        push!(lvl_ccopy, (n0+1):length(ccopy_dst))
+        push!(lvl_ccopy, (n0 + 1):length(ccopy_dst))
         n0 = length(cmul_dst)
         for (dst, s, a) in cmulL[l]
             push!(cmul_dst, dst); push!(cmul_src, s); push!(cmul_a, a)
         end
-        push!(lvl_cmul, (n0+1):length(cmul_dst))
-        push!(cmul_ph, cmul_phL[nlv-l+1])
+        push!(lvl_cmul, (n0 + 1):length(cmul_dst))
+        push!(cmul_ph, cmul_phL[nlv - l + 1])
         n0 = length(amul_dst)
         for (dst, s, a) in amulL[l]
             push!(amul_dst, dst); push!(amul_src, s); push!(amul_a, a)
         end
-        push!(lvl_amul, (n0+1):length(amul_dst))
+        push!(lvl_amul, (n0 + 1):length(amul_dst))
         n0 = length(hmul_dst)
         for (dst, s, a, cf) in hmulL[l]
             push!(hmul_dst, dst); push!(hmul_src, s); push!(hmul_a, a); push!(hmul_c, cf)
         end
-        push!(lvl_hmul, (n0+1):length(hmul_dst))
+        push!(lvl_hmul, (n0 + 1):length(hmul_dst))
     end
     reverse!(stage_o2)   # match the newest-first stage tuple order
 
@@ -964,6 +1130,14 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, loc
         hmul_src,
         hmul_a,
         hmul_c,
+        rk_slot,
+        rk_ptr,
+        rk_res,
+        rk_pat,
+        pat_ptr,
+        pat_dst,
+        pat_a,
+        pat_b,
         hess_copy_dst,
         hess_copy_src,
         rows,
@@ -979,22 +1153,7 @@ end
 _hess_seq!(stages::Tuple{}, i, sh, sj, t::HessTarget, hess, x, θ) = nothing
 @inline function _hess_seq!(stages::Tuple, i, sh, sj, t::HessTarget, hess, x, θ)
     s = first(stages)
-    off = sh.stage_o2[i]
-    step = s.f.o2step
-    for k in eachindex(s.itr)
-        _stage_shessian!(
-            t,
-            nothing,
-            s.f,
-            @inbounds(s.itr[k]),
-            x,
-            θ,
-            s.f.comp2,
-            off + (k - 1) * step,
-            @inbounds(t.abuf[s.offset+k]),
-            @inbounds(t.abuf2[s.offset+k]),
-        )
-    end
+    _stage_replay!(s, sh.stage_o2[i], t, x, θ)
     C = sh.C
     ext = sh.hess_ext
     sx = sj.stage_ext
@@ -1014,21 +1173,75 @@ _hess_seq!(stages::Tuple{}, i, sh, sj, t::HessTarget, hess, x, θ) = nothing
     return nothing
 end
 
+# Sum-slot curvature μ·∇v∇vᵀ in x-space.  Runs after the sweep: a slot's μ
+# seed is final once its level is reached, and the targets are x-space
+# entries no later program reads.  A zero μ skips the slot, so a switched-off
+# slot contributes nothing even where its resolved gradient is not finite.
+function _hess_rank1!(sh::SubexprHess, res, abuf2, hess)
+    for k in eachindex(sh.rk_slot)
+        μ = abuf2[sh.rk_slot[k]]
+        iszero(μ) && continue
+        base = sh.rk_ptr[k] - 1
+        q = sh.rk_pat[k]
+        for e in sh.pat_ptr[q]:(sh.pat_ptr[q + 1] - 1)
+            hess[sh.pat_dst[e]] +=
+                μ * res[sh.rk_res[base + sh.pat_a[e]]] * res[sh.rk_res[base + sh.pat_b[e]]]
+        end
+    end
+    return nothing
+end
+
+# Stage replay with the accumulated (λ, μ) seeds.  A sum stage replays
+# nothing (zero extended-space curvature); it only chains its λ seeds one level
+# down with its constant weights — the μ side is the x-space rank-1 term.
+@inline function _stage_replay!(s::SubexprStage, off, t::HessTarget, x, θ)
+    step = s.f.o2step
+    for k in eachindex(s.itr)
+        _stage_shessian!(
+            t,
+            nothing,
+            s.f,
+            @inbounds(s.itr[k]),
+            x,
+            θ,
+            s.f.comp2,
+            off + (k - 1) * step,
+            @inbounds(t.abuf[s.offset + k]),
+            @inbounds(t.abuf2[s.offset + k]),
+        )
+    end
+    return nothing
+end
+@inline function _stage_replay!(s::SubexprSumStage, off, t::HessTarget, x, θ)
+    @inbounds for j in 1:s.n
+        adj = t.abuf[s.offset + j]
+        for m in s.ptr[j]:(s.ptr[j + 1] - 1)
+            sc = s.src[m]
+            sc < 0 && (t.abuf[-sc] += s.w[m] * adj)
+        end
+    end
+    return nothing
+end
+
 function _hess_coord_subexpr!(
-    sh::SubexprHess,
-    sj::SubexprJac,
-    stages::Tuple,
-    objs,
-    cons,
-    x,
-    θ,
-    abuf,
-    hess,
-    obj_weight,
-    y,
-)
+        sh::SubexprHess,
+        sj::SubexprJac,
+        stages::Tuple,
+        objs,
+        cons,
+        x,
+        θ,
+        abuf,
+        hess,
+        obj_weight,
+        y,
+    )
     _sync_subexprs!(stages, x, θ)
-    _fill_stage_jac!(sj, stages, x, θ)
+    if isempty(sh.rk_slot)
+        _fill_stage_jac!(sj, stages, x, θ)
+    else
+        _resolve_stage_jac!(sj, stages, x, θ)
+    end
     fill!(abuf, zero(eltype(abuf)))
     fill!(sh.abuf2, zero(eltype(sh.abuf2)))
     fill!(sh.hess_ext, zero(eltype(sh.hess_ext)))
@@ -1038,6 +1251,7 @@ function _hess_coord_subexpr!(
     _obj_hess_coord!(objs, x, θ, t, obj_weight)
     y === nothing || _con_hess_coord!(cons, x, θ, y, t, obj_weight)
     _hess_seq!(stages, 1, sh, sj, t, hess, x, θ)
+    _hess_rank1!(sh, sj.res, t.abuf2, hess)
     @inbounds for m in eachindex(sh.hess_copy_dst)
         hess[sh.hess_copy_dst[m]] += sh.hess_ext[sh.hess_copy_src[m]]
     end
@@ -1046,13 +1260,30 @@ end
 
 _reverse_subexprs!(stages::Tuple{}, x, θ, t::GradTarget) = nothing
 @inline function _reverse_subexprs!(stages::Tuple, x, θ, t::GradTarget)
-    s = first(stages)
+    _reverse_stage!(first(stages), x, θ, t)
+    _reverse_subexprs!(Base.tail(stages), x, θ, t)
+    return nothing
+end
+@inline function _reverse_stage!(s::SubexprStage, x, θ, t::GradTarget)
     for k in eachindex(s.itr)
-        adj = @inbounds t.abuf[s.offset+k]
+        adj = @inbounds t.abuf[s.offset + k]
         graph = s.f.f(@inbounds(s.itr[k]), AdjointNodeSource(x), θ)
         drpass(graph, t, adj)
     end
-    _reverse_subexprs!(Base.tail(stages), x, θ, t)
+    return nothing
+end
+@inline function _reverse_stage!(s::SubexprSumStage, x, θ, t::GradTarget)
+    @inbounds for j in 1:s.n
+        adj = t.abuf[s.offset + j]
+        for m in s.ptr[j]:(s.ptr[j + 1] - 1)
+            sc = s.src[m]
+            if sc > 0
+                t.y[sc] += s.w[m] * adj
+            else
+                t.abuf[-sc] += s.w[m] * adj
+            end
+        end
+    end
     return nothing
 end
 

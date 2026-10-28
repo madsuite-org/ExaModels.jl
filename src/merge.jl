@@ -52,7 +52,7 @@ end
 
 const _MROW_IV = 4  # field position of `iv` in MergedRow
 const _MROW_FV = 5  # field position of `fv` in MergedRow
-const _MROW_D  = 6  # field position of `d` in MergedRow
+const _MROW_D = 6  # field position of `d` in MergedRow
 
 # Float64 -> Float32 rewrite for backends without Float64 (Metal). The generic
 # struct rebuild in templates.jl cannot reconstruct a MergedRow: with no Float
@@ -108,7 +108,7 @@ Base.size(s::SegmentedItr) = (isempty(s.offs) ? 0 : (@inbounds s.offs[end]),)
 @inline function Base.getindex(s::SegmentedItr{K, S, T, D}, i::Int) where {K, S, T, D}
     j = _segof(s, i)
     seg = @inbounds s.segs[j]
-    base = j == 1 ? 0 : @inbounds s.offs[j-1]
+    base = j == 1 ? 0 : @inbounds s.offs[j - 1]
     r = i - base
     return MergedRow{K, S, T, D}(
         seg.o0 + r,
@@ -379,26 +379,35 @@ end
     rep = f
     tree, ivs, fvt, cls = _shoist(T, _family_tree(rep))
     mf = _simdfunction(T, tree, 0, 0, 0)
-    itr = _merged_first_itr(T, getfield(f, :f), backend, rep, mf, f, pars, dims,
-                            ivs, fvt, cls)
+    itr = _merged_first_itr(
+        T, getfield(f, :f), backend, rep, mf, f, pars, dims,
+        ivs, fvt, cls
+    )
     return _mkblock(kind, mf, itr, length(pars), tag), mf
 end
 
 # a plain (non-pair) head on the host gets the lazy segmented iterator
-@inline function _merged_first_itr(::Type{T}, head, ::Nothing, rep, mf, f, pars, dims,
-                                   ivs, fvt, cls) where {T}
+@inline function _merged_first_itr(
+        ::Type{T}, head, ::Nothing, rep, mf, f, pars, dims,
+        ivs, fvt, cls
+    ) where {T}
     K = length(ivs)
     S = length(fvt)
     segs = MergedSeg{K, S, T, typeof(pars)}[MergedSeg{K, S, T, typeof(pars)}(pars, f.o0, f.o1, f.o2, ivs, fvt)]
     return SegmentedItr{K, S, T, eltype(pars), typeof(pars), typeof(rep)}(
-        rep, cls, segs, Int[length(pars)], Ref(length(pars)), mf.o1step, mf.o2step)
+        rep, cls, segs, Int[length(pars)], Ref(length(pars)), mf.o1step, mf.o2step
+    )
 end
 # pair heads (data-driven row targets) and device backends materialize rows
-@inline _merged_first_itr(::Type{T}, head::Pair, ::Nothing, rep, mf, f, pars, dims,
-                          ivs, fvt, cls) where {T} =
+@inline _merged_first_itr(
+    ::Type{T}, head::Pair, ::Nothing, rep, mf, f, pars, dims,
+    ivs, fvt, cls
+) where {T} =
     _merged_rows(T, rep, mf, f, pars, dims, ivs, fvt, cls)
-@inline _merged_first_itr(::Type{T}, head, backend, rep, mf, f, pars, dims,
-                          ivs, fvt, cls) where {T} =
+@inline _merged_first_itr(
+    ::Type{T}, head, backend, rep, mf, f, pars, dims,
+    ivs, fvt, cls
+) where {T} =
     _merged_rows(T, rep, mf, f, pars, dims, ivs, fvt, cls)
 
 @inline function _merged_rows(::Type{T}, rep, mf, f, pars, dims, ivs, fvt, cls) where {T}
@@ -406,8 +415,12 @@ end
     S = length(fvt)
     o0s = _row_o0s(f, pars, dims)
     itrc = collect(pars)
-    rows = [MergedRow{K, S, T, eltype(itrc)}(o0s[r], f.o1 + mf.o1step * (r - 1),
-                      f.o2 + mf.o2step * (r - 1), ivs, fvt, itrc[r]) for r in eachindex(itrc)]
+    rows = [
+        MergedRow{K, S, T, eltype(itrc)}(
+                o0s[r], f.o1 + mf.o1step * (r - 1),
+                f.o2 + mf.o2step * (r - 1), ivs, fvt, itrc[r]
+            ) for r in eachindex(itrc)
+    ]
     return MergedRows{K, S, T, eltype(itrc), typeof(rep)}(rep, cls, rows)
 end
 
@@ -417,8 +430,10 @@ end
     # same family means same tree type, so the arriving tree's own walk uses
     # the representative's slot layout by construction
     _, ivs, fvt, _ = _shoist(T, _family_tree(f))
-    return _merged_append_itr(getfield(prev, :itr), prev, f, pars, dims, tag,
-                              ivs, fvt)
+    return _merged_append_itr(
+        getfield(prev, :itr), prev, f, pars, dims, tag,
+        ivs, fvt
+    )
 end
 
 # Copy-on-append: the core API is persistent, so the previous core — and any
@@ -466,8 +481,10 @@ end
     _merge_allowed(getfield(c, :nargs), getfield(f, :f), c.backend) || return nothing
     _merge_itr_ok(pars) || return nothing
     cls = _iv_classes(_siv(_family_tree(f)))
-    return _merge_result(_smerge(T, Constraint, c.cons, f, pars, dims, tag, eltype(pars), cls),
-                         T, Constraint, c, c.cons, f, pars, dims, tag)
+    return _merge_result(
+        _smerge(T, Constraint, c.cons, f, pars, dims, tag, eltype(pars), cls),
+        T, Constraint, c, c.cons, f, pars, dims, tag
+    )
 end
 
 # objectives: same machinery, `c.obj` instead of `c.cons`, no tag.  The nnz
@@ -478,8 +495,10 @@ end
     _merge_itr_ok(pars) || return nothing
     dims = (length(pars),)
     cls = _iv_classes(_siv(_family_tree(f)))
-    return _merge_result(_smerge(T, Objective, c.obj, f, pars, dims, nothing, eltype(pars), cls),
-                         T, Objective, c, c.obj, f, pars, dims, nothing)
+    return _merge_result(
+        _smerge(T, Objective, c.obj, f, pars, dims, nothing, eltype(pars), cls),
+        T, Objective, c, c.obj, f, pars, dims, nothing
+    )
 end
 
 # recipes (nargs > 0) are stored plain; pair-headed plain blocks (data-driven
@@ -508,7 +527,7 @@ end
     b = first(cons)
     rest = Base.tail(cons)
     if _same_family(b, f, E, cls) && _blocktag(b) === tag &&
-       _appendable(getfield(b, :itr), pars)
+            _appendable(getfield(b, :itr), pars)
         nb = _merged_append(T, b, f, pars, dims, tag)
         mf = getfield(nb, :f)
         return (nb, rest...), mf.o1step, mf.o2step
@@ -521,7 +540,7 @@ end
 function _smerge(::Type{T}, kind, cons::Vector{Any}, f, pars, dims, tag, ::Type{E}, cls) where {T, E}
     for (i, b) in enumerate(cons)
         if _same_family(b, f, E, cls) && _blocktag(b) === tag &&
-           _appendable(getfield(b, :itr), pars)
+                _appendable(getfield(b, :itr), pars)
             nb = _merged_append(T, b, f, pars, dims, tag)
             out = copy(cons)
             out[i] = nb
@@ -566,21 +585,27 @@ _finalize_merged(c::ExaCore) = _finalize_merged2(c, c.backend, getfield(c, :var)
 # plain CPU, erased storage: keep var/par/refs erased when anything merged
 function _finalize_merged2(c::ExaCore, ::Nothing, ::Vector{Any})
     (_has_merged(c.cons) || _has_merged(c.obj)) || return c
-    return ExaCore(c; cons = Tuple(Any[b for b in c.cons]),
-                   obj = Tuple(Any[b for b in c.obj]),
-                   var = Any[c.var...], par = Any[c.par...],
-                   refs = _erase_refs(getfield(c, :refs)))
+    return ExaCore(
+        c; cons = Tuple(Any[b for b in c.cons]),
+        obj = Tuple(Any[b for b in c.obj]),
+        var = Any[c.var...], par = Any[c.par...],
+        refs = _erase_refs(getfield(c, :refs))
+    )
 end
 # device: additionally materialize merged iterators as device arrays
 function _finalize_merged2(c::ExaCore, backend, var::Vector{Any})
-    return ExaCore(c; cons = Tuple(Any[_materialize_block(backend, b) for b in c.cons]),
-                   obj = Tuple(Any[_materialize_block(backend, b) for b in c.obj]),
-                   var = Any[c.var...], par = Any[c.par...],
-                   refs = _erase_refs(getfield(c, :refs)))
+    return ExaCore(
+        c; cons = Tuple(Any[_materialize_block(backend, b) for b in c.cons]),
+        obj = Tuple(Any[_materialize_block(backend, b) for b in c.obj]),
+        var = Any[c.var...], par = Any[c.par...],
+        refs = _erase_refs(getfield(c, :refs))
+    )
 end
 function _finalize_merged2(c::ExaCore, backend, var)
-    return ExaCore(c; cons = Tuple(Any[_materialize_block(backend, b) for b in c.cons]),
-                   obj = Tuple(Any[_materialize_block(backend, b) for b in c.obj]))
+    return ExaCore(
+        c; cons = Tuple(Any[_materialize_block(backend, b) for b in c.cons]),
+        obj = Tuple(Any[_materialize_block(backend, b) for b in c.obj])
+    )
 end
 
 # ── specialized hot loops for the lazy iterator ──────────────────────────────
@@ -592,13 +617,18 @@ function sjacobian!(y1, y2, f::Constraint{F, I}, x, θ, adj) where {F, I <: Segm
     for j in eachindex(s.segs)
         seg = @inbounds s.segs[j]
         @simd for r in 1:length(seg.itr)
-            el = eltype(s)(seg.o0 + r, seg.o1 + s.o1step * (r - 1),
-                           seg.o2 + s.o2step * (r - 1), seg.iv, seg.fv,
-                           (@inbounds seg.itr[r]))
-            @inbounds sjacobian!(y1, y2, f.f.f, el, x, θ, f.f.comp1,
-                                 seg.o0 + r, seg.o1 + s.o1step * (r - 1), adj)
+            el = eltype(s)(
+                seg.o0 + r, seg.o1 + s.o1step * (r - 1),
+                seg.o2 + s.o2step * (r - 1), seg.iv, seg.fv,
+                (@inbounds seg.itr[r])
+            )
+            @inbounds sjacobian!(
+                y1, y2, f.f.f, el, x, θ, f.f.comp1,
+                seg.o0 + r, seg.o1 + s.o1step * (r - 1), adj
+            )
         end
     end
+    return
 end
 
 function shessian!(y1, y2, f::Constraint{F, I}, x, θ, adj1, adj2) where {F, I <: SegmentedItr}
@@ -606,13 +636,18 @@ function shessian!(y1, y2, f::Constraint{F, I}, x, θ, adj1, adj2) where {F, I <
     for j in eachindex(s.segs)
         seg = @inbounds s.segs[j]
         @simd for r in 1:length(seg.itr)
-            el = eltype(s)(seg.o0 + r, seg.o1 + s.o1step * (r - 1),
-                           seg.o2 + s.o2step * (r - 1), seg.iv, seg.fv,
-                           (@inbounds seg.itr[r]))
-            @inbounds shessian!(y1, y2, f.f.f, el, x, θ, f.f.comp2,
-                                seg.o2 + s.o2step * (r - 1), adj1, adj2)
+            el = eltype(s)(
+                seg.o0 + r, seg.o1 + s.o1step * (r - 1),
+                seg.o2 + s.o2step * (r - 1), seg.iv, seg.fv,
+                (@inbounds seg.itr[r])
+            )
+            @inbounds shessian!(
+                y1, y2, f.f.f, el, x, θ, f.f.comp2,
+                seg.o2 + s.o2step * (r - 1), adj1, adj2
+            )
         end
     end
+    return
 end
 
 function shessian!(y1, y2, f::Constraint{F, I}, x, θ, adj1s::V, adj2) where {F, I <: SegmentedItr, V <: AbstractVector}
@@ -620,13 +655,18 @@ function shessian!(y1, y2, f::Constraint{F, I}, x, θ, adj1s::V, adj2) where {F,
     for j in eachindex(s.segs)
         seg = @inbounds s.segs[j]
         @simd for r in 1:length(seg.itr)
-            el = eltype(s)(seg.o0 + r, seg.o1 + s.o1step * (r - 1),
-                           seg.o2 + s.o2step * (r - 1), seg.iv, seg.fv,
-                           (@inbounds seg.itr[r]))
-            @inbounds shessian!(y1, y2, f.f.f, el, x, θ, f.f.comp2,
-                                seg.o2 + s.o2step * (r - 1), adj1s[seg.o0 + r], adj2)
+            el = eltype(s)(
+                seg.o0 + r, seg.o1 + s.o1step * (r - 1),
+                seg.o2 + s.o2step * (r - 1), seg.iv, seg.fv,
+                (@inbounds seg.itr[r])
+            )
+            @inbounds shessian!(
+                y1, y2, f.f.f, el, x, θ, f.f.comp2,
+                seg.o2 + s.o2step * (r - 1), adj1s[seg.o0 + r], adj2
+            )
         end
     end
+    return
 end
 
 function _cons_rows!(g, con::Constraint{F, I}, x, θ) where {F, I <: SegmentedItr}
@@ -634,9 +674,11 @@ function _cons_rows!(g, con::Constraint{F, I}, x, θ) where {F, I <: SegmentedIt
     for j in eachindex(s.segs)
         seg = @inbounds s.segs[j]
         @simd for r in 1:length(seg.itr)
-            el = eltype(s)(seg.o0 + r, seg.o1 + s.o1step * (r - 1),
-                           seg.o2 + s.o2step * (r - 1), seg.iv, seg.fv,
-                           (@inbounds seg.itr[r]))
+            el = eltype(s)(
+                seg.o0 + r, seg.o1 + s.o1step * (r - 1),
+                seg.o2 + s.o2step * (r - 1), seg.iv, seg.fv,
+                (@inbounds seg.itr[r])
+            )
             @inbounds g[seg.o0 + r] += con.f(el, x, θ)
         end
     end

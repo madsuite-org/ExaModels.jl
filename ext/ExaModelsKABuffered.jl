@@ -27,12 +27,30 @@ struct SegProd{VI}
     a::VI
     b::VI
 end
-struct SegProdC{VI,VT}
+struct SegProdC{VI, VT}
     dstu::VI
     ptr::VI
     a::VI
     b::VI
     c::VT
+end
+
+# Sum-slot curvature μ·∇v∇vᵀ (see `SubexprHess`): one workitem per Hessian
+# destination walks the support-table entries that target it and, for each,
+# every slot sharing that support.  Per-slot data stays shared with the host
+# layout, so device storage scales with the distinct supports, not with the
+# number of (slot, pair) contributions.
+struct SegRank1{VI}
+    dstu::VI
+    ptr::VI          # per destination: its table entries
+    a::VI            # per table entry: positions within a slot's segment
+    b::VI
+    pat::VI          # per table entry: its support table
+    pslot_ptr::VI    # per support table: the slots that use it
+    pslot::VI
+    rk_slot::VI
+    rk_ptr::VI
+    rk_res::VI
 end
 
 _seg_isempty(s) = isempty(s.dstu)
@@ -43,7 +61,7 @@ function _segment_perm(dst::Vector{Int})
     dstu = Int[]
     ptr = Int[1]
     for k in eachindex(d)
-        if k == 1 || d[k] != d[k-1]
+        if k == 1 || d[k] != d[k - 1]
             push!(dstu, d[k])
             push!(ptr, ptr[end])
         end
@@ -53,7 +71,7 @@ function _segment_perm(dst::Vector{Int})
 end
 
 _dev(x0, v::Vector{Int}) = copyto!(similar(x0, Int, length(v)), v)
-_dev(x0, v::Vector{T}) where {T<:AbstractFloat} = copyto!(similar(x0, length(v)), v)
+_dev(x0, v::Vector{T}) where {T <: AbstractFloat} = copyto!(similar(x0, length(v)), v)
 
 function _seg_copy(x0, dst::Vector{Int}, src::Vector{Int})
     p, dstu, ptr = _segment_perm(dst)
@@ -67,11 +85,35 @@ function _seg_prodc(x0, dst::Vector{Int}, a::Vector{Int}, b::Vector{Int}, c::Vec
     p, dstu, ptr = _segment_perm(dst)
     return SegProdC(_dev(x0, dstu), _dev(x0, ptr), _dev(x0, a[p]), _dev(x0, b[p]), _dev(x0, c[p]))
 end
+function _seg_rank1(x0, sh)
+    npat = length(sh.pat_ptr) - 1
+    pat = zeros(Int, length(sh.pat_dst))
+    for q in 1:npat
+        pat[sh.pat_ptr[q]:(sh.pat_ptr[q + 1] - 1)] .= q
+    end
+    p, dstu, ptr = _segment_perm(sh.pat_dst)
+    cnt = zeros(Int, npat)
+    for q in sh.rk_pat
+        cnt[q] += 1
+    end
+    pslot_ptr = cumsum(vcat(1, cnt))
+    pslot = zeros(Int, length(sh.rk_pat))
+    fillp = pslot_ptr[1:npat]
+    for (k, q) in pairs(sh.rk_pat)
+        pslot[fillp[q]] = k
+        fillp[q] += 1
+    end
+    return SegRank1(
+        _dev(x0, dstu), _dev(x0, ptr), _dev(x0, sh.pat_a[p]), _dev(x0, sh.pat_b[p]),
+        _dev(x0, pat[p]), _dev(x0, pslot_ptr), _dev(x0, pslot),
+        _dev(x0, sh.rk_slot), _dev(x0, sh.rk_ptr), _dev(x0, sh.rk_res),
+    )
+end
 
 @kernel function kseg_copy(y, @Const(dstu), @Const(ptr), @Const(src), @Const(S))
     I = @index(Global)
     acc = zero(eltype(y))
-    @inbounds for j = ptr[I]:(ptr[I+1]-1)
+    @inbounds for j in ptr[I]:(ptr[I + 1] - 1)
         acc += S[src[j]]
     end
     @inbounds y[dstu[I]] += acc
@@ -79,7 +121,7 @@ end
 @kernel function kseg_prod(y, @Const(dstu), @Const(ptr), @Const(a), @Const(b), @Const(A), @Const(B))
     I = @index(Global)
     acc = zero(eltype(y))
-    @inbounds for j = ptr[I]:(ptr[I+1]-1)
+    @inbounds for j in ptr[I]:(ptr[I + 1] - 1)
         acc += A[a[j]] * B[b[j]]
     end
     @inbounds y[dstu[I]] += acc
@@ -87,12 +129,38 @@ end
 @kernel function kseg_prodc(y, @Const(dstu), @Const(ptr), @Const(a), @Const(b), @Const(c), @Const(A), @Const(B))
     I = @index(Global)
     acc = zero(eltype(y))
-    @inbounds for j = ptr[I]:(ptr[I+1]-1)
+    @inbounds for j in ptr[I]:(ptr[I + 1] - 1)
         acc += c[j] * A[a[j]] * B[b[j]]
     end
     @inbounds y[dstu[I]] += acc
 end
+@kernel function kseg_rank1(
+        y, @Const(dstu), @Const(ptr), @Const(a), @Const(b), @Const(pat),
+        @Const(pslot_ptr), @Const(pslot), @Const(rk_slot), @Const(rk_ptr), @Const(rk_res),
+        @Const(res), @Const(abuf2),
+    )
+    I = @index(Global)
+    acc = zero(eltype(y))
+    @inbounds for j in ptr[I]:(ptr[I + 1] - 1)
+        q = pat[j]
+        ea = a[j]
+        eb = b[j]
+        for t in pslot_ptr[q]:(pslot_ptr[q + 1] - 1)
+            k = pslot[t]
+            μ = abuf2[rk_slot[k]]
+            base = rk_ptr[k] - 1
+            v = μ * res[rk_res[base + ea]] * res[rk_res[base + eb]]
+            acc += ifelse(iszero(μ), zero(v), v)
+        end
+    end
+    @inbounds y[dstu[I]] += acc
+end
 
+_run!(backend, s::SegRank1, y, res, abuf2) =
+    _seg_isempty(s) || kseg_rank1(backend)(
+    y, s.dstu, s.ptr, s.a, s.b, s.pat, s.pslot_ptr, s.pslot, s.rk_slot, s.rk_ptr, s.rk_res,
+    res, abuf2; ndrange = length(s.dstu),
+)
 _run!(backend, s::SegCopy, y, S) =
     _seg_isempty(s) || kseg_copy(backend)(y, s.dstu, s.ptr, s.src, S; ndrange = length(s.dstu))
 _run!(backend, s::SegProd, y, A, B) =
@@ -105,7 +173,20 @@ _run!(backend, s::SegProdC, y, A, B) =
 
 @kernel function ksync(θ, @Const(f), @Const(itr), @Const(x), @Const(off))
     I = @index(Global)
-    @inbounds θ[off+I] = f(itr[I], x, θ)
+    @inbounds θ[off + I] = f(itr[I], x, θ)
+end
+
+# Sum-stage sync: one workitem per destination slot walks its CSR segment
+# (slots are exclusive per workitem, sources are strictly older θ slots or
+# variables — no atomics needed).
+@kernel function ksum_sync(θ, @Const(init), @Const(ptr), @Const(src), @Const(w), @Const(x), @Const(off))
+    J = @index(Global)
+    acc = init[J]
+    @inbounds for m in ptr[J]:(ptr[J + 1] - 1)
+        s = src[m]
+        acc += s > 0 ? w[m] * x[s] : w[m] * θ[-s]
+    end
+    @inbounds θ[off + J] = acc
 end
 
 @kernel function kstagej(y1, @Const(f), @Const(itr), @Const(x), @Const(θ), @Const(o1base))
@@ -131,8 +212,8 @@ end
         nothing,
         o2base + (I - 1) * f.o2step,
         0,
-        λ[θoff+I],
-        μ[θoff+I],
+        λ[θoff + I],
+        μ[θoff + I],
     )
 end
 
@@ -154,7 +235,7 @@ end
 _lamgrad!(backend, y, ::Tuple{}, x, θ, w) = nothing
 function _lamgrad!(backend, y, (obj, objs...), x, θ, w)
     _lamgrad!(backend, y, objs, x, θ, w)
-    _lamgrad1!(backend, y, obj, x, θ, w)
+    return _lamgrad1!(backend, y, obj, x, θ, w)
 end
 # long block tuples walk by loop, not recursion (see _LongTuple in nlp.jl)
 function _lamgrad!(backend, y, objs::ExaModels._LongTuple, x, θ, w)
@@ -167,18 +248,18 @@ end
 # a merged objective's gradient offsets live in its elements
 function _lamgrad1!(backend, y, obj, x, θ, w)
     isempty(obj.itr) && return nothing
-    kerg(backend)(y, obj.f, obj.itr, x, θ, w; ndrange = length(obj.itr))
+    return kerg(backend)(y, obj.f, obj.itr, x, θ, w; ndrange = length(obj.itr))
 end
 function _lamgrad1!(backend, y, obj::ExaModels.Objective{F, I}, x, θ, w) where
-        {F, I <: AbstractVector{<:ExaModels.MergedRow}}
+    {F, I <: AbstractVector{<:ExaModels.MergedRow}}
     isempty(obj.itr) && return nothing
-    ExaModels.sgradient!(backend, y, obj, x, θ, w)
+    return ExaModels.sgradient!(backend, y, obj, x, θ, w)
 end
 
 _lamjac!(backend, y, ::Tuple{}, x, θ, yv) = nothing
 function _lamjac!(backend, y, (con, cons...), x, θ, yv)
     _lamjac!(backend, y, cons, x, θ, yv)
-    _lamjac1!(backend, y, con, x, θ, yv)
+    return _lamjac1!(backend, y, con, x, θ, yv)
 end
 function _lamjac!(backend, y, cons::ExaModels._LongTuple, x, θ, yv)
     blocks = Any[cons...]
@@ -195,7 +276,7 @@ end
 # (∂c/∂s)·∇²s term of its rows from the device Hessian.
 function _lamjac1!(backend, y, con, x, θ, yv)
     isempty(con.itr) && return nothing
-    kerjs(backend)(y, con.f, con.itr, x, θ, yv, ExaModels._constraint_dims(con); ndrange = length(con.itr))
+    return kerjs(backend)(y, con.f, con.itr, x, θ, yv, ExaModels._constraint_dims(con); ndrange = length(con.itr))
 end
 # a merged block's row/nonzero offsets live in its MergedRow elements, not in
 # the SIMDFunction's affine fields (f.o1 == 0 there): the generic kerjs would
@@ -242,7 +323,7 @@ end
 
 # ── build-time artifact ───────────────────────────────────────────────────────
 
-struct SubexprKA{T,VT<:AbstractVector{T},VI}
+struct SubexprKA{T, VT <: AbstractVector{T}, VI}
     nvar::Int
     nθ::Int
     # device buffers
@@ -273,19 +354,20 @@ struct SubexprKA{T,VT<:AbstractVector{T},VI}
     ccopy::Vector{SegCopy{VI}}             # per level (newest-first)
     cmul1::Vector{SegProd{VI}}             # rank-2 phase
     cmul2::Vector{SegProd{VI}}             # rank-1 phase
-    amul::Vector{SegProdC{VI,VT}}
-    hmul::Vector{SegProdC{VI,VT}}
+    amul::Vector{SegProdC{VI, VT}}
+    hmul::Vector{SegProdC{VI, VT}}
+    rank1::SegRank1{VI}                    # hess += μ·∇v∇vᵀ of sum slots (after the sweep)
     hess_copy::SegCopy{VI}
     hess_vals::VT                          # composed Hessian values (hprod scratch)
     hprod::SegProd{VI}                     # Hv += hess_vals·v over the symmetric COO
 end
 
 function ExaModels.build_subexpr_ka(
-    c::C,
-    sjac,
-    shess,
-    nvar,
-) where {T,VT<:AbstractVector{T},B<:KernelAbstractions.Backend,C<:ExaModels.ExaCore{T,VT,B}}
+        c::C,
+        sjac,
+        shess,
+        nvar,
+    ) where {T, VT <: AbstractVector{T}, B <: KernelAbstractions.Backend, C <: ExaModels.ExaCore{T, VT, B}}
     sjac === nothing && return nothing
     x0 = c.x0
     stages_h = ExaModels._host_blocks(c.subexprs)
@@ -297,7 +379,7 @@ function ExaModels.build_subexpr_ka(
 
     slotlvl = zeros(Int, nθ)
     for (i, s) in enumerate(ordered)
-        slotlvl[(s.offset+1):(s.offset+length(s.itr))] .= i
+        slotlvl[(s.offset + 1):(s.offset + ExaModels._stage_len(s))] .= i
     end
     lvlof(ξ) = ξ > 0 ? 0 : slotlvl[-ξ]
 
@@ -335,21 +417,7 @@ function ExaModels.build_subexpr_ka(
     ExaModels._con_hess_structure!(T, cons_h, herows, hecols)
     stage_o2_old = reverse(shess.stage_o2)          # oldest-first bases
     for (si, s) in enumerate(ordered)
-        step = s.f.o2step
-        for k in eachindex(s.itr)
-            ExaModels._stage_shessian!(
-                herows,
-                hecols,
-                s.f,
-                s.itr[k],
-                ExaModels.NaNSource{T}(),
-                ExaModels.NaNSource{T}(),
-                s.f.comp2,
-                stage_o2_old[si] + (k - 1) * step,
-                T(NaN),
-                T(NaN),
-            )
-        end
+        ExaModels._stage_hess_structure!(T, herows, hecols, s, stage_o2_old[si])
     end
     mu_cons_dst = Int[]; mu_cons_src = Int[]
     mu_stage_dst = [Int[] for _ in 1:nlv]           # by SOURCE stage level
@@ -371,7 +439,7 @@ function ExaModels.build_subexpr_ka(
     end
 
     # localrow chain programs per SOURCE level: full (gradient) and slot-only (λ)
-    localrows = Dict{Int,Vector{Tuple{Int,Int}}}()
+    localrows = Dict{Int, Vector{Tuple{Int, Int}}}()
     let res_probe = ExaModels._build_subexpr_jac(T, c.subexprs, c.cons, c.nnzj)
         localrows = res_probe[3]
     end
@@ -390,11 +458,11 @@ function ExaModels.build_subexpr_ka(
 
     seg_res_copy = [
         _seg_copy(x0, sjac.res_copy_dst[r], sjac.res_copy_src[r]) for
-        r in sjac.lvl_res_copy
+            r in sjac.lvl_res_copy
     ]
     seg_res_prod = [
         _seg_prod(x0, sjac.res_prod_dst[r], sjac.res_prod_a[r], sjac.res_prod_b[r])
-        for r in sjac.lvl_res_prod
+            for r in sjac.lvl_res_prod
     ]
 
     seg_ccopy = [_seg_copy(x0, shess.ccopy_dst[r], shess.ccopy_src[r]) for r in shess.lvl_ccopy]
@@ -402,18 +470,18 @@ function ExaModels.build_subexpr_ka(
     seg_cmul2 = SegProd[]
     for (i, r) in enumerate(shess.lvl_cmul)
         ph = shess.cmul_ph[i]
-        r1 = first(r):(first(r)+ph-1)
-        r2 = (first(r)+ph):last(r)
+        r1 = first(r):(first(r) + ph - 1)
+        r2 = (first(r) + ph):last(r)
         push!(seg_cmul1, _seg_prod(x0, shess.cmul_dst[r1], shess.cmul_src[r1], shess.cmul_a[r1]))
         push!(seg_cmul2, _seg_prod(x0, shess.cmul_dst[r2], shess.cmul_src[r2], shess.cmul_a[r2]))
     end
     seg_amul = [
         _seg_prodc(x0, shess.amul_dst[r], shess.amul_src[r], shess.amul_a[r], fill(T(2), length(r)))
-        for r in shess.lvl_amul
+            for r in shess.lvl_amul
     ]
     seg_hmul = [
         _seg_prodc(x0, shess.hmul_dst[r], shess.hmul_src[r], shess.hmul_a[r], shess.hmul_c[r])
-        for r in shess.lvl_hmul
+            for r in shess.lvl_hmul
     ]
 
     # Symmetric COO product Hv = H·v over the composed Hessian: one term per
@@ -460,8 +528,9 @@ function ExaModels.build_subexpr_ka(
         SegCopy{VI}[seg_ccopy...],
         SegProd{VI}[seg_cmul1...],
         SegProd{VI}[seg_cmul2...],
-        SegProdC{VI,typeof(similar(x0, 0))}[seg_amul...],
-        SegProdC{VI,typeof(similar(x0, 0))}[seg_hmul...],
+        SegProdC{VI, typeof(similar(x0, 0))}[seg_amul...],
+        SegProdC{VI, typeof(similar(x0, 0))}[seg_hmul...],
+        _seg_rank1(x0, shess),
         _seg_copy(x0, shess.hess_copy_dst, shess.hess_copy_src),
         similar(x0, length(shess.rows)),
         _seg_prod(x0, hp_dst, hp_a, hp_b),
@@ -473,20 +542,39 @@ end
 _sync_ka!(backend, ::Tuple{}, θoff, i, x, θ) = nothing
 function _sync_ka!(backend, stages::Tuple, θoff, i, x, θ)
     _sync_ka!(backend, Base.tail(stages), θoff, i + 1, x, θ)
-    s = first(stages)
+    _sync_ka_stage!(backend, first(stages), θoff[i], x, θ)
+    return nothing
+end
+function _sync_ka_stage!(backend, s::ExaModels.SubexprStage, off, x, θ)
     if !isempty(s.itr)
-        ksync(backend)(θ, s.f, s.itr, x, θoff[i]; ndrange = length(s.itr))
+        ksync(backend)(θ, s.f, s.itr, x, off; ndrange = length(s.itr))
+    end
+    return nothing
+end
+function _sync_ka_stage!(backend, s::ExaModels.SubexprSumStage, off, x, θ)
+    if s.n > 0
+        ksum_sync(backend)(θ, s.init, s.ptr, s.src, s.w, x, off; ndrange = s.n)
     end
     return nothing
 end
 
 _stagej_ka!(backend, ::Tuple{}, ska, i, x, θ) = nothing
 function _stagej_ka!(backend, stages::Tuple, ska, i, x, θ)
-    s = first(stages)
-    if !isempty(s.itr)
-        kstagej(backend)(ska.stage_ext, s.f, s.itr, x, θ, ska.o1base[i]; ndrange = length(s.itr))
-    end
+    _stagej_ka_stage!(backend, first(stages), ska, ska.o1base[i], x, θ)
     _stagej_ka!(backend, Base.tail(stages), ska, i + 1, x, θ)
+    return nothing
+end
+function _stagej_ka_stage!(backend, s::ExaModels.SubexprStage, ska, o1base, x, θ)
+    if !isempty(s.itr)
+        kstagej(backend)(ska.stage_ext, s.f, s.itr, x, θ, o1base; ndrange = length(s.itr))
+    end
+    return nothing
+end
+# A sum stage's one-level Jacobian values are its constant weights.
+function _stagej_ka_stage!(backend, s::ExaModels.SubexprSumStage, ska, o1base, x, θ)
+    if !isempty(s.w)
+        copyto!(view(ska.stage_ext, (o1base + 1):(o1base + length(s.w))), s.w)
+    end
     return nothing
 end
 
@@ -542,17 +630,23 @@ function _grad_buffered!(m, x, y)
     return y
 end
 
+# Stage Jacobians resolved to x-columns; assumes stage_ext is filled.
+function _resolve_ka!(backend, ska)
+    fill!(ska.res, zero(eltype(ska.res)))
+    for i in eachindex(ska.res_copy)   # oldest-first
+        _run!(backend, ska.res_copy[i], ska.res, ska.stage_ext)
+        _run!(backend, ska.res_prod[i], ska.res, ska.stage_ext, ska.res)
+    end
+    return nothing
+end
+
 function _jac_buffered!(m, x, y)
     backend = m.ext.backend
     ska = m.ska
     _sync_point_ka!(backend, m, x)
     fill!(ska.stage_ext, zero(eltype(ska.stage_ext)))
     _stagej_ka!(backend, m.subexprs, ska, 1, x, m.θ)
-    fill!(ska.res, zero(eltype(ska.res)))
-    for i in eachindex(ska.res_copy)   # oldest-first
-        _run!(backend, ska.res_copy[i], ska.res, ska.stage_ext)
-        _run!(backend, ska.res_prod[i], ska.res, ska.stage_ext, ska.res)
-    end
+    _resolve_ka!(backend, ska)
     fill!(ska.cons_ext, zero(eltype(ska.cons_ext)))
     _jac_coord!(backend, ska.cons_ext, m.cons, x, m.θ)
     fill!(y, zero(eltype(y)))
@@ -563,7 +657,17 @@ end
 
 _stageh_ka!(backend, ::Tuple{}, ska, i, x, θ) = nothing
 function _stageh_ka!(backend, stages::Tuple, ska, i, x, θ)
-    s = first(stages)
+    _stageh_ka_stage!(backend, first(stages), ska, i, x, θ)
+    _run!(backend, ska.mu_stage[i], ska.abuf2, ska.hess_ext)
+    _run!(backend, ska.lam_chain[i], ska.abuf, ska.abuf, ska.stage_ext)
+    _run!(backend, ska.ccopy[i], ska.C, ska.hess_ext)
+    _run!(backend, ska.cmul1[i], ska.C, ska.C, ska.stage_ext)
+    _run!(backend, ska.cmul2[i], ska.C, ska.C, ska.stage_ext)
+    _run!(backend, ska.amul[i], ska.abuf2, ska.C, ska.stage_ext)
+    _stageh_ka!(backend, Base.tail(stages), ska, i + 1, x, θ)
+    return nothing
+end
+function _stageh_ka_stage!(backend, s::ExaModels.SubexprStage, ska, i, x, θ)
     if !isempty(s.itr)
         kstageh(backend)(
             ska.hess_ext,
@@ -578,20 +682,19 @@ function _stageh_ka!(backend, stages::Tuple, ska, i, x, θ)
             ndrange = length(s.itr),
         )
     end
-    _run!(backend, ska.mu_stage[i], ska.abuf2, ska.hess_ext)
-    _run!(backend, ska.lam_chain[i], ska.abuf, ska.abuf, ska.stage_ext)
-    _run!(backend, ska.ccopy[i], ska.C, ska.hess_ext)
-    _run!(backend, ska.cmul1[i], ska.C, ska.C, ska.stage_ext)
-    _run!(backend, ska.cmul2[i], ska.C, ska.C, ska.stage_ext)
-    _run!(backend, ska.amul[i], ska.abuf2, ska.C, ska.stage_ext)
-    _stageh_ka!(backend, Base.tail(stages), ska, i + 1, x, θ)
     return nothing
 end
+# A sum stage replays nothing: its λ chain is the (localrows-driven)
+# lam_chain program of this level, and its μ side is the rank-1 program.
+_stageh_ka_stage!(backend, s::ExaModels.SubexprSumStage, ska, i, x, θ) = nothing
 
-_stageh_hmul!(backend, ska, hess) =
+function _stageh_hmul!(backend, ska, hess)
     for seg in ska.hmul
         _run!(backend, seg, hess, ska.C, ska.stage_ext)
     end
+    _run!(backend, ska.rank1, hess, ska.res, ska.abuf2)
+    return nothing
+end
 
 # Hessian-vector product: compose the Hessian values on the device, then run
 # the symmetric COO product against them.
@@ -611,6 +714,9 @@ function _hess_buffered!(m, x, yv, hess, obj_weight)
     _sync_point_ka!(backend, m, x)
     fill!(ska.stage_ext, zero(eltype(ska.stage_ext)))
     _stagej_ka!(backend, m.subexprs, ska, 1, x, m.θ)
+    if !_seg_isempty(ska.rank1)
+        _resolve_ka!(backend, ska)
+    end
     # λ seeds
     fill!(ska.abuf, zero(eltype(ska.abuf)))
     gradbuffer = m.ext.gradbuffer

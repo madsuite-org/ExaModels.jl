@@ -25,7 +25,7 @@ end
 Base.:(==)(x::_Mutable, y::_Mutable) = x.a == y.a
 
 function runtests()
-    @testset "Argument tests" begin
+    return @testset "Argument tests" begin
 
         @testset "instantiate is the identity without an arg dependency" begin
             v = [1.0, 2.0]
@@ -242,7 +242,7 @@ function runtests()
                 c, d = ExaModels.ExaCore(nargs = Val(1))
                 ExaModels.@add_var(c, x, length(d.rows))
                 ExaModels.@add_obj(c, (x[r.i] - r.w)^2 for r in d.rows)
-                rows = [(i = i, w = Float64(i)) for i = 1:5]
+                rows = [(i = i, w = Float64(i)) for i in 1:5]
                 dev = ExaModels.convert_array(rows, backend)
                 m = ExaModels.ExaModel(c, (; rows = dev); backend = backend)
                 @testset "$backend" begin
