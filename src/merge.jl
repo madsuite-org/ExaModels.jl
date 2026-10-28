@@ -616,8 +616,10 @@ assembles the `MergedRow` on the fly, so a row costs its element and nothing
 else on the device; a `MergedRow` per row would carry its own copy of the `K`
 Integer and `S` Float leaves (880 bytes per row against 96 at `K = 94`).
 """
-struct DeviceSegItr{K, S, T, D, VI <: AbstractVector{Int}, VIV <: AbstractVector{NTuple{K, Int}},
-        VFV <: AbstractVector{NTuple{S, T}}, VD <: AbstractVector{D}} <: AbstractVector{MergedRow{K, S, T, D}}
+struct DeviceSegItr{
+        K, S, T, D, VI <: AbstractVector{Int}, VIV <: AbstractVector{NTuple{K, Int}},
+        VFV <: AbstractVector{NTuple{S, T}}, VD <: AbstractVector{D},
+    } <: AbstractVector{MergedRow{K, S, T, D}}
     seg_o0::VI
     seg_o1::VI
     seg_o2::VI
