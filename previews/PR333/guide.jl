@@ -105,15 +105,15 @@ c2 = ExaCore(concrete = Val(true))
 # @add_obj(c, t[i]^2 for i in 1:(N - 2))
 # ```
 # When a consumer must sum many buffered elements, as a group argument in a
-# group-partially-separable problem does, `add_reduce` forms the sum as data
+# group-partially-separable problem does, `add_sum` forms the sum as data
 # instead of as an expression tree: each slot is an affine combination of
 # existing buffered slots and variables with constant coefficients, so a slot
 # summing thousands of elements costs one stage and nothing grows with the term
-# count. Buffer the element functions, then reduce:
+# count. Buffer the element functions, then sum:
 #
 # ```julia
 # c, e = add_expr(c, ((x[d.i] - d.c)^2 for d in elems); buffered = true)
-# c, v = add_reduce(c, ngroups, (d.g => d.w * e[d.k] for d in terms); init = b)
+# c, v = add_sum(c, ngroups, (d.g => d.w * e[d.k] for d in terms); init = b)
 # c, _ = add_obj(c, v[g]^2 for g in 1:ngroups)
 # ```
 #
