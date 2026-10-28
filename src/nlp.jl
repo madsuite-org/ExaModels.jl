@@ -1133,7 +1133,9 @@ end
     _bound_check(s.size, is)
     return SubexprNode(s.offset + idxx(is .- (_start.(s.size) .- 1), _length.(s.size)))
 end
-@inline function Base.getindex(s::BufferedExpression, is...)
+# the non-colon branch of the `_Indexable` router (`s[:, k]` goes through
+# `_getindex(x, is, ::Val{true})`, like the other indexables)
+@inline function _getindex(s::BufferedExpression, is, ::Val{false})
     @assert(length(is) == length(s.size), "Expression index dimension error")
     return _subexpr_slot(idxx(is .- (_start.(s.size) .- 1), _length.(s.size)), s.offset)
 end
@@ -2270,7 +2272,10 @@ layer's sources would therefore read `v` before the layer: that is an
 Supports the NLPModels evaluation API through second order on the host and
 on KernelAbstractions backends, with the same restrictions as other buffered
 subexpressions (no oracles, no `prod = true`, `jprod_nln!`/`jtprod_nln!`
-host-only).
+host-only).  The returned core's stage tuple is rebuilt from a vector, so its
+type is not inferable from the call: later `add_*` calls on that core
+dispatch dynamically, and a model builder that calls `add_expr!` is not
+compilable under `juliac --trim=safe`; use it at the build layer.
 """
 function add_expr!(c::C, v::BufferedExpression, pairs) where {T, C <: ExaCore{T}}
     nn = v.length

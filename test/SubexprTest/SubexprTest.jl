@@ -208,6 +208,14 @@ function _device_vs_host(m0, m1, xh, yh; obj_weight = 0.7)
         i != j && (H1[j, i] += v)
     end
     @test H1 ≈ _dense_hess(m0, xh, yh; obj_weight) rtol = 10tol
+    # Hessian-vector products, with and without multipliers
+    vh = [sin(1.3k) for k in 1:nv]
+    vd = copyto!(similar(xd), vh)
+    Hv = fill!(similar(xd), 0)
+    NLPModels.hprod!(m1, xd, yd, vd, Hv; obj_weight)
+    @test Array(Hv) ≈ _dense_hess(m0, xh, yh; obj_weight) * vh rtol = 10tol
+    NLPModels.hprod!(m1, xd, vd, Hv; obj_weight)
+    @test Array(Hv) ≈ _dense_hess(m0, xh, nothing; obj_weight) * vh rtol = 10tol
     return nothing
 end
 
@@ -569,6 +577,12 @@ function runtests(; backends = Any[CPU()])
     end
 
     @testset "Buffered subexpressions (multi-dimensional)" begin
+        # colon indexing goes through the shared router, as for an inlined expression
+        cc = ExaCore()
+        cc, xx = add_var(cc, 3, 4)
+        cc, ss = add_expr(cc, (xx[i, k]^2 for i in 1:3, k in 1:4); buffered = true)
+        @test ss[:, 2] == (ss[1, 2], ss[2, 2], ss[3, 2])
+        @test ss[2, :] == ntuple(k -> ss[2, k], 4)
         m0 = _twodim_model(buffered = false)
         m1 = _twodim_model(buffered = true)
         xv = [cos(i) for i in 1:12]

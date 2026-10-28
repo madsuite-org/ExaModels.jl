@@ -546,6 +546,10 @@ end
 end
 
 @inline _merge_itr_ok(pars) = _merge_itr_ok(Base.IteratorSize(pars))
+# a deferred iterator (an undeclared recipe's `for d in arg.data`): its length
+# and eltype are deferred nodes, so the block stays plain and is merged by
+# nothing; `IteratorSize` alone would admit it
+@inline _merge_itr_ok(::AbstractArgNode) = false
 @inline _merge_itr_ok(::Union{Base.HasLength, Base.HasShape}) = true
 @inline _merge_itr_ok(::Base.IteratorSize) = false
 
@@ -828,8 +832,12 @@ end
 @inline _unhoist(a::NullRef, iv, fv) = @inbounds Null(fv[a.k])
 @inline _unhoist(a, iv, fv) = a
 
-# a block's size on a device layout: (start, length, is-a-range) per dimension, flat
-_dims_code(dims) = Int[v for d in dims for v in (_start(d), _length(d), d isa Integer ? 0 : 1)]
+# a block's size on a device layout: (start, length, is-a-range) per dimension,
+# flat; a data axis (`for (i, t) in nodes`) travels as its length
+_dim_code(d::Integer) = (1, Int(d), 0)
+_dim_code(d::AbstractRange) = (Int(first(d)), length(d), 1)
+_dim_code(d) = (1, length(d), 0)
+_dims_code(dims) = Int[v for d in dims for v in _dim_code(d)]
 _dims_decode(v::AbstractVector{Int}) = Tuple(
     v[3k] == 0 ? v[3k - 1] : (v[3k - 2]:(v[3k - 2] + v[3k - 1] - 1)) for k in 1:(length(v) ÷ 3)
 )
@@ -868,6 +876,8 @@ _is_family(::Objective{F, I}) where {F, I <: Union{_MergedItr, _DeviceMergedItr}
 The source blocks of a merged constraint or objective block, as plain blocks
 (one per segment, each with its own tree, row offset, iterator and shape); `[block]`
 for a block that is not a family. Used by writers that serialize expressions.
+A pair-headed family (`MergedRows`, from `add_con(c, i => expr for ...)` on the
+host) keeps no segments and throws an `ArgumentError`.
 """
 function expand_family(b)
     _is_family(b) || return Any[b]

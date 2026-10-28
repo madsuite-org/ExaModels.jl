@@ -17,6 +17,16 @@ ExaModels.@register_univariate(myf, x -> 2x + 1, x -> 2.0)
         @test m2.x isa ExaModels.Variable && m2.g isa ExaModels.Constraint
     end
 
+    @testset "merged families: two same-tree blocks, the second named" begin
+        c = ExaCore()
+        x = @add_var(c, x, 8)
+        @add_con(c, sin(x[i]) * x[i + 1] for i in 1:3; lcon = -1.0, ucon = 1.0)
+        g = @add_con(c, g, sin(x[i]) * x[i + 1] for i in 4:7; lcon = -1.0, ucon = 1.0)
+        @add_obj(c, x[i]^2 for i in 1:8)
+        m2 = roundtrip_check(ExaModel(c))
+        @test m2.g isa ExaModels.Constraint
+    end
+
     @testset "2-D variables, named-tuple data, augmentation" begin
         c = ExaCore()
         x = @add_var(c, x, 10)

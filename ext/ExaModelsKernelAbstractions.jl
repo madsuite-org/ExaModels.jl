@@ -432,6 +432,7 @@ function ExaModels.jprod_nln!(
         v::AbstractVector,
         Jv::AbstractVector,
     ) where {T, VT, E <: KAExtension{T, VT, Nothing}}
+    _buffered_model(m) && error("jprod_nln!/jtprod_nln! are host-only for models with buffered subexpressions")
     error("Prodhelper is not defined. Use ExaModels(c; prod=true) to use jprod_nln!")
 end
 function ExaModels.jtprod_nln!(
@@ -440,8 +441,11 @@ function ExaModels.jtprod_nln!(
         v::AbstractVector,
         Jtv::AbstractVector,
     ) where {T, VT, E <: KAExtension{T, VT, Nothing}}
+    _buffered_model(m) && error("jprod_nln!/jtprod_nln! are host-only for models with buffered subexpressions")
     error("Prodhelper is not defined. Use ExaModels(c; prod=true) to use jtprod_nln!")
 end
+# a device model with buffered subexpressions carries their evaluation artifact
+_buffered_model(m) = hasfield(typeof(m), :ska) && getfield(m, :ska) !== nothing
 function ExaModels.jprod_nln!(
         m::ExaModels.AbstractExaModel{T, VT, E},
         x::AbstractVector,

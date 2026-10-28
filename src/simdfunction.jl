@@ -36,7 +36,6 @@ struct SIMDFunction{F, C1, C2, O0, O1, O2}
 end
 
 @inline (sf::SIMDFunction{F})(i, x, θ) where {F} = sf.f(i, x, θ)
-@inline (sf::SIMDFunction{F})(i, x, θ) where {F <: Real} = sf.f
 
 """
     SIMDFunction(gen::Base.Generator, o0 = 0, o1 = 0, o2 = 0)

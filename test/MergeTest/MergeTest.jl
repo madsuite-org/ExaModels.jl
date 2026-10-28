@@ -296,6 +296,21 @@ function _test_core_persistence()
         gn2 = zeros(8)
         NLPModels.cons!(n2, fill(0.5, 10), gn2)
         @test gn2 ≈ fill(sin(0.5), 8)
+        # the rows' hand-assembled nonzero bases and compressors
+        _check_fd_derivatives(n1)
+        _check_fd_derivatives(n2)
+        # a tuple head over a 2-D constraint (the Pair{<:Tuple} row path), and an
+        # empty block between two same-structure blocks, which turns the family's
+        # equal-length fast path off (rows found by cumulative count)
+        d3, w = add_var(d2, 3, 2)
+        d3, _ = add_con(d3, ((i, j) => w[i, j] * z[i + j] for i in 1:3, j in 1:2); lcon = -2.0, ucon = 2.0)
+        d3, _ = add_con(d3, (sin(z[i]) * z[i + 1] for i in 1:3); lcon = -2.0, ucon = 2.0)
+        d3, _ = add_con(d3, (sin(z[i]) * z[i + 1] for i in 1:0); lcon = -2.0, ucon = 2.0)
+        d3, _ = add_con(d3, (sin(z[i]) * z[i + 1] for i in 4:6); lcon = -2.0, ucon = 2.0)
+        n3 = ExaModel(d3)
+        fam = findfirst(b -> b.itr isa ExaModels.SegmentedItr && length(b.itr.segs) == 3, n3.cons)
+        @test fam !== nothing && n3.cons[fam].itr.seglen == 0 && length(n3.cons[fam].itr) == 6
+        _check_fd_derivatives(n3)
     end
 end
 

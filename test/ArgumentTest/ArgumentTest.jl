@@ -230,6 +230,21 @@ function runtests()
             @test repr(length(arg.v)) == "length(arg.v)"
         end
 
+        @testset "a deferred iterator keeps an undeclared recipe's block plain" begin
+            # a mergeable tree (concrete-size variable) over `arg.data`: the family
+            # merge must leave the iterator alone, since its length and eltype
+            # are deferred nodes until instantiation
+            c = ExaModels.ExaCore()
+            c, p = ExaModels.add_var(c, 3)
+            c, _ = ExaModels.add_obj(c, (p[1] * exp(p[2] * d.t) - d.y)^2 for d in arg.data)
+            c, _ = ExaModels.add_con(c, p[1] * d.t + p[3] for d in arg.data; lcon = -1.0, ucon = 1.0)
+            data = [(t = 0.1k, y = 1.0 + k) for k in 1:4]
+            m = ExaModels.ExaModel(c, (data = data,))
+            xv = [1.0, 0.5, -0.25]
+            @test NLPModels.obj(m, xv) ≈ sum((xv[1] * exp(xv[2] * d.t) - d.y)^2 for d in data)
+            @test NLPModels.cons(m, xv) ≈ [xv[1] * d.t + xv[3] for d in data]
+        end
+
         @testset "a converted iterable stays on its backend" begin
             # The deferred collect in _adapt_gen must not migrate an argument
             # back to the host: collect(::CuArray) is a Vector, so a recipe
