@@ -506,10 +506,17 @@ end
 # or `(cons′, o1step, o2step)`: the updated block
 # list and the per-row nnz steps to account nnzj/nnzh with.
 
+# a block whose row/nonzero bases are deferred (an undeclared recipe after a
+# deferred-length block makes `c.ncon`/`c.nnzj`/`c.nnzh` arg nodes) cannot be
+# stored in a segment's Int fields; it stays plain and instantiates later
+@inline _merge_offsets_ok(::SIMDFunction{F, C1, C2, Int, Int, Int}) where {F, C1, C2} = true
+@inline _merge_offsets_ok(::SIMDFunction) = false
+
 @inline function _merge_block(c::ExaCore{T}, f, pars, dims, tag) where {T}
     _mergeable(typeof(f.f)) || return nothing
     _merge_allowed(getfield(c, :nargs), getfield(f, :f), c.backend) || return nothing
     _merge_itr_ok(pars) || return nothing
+    _merge_offsets_ok(f) || return nothing
     return _merge_result(
         _smerge(T, Constraint, c.cons, f, pars, dims, tag, eltype(pars)),
         T, Constraint, c, c.cons, f, pars, dims, tag
@@ -522,6 +529,7 @@ end
     _mergeable(typeof(f.f)) || return nothing
     _merge_allowed(getfield(c, :nargs), getfield(f, :f), c.backend) || return nothing
     _merge_itr_ok(pars) || return nothing
+    _merge_offsets_ok(f) || return nothing
     dims = (length(pars),)
     return _merge_result(
         _smerge(T, Objective, c.obj, f, pars, dims, nothing, eltype(pars)),

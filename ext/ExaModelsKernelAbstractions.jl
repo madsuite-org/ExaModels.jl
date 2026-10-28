@@ -1580,6 +1580,10 @@ function ExaModels.shessian!(backend::B, y1, y2, f::_MergedObj, x, θ, adj, adj2
         kerh_m(backend)(y1, y2, f.f, f.itr, x, θ, adj, adj2; ndrange = length(f.itr))
     end
 end
+# resolves the ambiguity with the generic vector-adjoint method; an objective's
+# Hessian weight is a scalar, so nothing reaches this
+ExaModels.shessian!(backend::B, y1, y2, f::_MergedObj, x, θ, adj::V, adj2) where {B <: KernelAbstractions.Backend, V <: AbstractVector} =
+    throw(ArgumentError("an objective's Hessian takes a scalar weight"))
 
 function ExaModels.sjacobian!(backend::B, y1, y2, f::_MergedCon, x, θ, adj) where {B <: KernelAbstractions.Backend}
     return if !isempty(f.itr)

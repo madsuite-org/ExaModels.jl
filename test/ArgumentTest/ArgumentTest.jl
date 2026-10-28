@@ -243,6 +243,19 @@ function runtests()
             xv = [1.0, 0.5, -0.25]
             @test NLPModels.obj(m, xv) ≈ sum((xv[1] * exp(xv[2] * d.t) - d.y)^2 for d in data)
             @test NLPModels.cons(m, xv) ≈ [xv[1] * d.t + xv[3] for d in data]
+
+            # after a deferred-length block the core's counters are deferred, so
+            # a later block with a concrete iterator has deferred row/nonzero
+            # bases: it stays plain too and instantiates with them
+            c = ExaModels.ExaCore(concrete = Val(true))
+            c, p = ExaModels.add_var(c, 3)
+            c, _ = ExaModels.add_obj(c, (p[1] * d.t - d.y)^2 for d in arg.data)
+            c, _ = ExaModels.add_obj(c, p[2]^2 for _ in 1:1)
+            c, _ = ExaModels.add_con(c, p[1] * d.t + p[3] for d in arg.data; lcon = -1.0, ucon = 1.0)
+            c, _ = ExaModels.add_con(c, p[1] - 1.0 for _ in 1:1)
+            m = ExaModels.ExaModel(c, (data = data,))
+            @test NLPModels.obj(m, xv) ≈ sum((xv[1] * d.t - d.y)^2 for d in data) + xv[2]^2
+            @test NLPModels.cons(m, xv) ≈ [[xv[1] * d.t + xv[3] for d in data]; xv[1] - 1.0]
         end
 
         @testset "a converted iterable stays on its backend" begin

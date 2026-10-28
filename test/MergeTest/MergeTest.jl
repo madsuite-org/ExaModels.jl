@@ -307,10 +307,18 @@ function _test_core_persistence()
         d3, _ = add_con(d3, (sin(z[i]) * z[i + 1] for i in 1:3); lcon = -2.0, ucon = 2.0)
         d3, _ = add_con(d3, (sin(z[i]) * z[i + 1] for i in 1:0); lcon = -2.0, ucon = 2.0)
         d3, _ = add_con(d3, (sin(z[i]) * z[i + 1] for i in 4:6); lcon = -2.0, ucon = 2.0)
+        # a repeated row target: several rows of one block accumulate into one
+        # constraint, so the Hessian with multipliers reads one o0 from many rows
+        d3, _ = add_con(d3, (1 => sin(z[i]) * z[i + 1] for i in 1:4); lcon = -5.0, ucon = 5.0)
+        d3, _ = add_con(d3, (1 => sin(z[i]) * z[i + 1] for i in 5:8); lcon = -5.0, ucon = 5.0)
         n3 = ExaModel(d3)
         fam = findfirst(b -> b.itr isa ExaModels.SegmentedItr && length(b.itr.segs) == 3, n3.cons)
         @test fam !== nothing && n3.cons[fam].itr.seglen == 0 && length(n3.cons[fam].itr) == 6
+        rep = findfirst(b -> b.itr isa ExaModels.MergedRows && length(b.itr) == 8, n3.cons)
+        @test rep !== nothing && all(r -> r.o0 == n3.cons[rep].itr[1].o0, n3.cons[rep].itr.rows[1:4])
         _check_fd_derivatives(n3)
+        # writers cannot expand a pair-headed family (documented)
+        @test_throws ArgumentError ExaModels.expand_family(n1.cons[1])
     end
 end
 
