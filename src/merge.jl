@@ -602,6 +602,30 @@ _materialize_block(backend, b::Constraint{F, I}) where {F, I <: _MergedItr} =
     Constraint(b.f, _materialize_mergeditr(backend, getfield(b, :itr)), 0, b.size, b.tag)
 _materialize_block(backend, b::Objective{F, I}) where {F, I <: _MergedItr} =
     Objective(b.f, _materialize_mergeditr(backend, getfield(b, :itr)))
+# A one-segment family saves no launches on a device, while its merged layout
+# reads every hoisted leaf from memory where the plain kernel has it as a
+# constant (the CI benchmark read CUDA cons/jac/hess 1.1x to 1.25x of main
+# that way). It goes back to the plain block `add_con`/`add_obj` would have
+# stored: the source tree with its leaves restored, the source block's own
+# compressors, steps and offsets, and its iterator converted as main does.
+# No sparsity probe runs; the compressors address the restored tree's leaf
+# positions, which `_unhoist` keeps. The host keeps the merged form.
+function _materialize_block(backend, b::Constraint{F, I}) where {F, I <: SegmentedItr}
+    s = getfield(b, :itr)
+    length(s.segs) == 1 || return Constraint(b.f, _materialize_mergeditr(backend, s), 0, b.size, b.tag)
+    seg = @inbounds s.segs[1]
+    return Constraint(_plain_function(b, seg), convert_array(seg.itr, backend), seg.o0, seg.dims, b.tag)
+end
+function _materialize_block(backend, b::Objective{F, I}) where {F, I <: SegmentedItr}
+    s = getfield(b, :itr)
+    length(s.segs) == 1 || return Objective(b.f, _materialize_mergeditr(backend, s))
+    seg = @inbounds s.segs[1]
+    return Objective(_plain_function(b, seg), convert_array(seg.itr, backend))
+end
+@inline _plain_function(b, seg) = SIMDFunction(
+    _unhoist(getfield(b, :f).f, seg.iv, seg.fv), seg.comp1, seg.comp2,
+    seg.o0, seg.o1, seg.o2, seg.o1step, seg.o2step,
+)
 
 """
     SegView{V}

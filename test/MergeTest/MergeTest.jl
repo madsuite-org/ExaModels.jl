@@ -218,9 +218,10 @@ function _test_backend_matches_host(backend)
     # named block, the tanh block, the two Null-leaf blocks and the 2-D block (a Matrix
     # iterator on the host) are single-segment
     @test count(b -> b.itr isa ExaModels.DeviceSegItr, mb.cons) == 3
-    @test count(b -> b.itr isa ExaModels.DeviceSeg1Itr, mb.cons) == 5
-    # the device layouts carry the source shapes too
-    @test any(b -> b.itr isa ExaModels.DeviceSeg1Itr && ExaModels.expand_family(b)[1].size == (1:3, 1:2), mb.cons)
+    # one-segment families go back to their plain blocks on a device
+    @test !any(b -> b.itr isa ExaModels.DeviceSeg1Itr, mb.cons)
+    @test any(b -> b isa ExaModels.Constraint && b.size == (1:3, 1:2), mb.cons)
+    # the multi-segment layout carries the source shapes
     @test any(b -> b.itr isa ExaModels.DeviceSegItr && ExaModels.expand_family(b)[2].size == (1:(64 - 1),), mb.cons)
     # Float32 backends (Metal) carry ~1e-7 roundoff per operation
     tight, loose = eltype(mb.meta.x0) == Float32 ? (1.0e-4, 1.0e-4) : (1.0e-12, 1.0e-10)
