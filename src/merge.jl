@@ -715,7 +715,9 @@ function _materialize_mergeditr(backend, s::SegmentedItr{K, S, T, D}) where {K, 
     segs = s.segs
     if length(segs) == 1
         seg = @inbounds segs[1]
-        dd = convert_array(collect(D, seg.itr), backend)   # may rewrite Float64 inside D (Metal)
+        # a 2-D generator's iterator is a Matrix; the layout holds a vector, in the
+        # same (column-major) order the host's linear getindex uses
+        dd = convert_array(vec(collect(D, seg.itr)), backend)   # may rewrite Float64 inside D (Metal)
         return _devseg1itr(
             T, eltype(dd), seg.o0, seg.o1, seg.o2, seg.iv, _fvt(T, seg.fv, backend),
             dd, s.o1step, s.o2step, length(s),

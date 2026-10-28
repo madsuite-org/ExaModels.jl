@@ -29,6 +29,8 @@ function _build(backend)
     c, _ = add_con!(c, g, i => sin(x[i + 1]) for i in 1:8)
     c, _ = add_con!(c, g, i => sin(z[i + 1]) for i in 1:8)
     c, _ = add_con(c, tanh(x[i]) * exp(z[i]) for i in 1:4; lcon = -3.0, ucon = 3.0)
+    # a 2-D generator (its iterator is a Matrix): one single-segment family
+    c, _ = add_con(c, x[i] * z[j] - 0.2 for i in 1:3, j in 1:2; lcon = -2.0, ucon = 2.0)
     # an `exa_sum` reduction (SumNode) is statically non-mergeable: stored
     # plain (a generator `sum` folds into `+` nodes and would merge)
     c, _ = add_con(c, exa_sum(k -> x[k] * z[k], Val(1:3)) + z[i] for i in 1:4; lcon = -3.0, ucon = 3.0)
@@ -119,14 +121,14 @@ end
 
 function _test_host_derivatives()
     m = ExaModel(_build(nothing))
-    # the fixture's 10 constraint adds collapse to: one range family, one
-    # data-tuple family, the named block and the tanh block (one-segment
-    # families: no sibling), two augmentations (plain) and one statically
-    # non-mergeable plain block (the `sum` reduction); its 9 objective adds
-    # collapse to the generator objective plus one merged family for the 8
-    # loop-written ones
-    @test length(m.cons) == 7
-    @test count(b -> b.itr isa ExaModels._MergedItr, m.cons) == 4   # four families
+    # the fixture's 11 constraint adds collapse to: one range family, one
+    # data-tuple family, the named block, the tanh block and the 2-D block
+    # (one-segment families: no sibling), two augmentations (plain) and one
+    # statically non-mergeable plain block (the `exa_sum` reduction); its 9
+    # objective adds collapse to the generator objective plus one merged
+    # family for the 8 loop-written ones
+    @test length(m.cons) == 8
+    @test count(b -> b.itr isa ExaModels._MergedItr, m.cons) == 5   # five families
     @test count(b -> b isa ExaModels.ConstraintAugmentation, m.cons) == 2
     @test length(m.objs) == 2
     _check_fd_derivatives(m)
@@ -197,10 +199,11 @@ function _test_backend_matches_host(backend)
             @test length(b.itr.d) == length(b.itr)
         end
     end
-    # four families: the range and data-tuple families have 2 segments, the
-    # named block and the tanh block are single-segment
+    # five families: the range and data-tuple families have 2 segments; the
+    # named block, the tanh block and the 2-D block (a Matrix iterator on the
+    # host) are single-segment
     @test count(b -> b.itr isa ExaModels.DeviceSegItr, mb.cons) == 2
-    @test count(b -> b.itr isa ExaModels.DeviceSeg1Itr, mb.cons) == 2
+    @test count(b -> b.itr isa ExaModels.DeviceSeg1Itr, mb.cons) == 3
     # Float32 backends (Metal) carry ~1e-7 roundoff per operation
     tight, loose = eltype(mb.meta.x0) == Float32 ? (1.0e-4, 1.0e-4) : (1.0e-12, 1.0e-10)
     rb = _evalall(mb)
