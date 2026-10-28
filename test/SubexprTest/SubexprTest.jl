@@ -68,11 +68,11 @@ function _lag_grad(m, xv, yv)
     return g .+ J' * yv
 end
 
-# ── add_sum fixtures ───────────────────────────────────────────────────────
+# ── add_expr! fixtures ─────────────────────────────────────────────────────
 #
-# Sum model: e[i] = x[i]^2 + sin(x[i+1]) buffered, then a ragged weighted
-# sum with variable terms and per-slot init:
-#   v[j] = init[j] + 2 e[j] + 3 e[j+1] + 0.5 x[j]  (j = 1:4)
+# Sum model: e[i] = x[i]^2 + sin(x[i+1]) buffered, a base v[j] = 1.5 + 0.5 x[j],
+# then a ragged weighted layer with variable terms:
+#   v[j] += 2 e[j] + 3 e[j+1]  (j = 1:4)
 #   v[1] += 4 e[4] + 0.25 x[5];  v[2] += 0.5 e[3] twice;  v[3] -= e[1]
 # consumed nonlinearly by the objective and constraints.
 _sum_elt(x, i) = x[i]^2 + sin(x[i + 1])
@@ -106,10 +106,10 @@ function _sum_core(backend)
         [j => 2.0 * e[j] for j in 1:4],
         [j => 3.0 * e[j + 1] for j in 1:4],
         [1 => 4.0 * e[4], 3 => -1.0 * e[1], 2 => 0.5 * e[3], 2 => 0.5 * e[3]],
-        [j => 0.5 * x[j] for j in 1:4],
         [1 => 0.25 * x[5]],
     )
-    c, v = add_sum(c, 4, pairs; init = 1.5)
+    c, v = add_expr(c, (1.5 + 0.5 * x[j] for j in 1:4); buffered = true)
+    c, v = add_expr!(c, v, pairs)
     c, _ = add_obj(c, (v[j]^2 + exp(v[j] / 10.0) for j in 1:4))
     c, _ = add_con(c, (v[j] * x[j + 1] + x[j]^2 for j in 1:4))
     return c
@@ -124,23 +124,45 @@ function _sum_chain_core(backend)
         ExaCore(concrete = Val(true), backend = backend)
     c, x = add_var(c, 6)
     c, e = add_expr(c, (x[i]^2 + sin(x[i + 1]) for i in 1:5); buffered = true)
-    c, r1 = add_sum(
-        c, 3, vcat(
-            [j => 2.0 * e[j] for j in 1:3],
-            [j => -0.5 * e[j + 2] for j in 1:3],
-            [2 => 0.3 * x[6]]
-        ); init = [0.1, 0.2, 0.3]
-    )
+    c, r1 = add_expr(c, (0.1 * j + 2.0 * e[j] for j in 1:3); buffered = true)
+    c, r1 = add_expr!(c, r1, vcat([j => -0.5 * e[j + 2] for j in 1:3], [2 => 0.3 * x[6]]))
     c, t = add_expr(c, (r1[i] * r1[i + 1] + exp(r1[i] / 10.0) for i in 1:2); buffered = true)
-    c, r2 = add_sum(
-        c, 2, vcat(
-            [j => 1.5 * t[j] for j in 1:2],
-            [j => 0.25 * r1[j] for j in 1:2],
-            [1 => 0.5 * x[1]]
-        )
-    )
+    c, r2 = add_expr(c, (1.5 * t[j] for j in 1:2); buffered = true)
+    c, r2 = add_expr!(c, r2, vcat([j => 0.25 * r1[j] for j in 1:2], [1 => 0.5 * x[1]]))
     c, _ = add_obj(c, (r2[j]^2 + cos(r2[j]) for j in 1:2))
     c, _ = add_con(c, (r2[j] * x[j + 1] + r1[j]^2 for j in 1:2))
+    return c
+end
+
+# In-place augmentation: a constraint, an objective and a buffered stage that
+# read v are added BEFORE two layers (the second through the macro), so they
+# must see the augmented value; the reference inlines the final v.
+_inplace_v(x, j) = 1.5 + 0.5 * x[j] + 2.0 * _sum_elt(x, j) + 3.0 * _sum_elt(x, j + 1) - 1.0 +
+    (j == 1 ? 0.25 * x[5] : j == 2 ? _sum_elt(x, 3) : 0.0 * x[1])
+function _inplace_ref_model()
+    c = ExaCore(concrete = Val(true))
+    c, x = add_var(c, 6)
+    for j in 1:4
+        c, _ = add_con(c, (_inplace_v(x, j) * x[j + 1] for _ in 1:1))
+    end
+    for j in 1:2
+        c, _ = add_obj(c, (_inplace_v(x, j)^2 + _inplace_v(x, j)^3 for _ in 1:1))
+    end
+    return ExaModel(c)
+end
+function _inplace_core(backend)
+    c = backend === nothing ? ExaCore(concrete = Val(true)) :
+        ExaCore(concrete = Val(true), backend = backend)
+    c, x = add_var(c, 6)
+    c, e = add_expr(c, (x[i]^2 + sin(x[i + 1]) for i in 1:5); buffered = true)
+    c, v = add_expr(c, (0.5 * x[j] + 1.5 for j in 1:4); buffered = true)
+    c, _ = add_con(c, (v[j] * x[j + 1] for j in 1:4))                   # before the layers
+    c, t = add_expr(c, (v[j]^3 for j in 1:2); buffered = true)           # stage consumer, before the layers
+    c, _ = add_obj(c, (t[j] + v[j]^2 for j in 1:2))
+    c, v = add_expr!(
+        c, v, vcat([j => 2.0 * e[j] for j in 1:4], [1 => 0.25 * x[5], 2 => 0.5 * e[3], 2 => 0.5 * e[3]])
+    )
+    @add_expr!(c, v, j => 3.0 * e[j + 1] - 1.0 for j in 1:4)
     return c
 end
 
@@ -560,10 +582,10 @@ function runtests(; backends = Any[CPU()])
         @test d1 ≈ d0 rtol = 1.0e-14
     end
 
-    # add_sum: ragged weighted sum over slots and variables with init,
-    # duplicate (slot, source) terms, nonlinear consumers — against the inlined
-    # per-group reference.
-    @testset "add_sum (vs inlined reference)" begin
+    # add_expr!: ragged weighted sum over slots and variables on a base with
+    # constants, duplicate (slot, source) terms, nonlinear consumers — against
+    # the inlined per-group reference.
+    @testset "add_expr! (vs inlined reference)" begin
         m0 = _sum_ref_model()
         m1 = _sum_model()
         xv = [0.3 + 0.1i for i in 1:6]
@@ -604,7 +626,7 @@ function runtests(; backends = Any[CPU()])
     # The chained fixture has no inlined reference, so check against finite
     # differences on the host; the device loop below compares each backend
     # against this host model.
-    @testset "add_sum (chained, FD)" begin
+    @testset "add_expr! (chained, FD)" begin
         m = ExaModel(_sum_chain_core(nothing))
 
         xv = [0.2 + 0.07i for i in 1:6]
@@ -638,16 +660,19 @@ function runtests(; backends = Any[CPU()])
     # touching the older slot. In the other fixtures every sum slot is also a
     # direct nonlinear consumer leaf, so a seed-time entry marks it μ-active
     # and the collapse path is never the only route.
-    @testset "add_sum (μ through cross-pair collapse)" begin
+    @testset "add_expr! (μ through cross-pair collapse)" begin
         function build(; buffered)
             c = ExaCore(concrete = Val(true))
             c, x = add_var(c, 4)
             c, e1 = add_expr(c, (x[i]^2 for i in 1:1); buffered)
             c, e2 = add_expr(c, (sin(x[i + 2]) for i in 1:1); buffered)
             if buffered
-                c, v = add_sum(c, 1, [1 => e1[1] + 3.0 * e2[1]])
-                c, a = add_sum(c, 1, [1 => 3.0 * v[1] + x[2]])
-                c, q = add_sum(c, 1, [1 => 2.0 * v[1] + x[1]])
+                c, v = add_expr(c, (e1[i] for i in 1:1); buffered)
+                c, v = add_expr!(c, v, [1 => 3.0 * e2[1]])
+                c, a = add_expr(c, (x[2] for i in 1:1); buffered)
+                c, a = add_expr!(c, a, [1 => 3.0 * v[1]])
+                c, q = add_expr(c, (x[1] for i in 1:1); buffered)
+                c, q = add_expr!(c, q, [1 => 2.0 * v[1]])
                 c, _ = add_obj(c, (a[d] * q[d] for d in 1:1))
                 c, _ = add_con(c, (a[d] * q[d] - 1.0 for d in 1:1))
             else
@@ -668,12 +693,13 @@ function runtests(; backends = Any[CPU()])
     # A single group argument summing many elements (the issue-#331 pattern):
     # v = Σₜ x[2t-1]·x[2t], obj = v² — one element stage, one sum stage, and
     # a genuinely dense rank-1 μ·∇v∇vᵀ Hessian block.
-    @testset "add_sum (single dense group)" begin
+    @testset "add_expr! (single dense group)" begin
         n = 12
         c = ExaCore(concrete = Val(true))
         c, x = add_var(c, 2n)
         c, s = add_expr(c, (x[2t - 1] * x[2t] for t in 1:n); buffered = true)
-        c, v = add_sum(c, 1, (1 => s[t] for t in 1:n))
+        c, v = add_expr(c, (0.0 for _ in 1:1); buffered = true)           # a constant base
+        c, v = add_expr!(c, v, (1 => s[t] for t in 1:n))
         c, _ = add_obj(c, ((v[d])^2 for d in 1:1))
         m = ExaModel(c)
 
@@ -695,14 +721,15 @@ function runtests(; backends = Any[CPU()])
         end
     end
 
-    @testset "add_sum (API surface + errors)" begin
+    @testset "add_expr! (API surface + errors)" begin
         c = ExaCore(concrete = Val(true))
         c, x = add_var(c, 4)
         c, p = add_par(c, 2; value = 1.0)
         c, s = add_expr(c, (x[i]^2 for i in 1:3); buffered = true)
 
-        # constants fold into init; affine nesting with - / unary minus / division
-        c, v = add_sum(c, 2, [1 => 2.0 * s[1] + 1.0, 2 => -(s[2] - s[3]) / 2.0, 2 => 0.5])
+        # constants fold into the layer; affine nesting with - / unary minus / division
+        c, v = add_expr(c, (0.0 for j in 1:2); buffered = true)
+        c, v = add_expr!(c, v, [1 => 2.0 * s[1] + 1.0, 2 => -(s[2] - s[3]) / 2.0, 2 => 0.5])
         c, _ = add_obj(c, (v[j]^2 for j in 1:2))
         m = ExaModel(c)
         xv = [0.5, -0.3, 0.8, 0.1]
@@ -710,37 +737,72 @@ function runtests(; backends = Any[CPU()])
         v2 = -(xv[2]^2 - xv[3]^2) / 2.0 + 0.5
         @test NLPModels.obj(m, xv) ≈ v1^2 + v2^2 rtol = 1.0e-14
 
-        # non-affine terms, parameter sources, bad indices, init mismatch
-        @test_throws ArgumentError add_sum(c, 2, [1 => s[1] * s[2]])
-        @test_throws ArgumentError add_sum(c, 2, [1 => s[1]^2])
-        @test_throws ArgumentError add_sum(c, 2, [1 => p[1] * s[1]])
-        @test_throws ArgumentError add_sum(c, 2, [3 => s[1]])
-        @test_throws DimensionMismatch add_sum(c, 2, [1 => s[1]]; init = [1.0])
-        @test_throws ArgumentError add_sum(c, 2, [x[1] => s[1]])
-        @test_throws ArgumentError add_sum(c, 2, [1 => s[1] / x[2]])
-        @test occursin("buffered sum", sprint(show, v))
+        # non-affine terms, parameter sources, bad indices, a layer reading its
+        # own target, a target that is not a buffered subexpression
+        @test_throws ArgumentError add_expr!(c, v, [1 => s[1] * s[2]])
+        @test_throws ArgumentError add_expr!(c, v, [1 => s[1]^2])
+        @test_throws ArgumentError add_expr!(c, v, [1 => p[1] * s[1]])
+        @test_throws ArgumentError add_expr!(c, v, [3 => s[1]])
+        @test_throws ArgumentError add_expr!(c, v, [x[1] => s[1]])
+        @test_throws ArgumentError add_expr!(c, v, [1 => s[1] / x[2]])
+        @test_throws ArgumentError add_expr!(c, v, [1 => v[2]])
+        c, inl = add_expr(c, (x[i] for i in 1:2))
+        @test_throws MethodError add_expr!(c, inl, [1 => s[1]])
+        # a stage that reads v and is older than a layer's source: the layer
+        # would come too late for it; an older source is fine
+        c, w = add_expr(c, (v[1] for _ in 1:1); buffered = true)
+        c, z = add_expr(c, (x[4] for _ in 1:1); buffered = true)
+        @test_throws ArgumentError add_expr!(c, v, [1 => z[1]])
+        c2, _ = add_expr!(c, v, [1 => s[1]])
+        c2, _ = add_obj(c2, (w[1] for _ in 1:1))
+        m2 = ExaModel(c2)
+        @test NLPModels.obj(m2, xv) ≈ (v1 + xv[1]^2)^2 + v2^2 + (v1 + xv[1]^2) rtol = 1.0e-14   # the objective sees the layer too
+
+        # a 2-D target takes tuple indices
+        c, g = add_expr(c, (x[i] * x[j] for i in 1:2, j in 1:2); buffered = true)
+        c, g = add_expr!(c, g, [(2, 1) => s[1], (1, 2) => 2.0])
+        c, _ = add_con(c, (g[i, j] for i in 1:2, j in 1:2))
+        mg = ExaModel(c)
+        cg = zeros(4)
+        NLPModels.cons_nln!(mg, xv, cg)
+        @test cg ≈ [xv[1] * xv[1], xv[2] * xv[1] + xv[1]^2, xv[1] * xv[2] + 2.0, xv[2] * xv[2]] rtol = 1.0e-14
 
         # a sum node (exa_sum, or sum(... for ...) inside the macros) is affine
-        c, u = add_sum(c, 1, [1 => exa_sum(k -> 2.0 * s[k], Val(1:3)) - 1.0])
+        c, u = add_expr(c, (0.0 for _ in 1:1); buffered = true)
+        c, u = add_expr!(c, u, [1 => exa_sum(k -> 2.0 * s[k], Val(1:3)) - 1.0])
         c, _ = add_obj(c, (u[1]^2 for _ in 1:1))
         mu = ExaModel(c)
         u1 = 2.0 * (xv[1]^2 + xv[2]^2 + xv[3]^2) - 1.0
         @test NLPModels.obj(mu, xv) ≈ v1^2 + v2^2 + u1^2 rtol = 1.0e-14
     end
 
-    @testset "add_sum (solver round-trip)" begin
+    @testset "add_expr! (in place: earlier consumers see the layers)" begin
+        m0 = _inplace_ref_model()
+        m1 = ExaModel(_inplace_core(nothing))
+        xv = [0.3 + 0.1i for i in 1:6]
+        yv = [1.0, -2.0, 0.5, 3.0]
+        @test NLPModels.obj(m1, xv) ≈ NLPModels.obj(m0, xv) rtol = 1.0e-14
+        c0 = zeros(4); c1 = zeros(4)
+        NLPModels.cons_nln!(m0, xv, c0)
+        NLPModels.cons_nln!(m1, xv, c1)
+        @test c1 ≈ c0 rtol = 1.0e-14
+        d0 = zeros(6); d1 = zeros(6)
+        NLPModels.grad!(m0, xv, d0)
+        NLPModels.grad!(m1, xv, d1)
+        @test d1 ≈ d0 rtol = 1.0e-13
+        @test _dense_jac(m1, xv) ≈ _dense_jac(m0, xv) rtol = 1.0e-13
+        @test _dense_hess(m1, xv, yv) ≈ _dense_hess(m0, xv, yv) rtol = 1.0e-12
+        @test _dense_hess(m1, xv, nothing) ≈ _dense_hess(m0, xv, nothing) rtol = 1.0e-12
+    end
+
+    @testset "add_expr! (solver round-trip)" begin
         function _sum_solve(; summed = false)
             c = ExaCore(concrete = Val(true))
             c, x = add_var(c, 6; start = fill(0.5, 6))
             if summed
                 c, e = add_expr(c, (x[i]^2 + sin(x[i + 1]) for i in 1:5); buffered = true)
-                c, v = add_sum(
-                    c, 4, vcat(
-                        [j => 2.0 * e[j] for j in 1:4],
-                        [j => 3.0 * e[j + 1] for j in 1:4],
-                        [j => 0.5 * x[j] for j in 1:4]
-                    ); init = 1.5
-                )
+                c, v = add_expr(c, (1.5 + 0.5 * x[j] for j in 1:4); buffered = true)
+                c, v = add_expr!(c, v, vcat([j => 2.0 * e[j] for j in 1:4], [j => 3.0 * e[j + 1] for j in 1:4]))
                 c, _ = add_obj(c, ((v[j] - 1.0)^2 + 0.1 * x[j]^2 for j in 1:4))
                 c, _ = add_con(c, (v[j] + x[j + 2] for j in 1:4); lcon = -10.0, ucon = 10.0)
             else
@@ -765,16 +827,22 @@ function runtests(; backends = Any[CPU()])
             _device_merged_plus_buffered(backend)
             _device_augmented_con_buffered(backend)
         end
-        @testset "add_sum (device: $backend)" begin
+        @testset "add_expr! (device: $backend)" begin
             _device_vs_host(
                 _sum_ref_model(), ExaModel(_sum_core(backend)),
                 [0.3 + 0.1i for i in 1:6], [1.0, -2.0, 0.5, 3.0],
             )
         end
-        @testset "add_sum (device chained: $backend)" begin
+        @testset "add_expr! (device chained: $backend)" begin
             _device_vs_host(
                 ExaModel(_sum_chain_core(nothing)), ExaModel(_sum_chain_core(backend)),
                 [0.2 + 0.07i for i in 1:6], [1.3, -0.8],
+            )
+        end
+        @testset "add_expr! (device in place: $backend)" begin
+            _device_vs_host(
+                _inplace_ref_model(), ExaModel(_inplace_core(backend)),
+                [0.3 + 0.1i for i in 1:6], [1.0, -2.0, 0.5, 3.0],
             )
         end
     end

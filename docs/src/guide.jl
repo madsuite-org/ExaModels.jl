@@ -105,16 +105,21 @@ c2 = ExaCore(concrete = Val(true))
 # @add_obj(c, t[i]^2 for i in 1:(N - 2))
 # ```
 # When a consumer must sum many buffered elements, as a group argument in a
-# group-partially-separable problem does, `add_sum` forms the sum as data
-# instead of as an expression tree: each slot is an affine combination of
-# existing buffered slots and variables with constant coefficients, so a slot
-# summing thousands of elements costs one stage and nothing grows with the term
-# count. Buffer the element functions, then sum. With `elems` the element data,
-# `terms` the (group, weight, element) triples and `b` the group constants:
+# group-partially-separable problem does, `add_expr!` adds the sum to a
+# buffered expression as data instead of as an expression tree, the way
+# `add_con!` adds terms to constraint rows: each term is an affine
+# combination of existing buffered slots and variables with constant
+# coefficients, so a slot summing thousands of elements costs one stage and
+# nothing grows with the term count, and every consumer of the expression,
+# earlier or later, sees the augmented value. Buffer the element functions,
+# create the group values from their constant parts, then add the terms. With
+# `elems` the element data, `terms` the (group, weight, element) triples and
+# `b` the group constants:
 #
 # ```julia
 # c, e = add_expr(c, ((x[d.i] - d.c)^2 for d in elems); buffered = true)
-# c, v = add_sum(c, ngroups, (d.g => d.w * e[d.k] for d in terms); init = b)
+# c, v = add_expr(c, (b[g] for g in 1:ngroups); buffered = true)
+# c, v = add_expr!(c, v, (d.g => d.w * e[d.k] for d in terms))
 # c, _ = add_obj(c, v[g]^2 for g in 1:ngroups)
 # ```
 #

@@ -96,17 +96,6 @@ struct BufferedExpression{S, F, T}
     f::F           # the generator function (kept for display)
     tag::T
 end
-# A sum handle (see `add_sum`) carries no generator body.
-function Base.show(io::IO, s::BufferedExpression{S, Nothing}) where {S}
-    return print(
-        io,
-        """
-        Subexpression (buffered sum)
-
-          s ∈ R^{$(join(size(s.size), " × "))}
-        """,
-    )
-end
 function Base.show(io::IO, s::BufferedExpression)
     expr = try
         _expr_string(s.f(DataSource()))
@@ -2132,7 +2121,7 @@ end
     )
 end
 
-# ── add_sum: term extraction ───────────────────────────────────────────────
+# ── add_expr!: term extraction ───────────────────────────────────────────────
 #
 # Terms are traced per CONCRETE data element (unlike add_expr, which traces one
 # symbolic tree against a DataSource), so index leaves carry plain Ints and the
@@ -2149,7 +2138,7 @@ function _sum_term!(tj, ts, tw, initv, j, ex, coef)
     v = _sum_scalar(ex)
     v === nothing && throw(
         ArgumentError(
-            "add_sum terms must be affine combinations of buffered " *
+            "add_expr! terms must be affine combinations of buffered " *
                 "subexpression slots and variables with constant coefficients; " *
                 "got a $(typeof(ex)) leaf",
         ),
@@ -2167,20 +2156,20 @@ function _sum_term!(tj, ts, tw, initv, j, ex::Var{<:Integer}, coef)
 end
 _sum_term!(tj, ts, tw, initv, j, ex::ParameterNode, coef) = throw(
     ArgumentError(
-        "add_sum does not support parameter sources or parameter-dependent " *
+        "add_expr! does not support parameter sources or parameter-dependent " *
             "weights; evaluate the parameter-dependent part in a buffered add_expr " *
             "stage and sum over its slots instead",
     ),
 )
 _sum_term!(tj, ts, tw, initv, j, ex::SubexprNode, coef) = throw(
     ArgumentError(
-        "add_sum indices must be data values, not symbolic expressions " *
+        "add_expr! indices must be data values, not symbolic expressions " *
             "(the slot index of every term must be known at build time)",
     ),
 )
 _sum_term!(tj, ts, tw, initv, j, ex::Var, coef) = throw(
     ArgumentError(
-        "add_sum indices must be data values, not symbolic expressions " *
+        "add_expr! indices must be data values, not symbolic expressions " *
             "(the variable index of every term must be known at build time)",
     ),
 )
@@ -2195,7 +2184,7 @@ function _sum_term!(tj, ts, tw, initv, j, ex::Node1{F}, coef) where {F}
     F === typeof(+) && return _sum_term!(tj, ts, tw, initv, j, ex.inner, coef)
     throw(
         ArgumentError(
-            "add_sum terms must be affine; the unary function $(F.instance) is not",
+            "add_expr! terms must be affine; the unary function $(F.instance) is not",
         ),
     )
 end
@@ -2216,7 +2205,7 @@ function _sum_term!(tj, ts, tw, initv, j, ex::Node2{F}, coef) where {F}
         else
             throw(
                 ArgumentError(
-                    "add_sum terms must be affine; a product of two " *
+                    "add_expr! terms must be affine; a product of two " *
                         "non-constant expressions is not. Sum over buffered " *
                         "subexpression slots (`add_expr(...; buffered = true)`) " *
                         "or variables: an unbuffered subexpression inlines its " *
@@ -2228,7 +2217,7 @@ function _sum_term!(tj, ts, tw, initv, j, ex::Node2{F}, coef) where {F}
         b = _sum_scalar(ex.inner2)
         b === nothing && throw(
             ArgumentError(
-                "add_sum terms must be affine; division by a non-constant " *
+                "add_expr! terms must be affine; division by a non-constant " *
                     "expression is not",
             ),
         )
@@ -2236,7 +2225,7 @@ function _sum_term!(tj, ts, tw, initv, j, ex::Node2{F}, coef) where {F}
     else
         throw(
             ArgumentError(
-                "add_sum terms must be affine; the binary function $(F.instance) is not",
+                "add_expr! terms must be affine; the binary function $(F.instance) is not",
             ),
         )
     end
@@ -2244,86 +2233,100 @@ function _sum_term!(tj, ts, tw, initv, j, ex::Node2{F}, coef) where {F}
 end
 
 """
-    add_sum(core, n, pairs; init = zero(T), name = nothing, tag = nothing)
+    add_expr!(core, v, pairs)
 
-Add a buffered sum over existing buffered-subexpression slots and
-variables: a [`BufferedExpression`](@ref) `r` of length `n` with
+Augments the buffered subexpression `v` in place: for each `j => term` in
+`pairs`, `term` is added to `v[j]`, and every consumer of `v` (constraints,
+objectives and buffered subexpressions already added, as well as later ones)
+sees the augmented value.  Returns `(core, v)`.  Like [`add_con!`](@ref) for
+constraint rows, each call is one layer with its own iterator, and layers sum.
 
-    r[j] = init[j] + Σ terms assigned to j
+Each `term` is an affine combination with constant coefficients of buffered
+subexpression elements (`s[k]`) and variables (`x[i]`), including sums of such
+terms written with [`exa_sum`](@ref); plain numbers fold into a constant.
+Indices must be data values (every term's structure is resolved at build
+time).  The terms are stored as data (one index-table stage per call
+regardless of the term count), so a slot that sums thousands of elements
+costs no kernel compilation.  Any number of terms may target the same slot
+and slices may be ragged.  A layer may not read `v` itself.
 
-where `pairs` iterates `j => term` and each `term` is an affine combination
-with constant coefficients of already-created buffered subexpression elements
-(`s[k]`) and variables (`x[i]`), including sums of such terms written with
-[`exa_sum`](@ref); plain numbers fold into the constant part.
-`init` is a scalar or a length-`n` vector of constants.  Indices must be data
-values (every term's structure is resolved at build time).
-
-Unlike referencing many slots inside one expression tree — whose compile time
-grows with the number of referenced slots — a sum stage stores its terms as
-data (one index-table stage regardless of the term count), so summing
-thousands of elements into a slot costs no kernel compilation.  Any number of
-terms may target the same slot, slices may be ragged, and sources may span
-several stages.  Typical use is the group-partially-separable pattern: buffer
-all element functions with `add_expr(...; buffered = true)`, then form each
-group's argument `init + Σ w·element + Σ a·x` with one `add_sum`.
+Typical use is the group-partially-separable pattern: buffer the element
+functions with `add_expr(...; buffered = true)`, create the group values
+from their constant parts, and add each group's `Σ w·element + Σ a·x` with
+one `add_expr!` per data source.
 
 ```julia
-c, x = add_var(c, nv)
-c, e = add_expr(c, (x[d.i] * x[d.j] for d in elems); buffered = true)
-c, v = add_sum(c, ngroups, (d.g => d.w * e[d.k] for d in terms))
-c, _ = add_obj(c, (v[g])^2 for g in 1:ngroups)
+@add_var(c, x, nv)
+@add_expr(c, e, x[d.i] * x[d.j] for d in elems; buffered = true)
+@add_expr(c, v, b[g] for g in 1:ngroups; buffered = true)
+@add_expr!(c, v, d.g => d.w * e[d.k] for d in terms)
+@add_obj(c, (v[g])^2 for g in 1:ngroups)
 ```
+
+The layer is evaluated right after the newest of `v` and its sources.  A
+buffered subexpression that reads `v` and was added before one of the
+layer's sources would therefore read `v` before the layer: that is an
+`ArgumentError` (add the layer first, or buffer the sources earlier).
 
 Supports the NLPModels evaluation API through second order on the host and
 on KernelAbstractions backends, with the same restrictions as other buffered
 subexpressions (no oracles, no `prod = true`, `jprod_nln!`/`jtprod_nln!`
-host-only).  There is no macro form: the terms are data, not a generator body.
+host-only).
 """
-function add_sum(
-        c::C,
-        n,
-        pairs;
-        init = zero(T),
-        name = nothing,
-        tag = nothing,
-    ) where {T, C <: ExaCore{T}}
-    nn = Int(n)
-    o = c.npar
-    initv = zeros(T, nn)
-    if init isa AbstractVector
-        length(init) == nn ||
-            throw(DimensionMismatch("add_sum init has length $(length(init)), expected $nn"))
-        copyto!(initv, init)
-    else
-        fill!(initv, T(init))
-    end
+function add_expr!(c::C, v::BufferedExpression, pairs) where {T, C <: ExaCore{T}}
+    nn = v.length
+    o = c.npar                      # hidden slots the previous owner moves to
     tj = Int[]
     ts = Int[]
     tw = T[]
+    initv = zeros(T, nn)            # constant parts of the terms
     for p in pairs
         p isa Pair || throw(
-            ArgumentError("add_sum expects `index => term` pairs; got $(typeof(p))"),
+            ArgumentError("add_expr! expects `index => term` pairs; got $(typeof(p))"),
         )
-        first(p) isa Integer || throw(
-            ArgumentError(
-                "add_sum destination indices must be data values, not " *
-                    "symbolic expressions; got $(typeof(first(p)))",
-            ),
-        )
-        j = Int(first(p))
-        1 <= j <= nn ||
-            throw(ArgumentError("add_sum destination index $j is outside 1:$nn"))
+        j = _expr_target(v, first(p))
         _sum_term!(tj, ts, tw, initv, j, last(p), one(T))
     end
+    vlo, vhi = v.offset + 1, v.offset + nn
     for s in ts
-        s < 0 &&
-            -s > o &&
-            throw(ArgumentError("add_sum source slot θ[$(-s)] does not exist yet"))
-        s > 0 &&
-            s > c.nvar &&
-            throw(ArgumentError("add_sum source variable x[$s] does not exist"))
+        s < 0 && -s > o &&
+            throw(ArgumentError("add_expr! source slot θ[$(-s)] does not exist yet"))
+        s < 0 && vlo <= -s <= vhi &&
+            throw(ArgumentError("add_expr! layer reads the expression it augments (θ[$(-s)])"))
+        s > 0 && s > c.nvar &&
+            throw(ArgumentError("add_expr! source variable x[$s] does not exist"))
     end
-    # CSR by destination slot
+    stages = collect(Any, c.subexprs)                       # newest first
+    oi = findfirst(st -> st.offset == v.offset, stages)
+    (oi === nothing || _stage_len(stages[oi]) != nn) && throw(
+        ArgumentError("add_expr! target is not a buffered subexpression of this core"),
+    )
+    # the layer takes over v's slots; the previous owner moves to the hidden slots
+    stages[oi] = _relocated(stages[oi], o)
+    # every θ slot a source reads comes from an older stage, so the layer goes
+    # immediately newer than the newest of {owner, source owners}
+    pos = oi
+    for s in ts
+        s < 0 || continue
+        k = findfirst(st -> st.offset < -s <= st.offset + _stage_len(st), stages)
+        k === nothing && throw(ArgumentError("add_expr! source slot θ[$(-s)] belongs to no stage"))
+        pos = min(pos, k)
+    end
+    # a stage older than the layer that reads v would see it before the layer
+    for k in pos:length(stages)
+        k == oi && continue
+        _, cols = _stage_jac_structure(T, _host_block(stages[k]))
+        any(cc -> cc < 0 && vlo <= -cc <= vhi, cols) && throw(
+            ArgumentError(
+                "add_expr! target is read by a buffered subexpression added before " *
+                    "one of the layer's sources; add the layer first or buffer the sources earlier",
+            ),
+        )
+    end
+    # the layer: identity over the relocated owner, constant parts, then the terms
+    for j in 1:nn
+        push!(tj, j); push!(ts, -(o + j)); push!(tw, one(T))
+    end
     counts = zeros(Int, nn)
     for j in tj
         counts[j] += 1
@@ -2334,27 +2337,43 @@ function add_sum(
         ptr[j + 1] = ptr[j] + counts[j]
     end
     perm = sortperm(tj)
-    stage = SubexprSumStage(
-        o,
+    layer = SubexprSumStage(
+        v.offset,
         nn,
         convert_array(initv, c.backend),
         convert_array(ptr, c.backend),
         convert_array(ts[perm], c.backend),
         convert_array(tw[perm], c.backend),
     )
+    insert!(stages, pos, layer)
     θ = append!(c.backend, c.θ, zero(T), nn)
-    ex = BufferedExpression((nn,), nn, o, nothing, tag)
-    return (
-        ExaCore(
-            c;
-            subexprs = (stage, c.subexprs...),
-            θ = θ,
-            npar = c.npar + nn,
-            refs = add_refs(c.refs, name, ex),
-        ),
-        ex,
-    )
+    return ExaCore(c; subexprs = Tuple(stages), θ = θ, npar = c.npar + nn), v
 end
+
+# a target index of `add_expr!`, as a 1-based slot number within `v`
+function _expr_target(v::BufferedExpression, i::Integer)
+    j = Int(i) - _start(v.size[1]) + 1
+    1 <= j <= v.length ||
+        throw(ArgumentError("add_expr! destination index $i is outside the expression's range"))
+    return j
+end
+function _expr_target(v::BufferedExpression, is::Tuple)
+    length(is) == length(v.size) ||
+        throw(ArgumentError("add_expr! destination index $is has the wrong number of dimensions"))
+    all(i -> i isa Integer, is) ||
+        throw(ArgumentError("add_expr! destination indices must be data values; got $is"))
+    j = idxx(is .- (_start.(v.size) .- 1), _length.(v.size))
+    1 <= j <= v.length ||
+        throw(ArgumentError("add_expr! destination index $is is outside the expression's range"))
+    return j
+end
+_expr_target(v::BufferedExpression, i) = throw(
+    ArgumentError("add_expr! destination indices must be data values, not symbolic expressions; got $(typeof(i))"),
+)
+
+# the same stage writing to another θ range
+_relocated(s::SubexprStage, o) = SubexprStage(s.f, s.itr, o)
+_relocated(s::SubexprSumStage, o) = SubexprSumStage(o, s.n, s.init, s.ptr, s.src, s.w)
 
 # A model's blocks live in a tuple, and every evaluation walks it by dispatch
 # recursion. Past 32 blocks inference stops specializing that recursion (the
@@ -3393,6 +3412,37 @@ macro add_con!(exs...)
             $(map(esc, kwargs.args)...),
         )
         $con
+    end
+end
+
+"""
+    @add_expr!(core, v, idx => term for ...)
+
+Macro interface for [`add_expr!`](@ref). Updates `core` in the calling scope
+and evaluates to `v`.
+
+```julia
+@add_expr(c, e, x[d.i] * x[d.j] for d in elems; buffered = true)
+@add_expr(c, v, b[g] for g in 1:ngroups; buffered = true)
+@add_expr!(c, v, d.g => d.w * e[d.k] for d in terms)
+```
+"""
+macro add_expr!(exs...)
+    parts, kwargs = _split_macro_args(exs)
+    length(parts) == 3 || error("@add_expr! requires core, expression and generator arguments")
+    core = parts[1]
+    v = parts[2]
+    gen_expr = _auto_const_gen(parts[3])
+    out = gensym(:v)
+    return quote
+        local $out
+        $(esc(core)), $out = add_expr!(
+            $(esc(core)),
+            $(esc(v)),
+            $(esc(gen_expr));
+            $(map(esc, kwargs.args)...),
+        )
+        $out
     end
 end
 

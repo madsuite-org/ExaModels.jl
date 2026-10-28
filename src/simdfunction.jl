@@ -53,10 +53,12 @@ Returns a `SIMDFunction` using the `gen`.
     return _simdfunction(T, gen.f(DataSource()), o0, o1, o2)
 end
 
+# a generator whose body is a plain number (`(0.0 for j in 1:n)`, the base of
+# a buffered expression that `add_expr!` layers onto): a `Null` node, so the
+# tree is callable like any other; a merged family hoists it as a Float leaf
 @inline function _simdfunction(T, f::F, o0, o1, o2) where {F <: Real}
-    f = replace_T(T, f)
     return SIMDFunction(
-        f,
+        Null(T(f)),
         Compressor{Tuple{}}(()),
         Compressor{Tuple{}}(()),
         o0,

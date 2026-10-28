@@ -220,7 +220,7 @@ end
 """
     SubexprSumStage{VT, VI}
 
-A buffered sum stage created by [`add_sum`](@ref): slot `j` holds a
+A buffered sum stage, one per [`add_expr!`](@ref) call: slot `j` holds a
 constant-coefficient linear combination
 
     θ[offset + j] = init[j] + Σₘ w[m] · source(m)    for m in ptr[j]:ptr[j+1]-1
@@ -240,7 +240,7 @@ slot's resolved gradient, with one Hessian-index table per distinct x-support
 # Fields
 - `offset::Int`: θ offset; slot `j` lives at `θ[offset + j]`
 - `n::Int`: number of slots
-- `init::VT`: length-`n` constant base values
+- `init::VT`: length-`n` constant parts of the terms
 - `ptr::VI`: length `n + 1`; slot `j`'s terms are `ptr[j]:ptr[j+1]-1`
 - `src::VI`: signed sources (`> 0` variable index, `< 0` negated θ slot)
 - `w::VT`: constant term weights
@@ -526,13 +526,19 @@ end
     return cnt
 end
 
+# a generator whose body is a plain number (`(0.0 for j in 1:n)`, the base of
+# a buffered expression that `add_expr!` layers onto) is a `Null` node, so the
+# stage tree is callable like any other (as `_simdfunction` does for blocks)
+@inline _constant_tree(::Type{T}, f::Real) where {T} = Null(T(f))
+@inline _constant_tree(::Type{T}, f) where {T} = f
+
 # Stage SIMDFunction: the second-order compressor must be built with FULL
 # hrpass counting, not hrpass0.  hrpass0 skips leaves reached through purely
 # linear paths, which is valid only when the top-level second-order seed is
 # zero; a stage replay is seeded with μ ≠ 0, so a linear stage tree still
 # produces μ·∇s∇sᵀ and needs those slots.
 @inline function _stage_simdfunction(T, gen::Base.Generator)
-    f = replace_T(T, gen.f(DataSource()))
+    f = _constant_tree(T, replace_T(T, gen.f(DataSource())))
 
     d = f(Identity(), AdjointNodeSource(NaNSource{T}()), NaNSource{T}())
     raw1 = Any[]
