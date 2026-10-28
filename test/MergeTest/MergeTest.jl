@@ -1,6 +1,7 @@
 module MergeTest
 
 using Test, ExaModels
+import SparseArrays
 import NLPModels
 
 # Backend list comes from the suite driver when available (so GPU legs
@@ -28,6 +29,9 @@ function _build(backend)
     c, _ = add_con!(c, g, i => sin(x[i + 1]) for i in 1:8)
     c, _ = add_con!(c, g, i => sin(z[i + 1]) for i in 1:8)
     c, _ = add_con(c, tanh(x[i]) * exp(z[i]) for i in 1:4; lcon = -3.0, ucon = 3.0)
+    # an `exa_sum` reduction (SumNode) is statically non-mergeable: stored
+    # plain (a generator `sum` folds into `+` nodes and would merge)
+    c, _ = add_con(c, exa_sum(k -> x[k] * z[k], Val(1:3)) + z[i] for i in 1:4; lcon = -3.0, ucon = 3.0)
     c, _ = add_obj(c, abs2(x[i] - z[i]) for i in 1:n)
     # loop-written objectives: one scalar add per iteration, two variable
     # blocks, collapsing into a single objective family
@@ -98,11 +102,15 @@ end
 
 function _test_host_derivatives()
     m = ExaModel(_build(nothing))
-    # the fixture's 10 constraint adds collapse to: one range family, one
-    # data-tuple family, the named block, two augmentations (plain), and a
-    # singleton; its 9 objective adds collapse to the generator objective
-    # plus one merged family for the 8 loop-written ones
-    @test length(m.cons) == 6
+    # the fixture's 11 constraint adds collapse to: one range family, one
+    # data-tuple family, the named block and the tanh block (one-segment
+    # families: no sibling), two augmentations (plain) and one statically
+    # non-mergeable plain block (the `sum` reduction); its 9 objective adds
+    # collapse to the generator objective plus one merged family for the 8
+    # loop-written ones
+    @test length(m.cons) == 7
+    @test count(b -> b.itr isa ExaModels._MergedItr, m.cons) == 4   # four families
+    @test count(b -> b isa ExaModels.ConstraintAugmentation, m.cons) == 2
     @test length(m.objs) == 2
     return _check_fd_derivatives(m)
 end
@@ -150,13 +158,16 @@ function _test_backend_matches_host(backend)
     rb = _evalall(mb)
     rh = _evalall(ExaModel(_build(nothing)))
     @test rb[1] ≈ rh[1] rtol = tight
-    for k in (2, 3, 6, 9)                       # grad, cons, jac vals, hess vals
-        @test sum(rb[k]) ≈ sum(rh[k]) rtol = loose
-        @test maximum(abs, rb[k]) ≈ maximum(abs, rh[k]) rtol = loose
-    end
-    for k in (4, 5, 7, 8)                       # sparsity coordinates
-        @test sort(rb[k]) == sort(rh[k])
-    end
+    @test rb[2] ≈ rh[2] rtol = loose                 # grad
+    @test rb[3] ≈ rh[3] rtol = loose                 # cons
+    # Jacobian and Hessian: the coordinate lists may legitimately differ in
+    # order between host and device, so compare the assembled matrices
+    # (duplicate coordinates sum), not sums or norms of the value vectors
+    nvar, ncon = length(rh[2]), length(rh[3])
+    @test SparseArrays.sparse(rb[4], rb[5], rb[6], ncon, nvar) ≈
+        SparseArrays.sparse(rh[4], rh[5], rh[6], ncon, nvar) rtol = loose
+    @test SparseArrays.sparse(rb[7], rb[8], rb[9], nvar, nvar) ≈
+        SparseArrays.sparse(rh[7], rh[8], rh[9], nvar, nvar) rtol = loose
     return
 end
 

@@ -126,10 +126,25 @@ c2 = ExaCore(concrete = Val(true))
 #     inlined compilation cost grows multiplicatively with the nesting depth,
 #     while buffered compilation cost is additive, and inlined evaluation
 #     recomputes each shared subexpression at every use site, while buffered
-#     evaluation computes it once. Buffered subexpressions work on GPU backends;
-#     `jprod_nln!`, `jtprod_nln!`, and `hprod!` are not available for them on
-#     device backends, while the sparse Jacobian and Hessian callbacks used by
-#     interior-point solvers are fully supported.
+#     evaluation computes it once. Buffered subexpressions work on GPU backends,
+#     including `hprod!`; `jprod_nln!` and `jtprod_nln!` are not available for
+#     them on device backends, while the sparse Jacobian and Hessian callbacks
+#     used by interior-point solvers are fully supported.
+#
+# !!! note "Block merging and the sparsity footprint"
+#     Constraint and objective blocks whose expression trees have the same
+#     structure are merged into one family at construction time, so a model
+#     written as a loop of scalar `add_con`/`add_obj` calls costs what the
+#     single-generator form costs to compile. Merging does not change the
+#     sparsity of a block: repeated references to one variable in a row share
+#     one Jacobian entry, as before. Two things do affect `meta.nnzj`/`meta.nnzh`
+#     and the coordinate lists, which are representation details: an inlined
+#     subexpression spliced at several use sites carries one derivative entry
+#     per site (duplicate coordinates are summed on assembly), and
+#     `buffered = true` or `lift = true` bring that footprint back down; and
+#     recipe cores (built against `ArgSource` placeholders) are stored
+#     unmerged, so a recipe and a direct build of the same model can order
+#     their coordinates differently while assembling to the same matrices.
 #
 # For a comprehensive example using subexpressions, see the [Distillation Column example](@ref distillation).
 

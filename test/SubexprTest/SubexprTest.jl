@@ -482,9 +482,13 @@ function runtests(; backends = Any[CPU()])
         @test d1 ≈ d0 rtol = 1.0e-14
         @test _dense_hess(m1, xv, nothing) ≈ _dense_hess(m0, xv, nothing) rtol = 1.0e-14
 
-        # updating a parameter must not disturb the buffered segments
-        set_value!(c0, p0, [1.5, -0.5, 2.5])
-        set_value!(c1, p1, [1.5, -0.5, 2.5])
+        # updating a parameter must not disturb the buffered segments. A model
+        # owns its θ, so the update goes to the models, not the cores, and the
+        # objective must actually move.
+        o_before = NLPModels.obj(m0, xv)
+        set_value!(m0, p0, [1.5, -0.5, 2.5])
+        set_value!(m1, p1, [1.5, -0.5, 2.5])
+        @test !isapprox(NLPModels.obj(m0, xv), o_before; rtol = 1.0e-6)
         @test NLPModels.obj(m1, xv) ≈ NLPModels.obj(m0, xv) rtol = 1.0e-14
         NLPModels.grad!(m0, xv, d0)
         NLPModels.grad!(m1, xv, d1)
@@ -620,6 +624,38 @@ function runtests(; backends = Any[CPU()])
             gm = _lag_grad(m, pert(k, -h), yv)
             @test H[:, k] ≈ (gp .- gm) ./ 2h rtol = 1.0e-4
         end
+    end
+
+    # μ reaching a sum slot only through the cross-pair collapse: two sums over
+    # a common older sum slot, coupled bilinearly, with no traced consumer
+    # touching the older slot. In the other fixtures every sum slot is also a
+    # direct nonlinear consumer leaf, so a seed-time entry marks it μ-active
+    # and the collapse path is never the only route.
+    @testset "add_sum (μ through cross-pair collapse)" begin
+        function build(; buffered)
+            c = ExaCore(concrete = Val(true))
+            c, x = add_var(c, 4)
+            c, e1 = add_expr(c, (x[i]^2 for i in 1:1); buffered)
+            c, e2 = add_expr(c, (sin(x[i + 2]) for i in 1:1); buffered)
+            if buffered
+                c, v = add_sum(c, 1, [1 => e1[1] + 3.0 * e2[1]])
+                c, a = add_sum(c, 1, [1 => 3.0 * v[1] + x[2]])
+                c, q = add_sum(c, 1, [1 => 2.0 * v[1] + x[1]])
+                c, _ = add_obj(c, (a[d] * q[d] for d in 1:1))
+                c, _ = add_con(c, (a[d] * q[d] - 1.0 for d in 1:1))
+            else
+                c, _ = add_obj(c, ((3.0 * (e1[d] + 3.0 * e2[d]) + x[2]) * (2.0 * (e1[d] + 3.0 * e2[d]) + x[1]) for d in 1:1))
+                c, _ = add_con(c, ((3.0 * (e1[d] + 3.0 * e2[d]) + x[2]) * (2.0 * (e1[d] + 3.0 * e2[d]) + x[1]) - 1.0 for d in 1:1))
+            end
+            return ExaModel(c)
+        end
+        m1 = build(buffered = true)
+        m0 = build(buffered = false)
+        xv = [0.3, -0.4, 0.7, 1.1]
+        yv = [0.6]
+        @test NLPModels.obj(m1, xv) ≈ NLPModels.obj(m0, xv) rtol = 1.0e-13
+        @test _dense_hess(m1, xv, yv) ≈ _dense_hess(m0, xv, yv) rtol = 1.0e-12
+        @test _dense_hess(m1, xv, nothing) ≈ _dense_hess(m0, xv, nothing) rtol = 1.0e-12
     end
 
     # A single group argument summing many elements (the issue-#331 pattern):

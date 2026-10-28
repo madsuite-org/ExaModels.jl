@@ -2214,7 +2214,10 @@ function _sum_term!(tj, ts, tw, initv, j, ex::Node2{F}, coef) where {F}
             throw(
                 ArgumentError(
                     "add_sum terms must be affine; a product of two " *
-                        "non-constant expressions is not",
+                        "non-constant expressions is not. Sum over buffered " *
+                        "subexpression slots (`add_expr(...; buffered = true)`) " *
+                        "or variables: an unbuffered subexpression inlines its " *
+                        "whole tree here.",
                 ),
             )
         end

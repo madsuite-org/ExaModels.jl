@@ -109,25 +109,16 @@ import ExaModels: instantiate, ArgSource
         @test NLPModels.grad(m, pt) ≈ NLPModels.grad(ref, pt)
         @test NLPModels.cons(m, pt) ≈ NLPModels.cons(ref, pt)
         # The recipe path stores blocks plain while the direct build
-        # family-merges them, so nnz counts and coordinate lists are
-        # representation-dependent (`h * x[i] + x[i]` is one Jacobian entry
-        # per row plain and two merged); the assembled matrices are the
-        # contract, duplicate coordinates summing.
-        _dense(rows, cols, vals, nr, nc) = begin
-            A = zeros(nr, nc)
-            for (r, c, v) in zip(rows, cols, vals)
-                A[r, c] += v
-            end
-            A
-        end
-        jm_r, jm_c = NLPModels.jac_structure(m)
-        jr_r, jr_c = NLPModels.jac_structure(ref)
-        @test _dense(jm_r, jm_c, NLPModels.jac_coord(m, pt), m.meta.ncon, m.meta.nvar) ≈
-            _dense(jr_r, jr_c, NLPModels.jac_coord(ref, pt), ref.meta.ncon, ref.meta.nvar)
-        hm_r, hm_c = NLPModels.hess_structure(m)
-        hr_r, hr_c = NLPModels.hess_structure(ref)
-        @test _dense(hm_r, hm_c, NLPModels.hess_coord(m, pt, mult), m.meta.nvar, m.meta.nvar) ≈
-            _dense(hr_r, hr_c, NLPModels.hess_coord(ref, pt, mult), ref.meta.nvar, ref.meta.nvar)
+        # family-merges them; equal-valued Integer leaves share one slot in
+        # the merged tree, so both have the same sparsity down to the
+        # coordinate order (the only check that catches a plausible but
+        # wrong pattern)
+        @test m.meta.nnzj == ref.meta.nnzj
+        @test m.meta.nnzh == ref.meta.nnzh
+        @test NLPModels.jac_structure(m) == NLPModels.jac_structure(ref)
+        @test NLPModels.jac_coord(m, pt) ≈ NLPModels.jac_coord(ref, pt)
+        @test NLPModels.hess_structure(m) == NLPModels.hess_structure(ref)
+        @test NLPModels.hess_coord(m, pt, mult) ≈ NLPModels.hess_coord(ref, pt, mult)
 
         # The coefficient really is deferred: the same core at another size
         # uses a different h, so a baked-in value would show as a wrong

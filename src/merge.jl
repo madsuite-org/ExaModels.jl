@@ -98,13 +98,14 @@ struct SegmentedItr{K, S, T, D, I, RF} <: AbstractVector{MergedRow{K, S, T, D}}
     cls::NTuple{K, Int}         # Integer-slot sharing pattern (`_iv_classes`), part of the family key
     segs::Vector{MergedSeg{K, S, T, I}}
     offs::Vector{Int}           # cumulative row counts
-    seglen::Base.RefValue{Int}  # > 0 when all segments have equal length
+    seglen::Int                 # > 0 when all segments have equal length (copy-on-append: never mutated)
     o1step::Int
     o2step::Int
 end
 Base.size(s::SegmentedItr) = (isempty(s.offs) ? 0 : (@inbounds s.offs[end]),)
+Base.IndexStyle(::Type{<:SegmentedItr}) = IndexLinear()
 @inline _segof(s::SegmentedItr, i::Int) =
-    s.seglen[] > 0 ? div(i - 1, s.seglen[]) + 1 : searchsortedfirst(s.offs, i)
+    s.seglen > 0 ? div(i - 1, s.seglen) + 1 : searchsortedfirst(s.offs, i)
 @inline function Base.getindex(s::SegmentedItr{K, S, T, D}, i::Int) where {K, S, T, D}
     j = _segof(s, i)
     seg = @inbounds s.segs[j]
@@ -132,6 +133,7 @@ struct MergedRows{K, S, T, D, RF} <: AbstractVector{MergedRow{K, S, T, D}}
     rows::Vector{MergedRow{K, S, T, D}}
 end
 Base.size(m::MergedRows) = Base.size(m.rows)
+Base.IndexStyle(::Type{<:MergedRows}) = IndexLinear()
 @inline Base.getindex(m::MergedRows, i::Int) = @inbounds m.rows[i]
 
 const _MergedItr = Union{SegmentedItr, MergedRows}
@@ -145,6 +147,20 @@ _mrow_dtype(::Type{MergedRow{K, S, T, D}}) where {K, S, T, D} = D
 @inbounds @inline offset0(f::F, itr::AbstractVector{<:MergedRow}, i, dims) where {F <: SIMDFunction} =
     getfield(itr[i], :o0)
 @inbounds @inline offset0(f::F, itr::AbstractVector{<:MergedRow}, i) where {F <: SIMDFunction} =
+    getfield(itr[i], :o0)
+# The pair-headed methods in nlp.jl dispatch on the head alone, so the two
+# above would be ambiguous with them for a pair head over merged rows. That
+# combination never arises (`_merged_first` hoists the pair's second half),
+# but the intersections are defined so `detect_ambiguities` stays clean.
+@inbounds @inline offset0(f::F, itr::AbstractVector{<:MergedRow}, i, dims) where {P <: Pair, F <: SIMDFunction{P}} =
+    getfield(itr[i], :o0)
+@inbounds @inline offset0(f::F, itr::AbstractVector{<:MergedRow}, i, dims) where {I <: Integer, P <: Pair{I}, F <: SIMDFunction{P}} =
+    getfield(itr[i], :o0)
+@inbounds @inline offset0(f::F, itr::AbstractVector{<:MergedRow}, i, dims) where {T <: Tuple, P <: Pair{T}, F <: SIMDFunction{P}} =
+    getfield(itr[i], :o0)
+@inbounds @inline offset0(f::F, itr::AbstractVector{<:MergedRow}, i) where {P <: Pair, F <: SIMDFunction{P}} =
+    getfield(itr[i], :o0)
+@inbounds @inline offset0(f::F, itr::AbstractVector{<:MergedRow}, i) where {I <: Integer, P <: Pair{I}, F <: SIMDFunction{P}} =
     getfield(itr[i], :o0)
 @inbounds @inline offset1(a::Constraint{F, I}, i) where {F, I <: AbstractVector{<:MergedRow}} =
     getfield(a.itr[i], :o1)
@@ -198,6 +214,10 @@ the loads out of the row loop.
 struct FvRef <: AbstractNode
     k::Int
 end
+# printed form inside expressions (the pretty-printer's fallback would show
+# `ExaModels.IvRef(1)` at every hoisted leaf)
+Base.show(io::IO, v::IvRef) = print(io, "⟨i", v.k, "⟩")
+Base.show(io::IO, v::FvRef) = print(io, "⟨f", v.k, "⟩")
 @inline (v::FvRef)(i, x, θ) = @inbounds getfield(i, _MROW_FV)[v.k]
 @inline (v::FvRef)(i::Identity, x, θ) = eltype(θ)(NaN)
 
@@ -395,7 +415,7 @@ end
     S = length(fvt)
     segs = MergedSeg{K, S, T, typeof(pars)}[MergedSeg{K, S, T, typeof(pars)}(pars, f.o0, f.o1, f.o2, ivs, fvt)]
     return SegmentedItr{K, S, T, eltype(pars), typeof(pars), typeof(rep)}(
-        rep, cls, segs, Int[length(pars)], Ref(length(pars)), mf.o1step, mf.o2step
+        rep, cls, segs, Int[length(pars)], length(pars), mf.o1step, mf.o2step
     )
 end
 # pair heads (data-driven row targets) and device backends materialize rows
@@ -449,7 +469,7 @@ end
     push!(segs, eltype(segs)(pars, f.o0, f.o1, f.o2, ivs, fvt))
     newlen = length(pars)
     push!(offs, offs[end] + newlen)
-    seglen = Ref((m.seglen[] == newlen) ? newlen : 0)
+    seglen = (m.seglen == newlen) ? newlen : 0
     m2 = typeof(m)(m.rep, m.cls, segs, offs, seglen, m.o1step, m.o2step)
     return _rewrap(prev, prev.f, m2, offs[end], tag)
 end
@@ -555,19 +575,11 @@ end
 @inline _appendable(m, pars) = false
 
 # ── model-build finalization ─────────────────────────────────────────────────
-# Device backends evaluate merged blocks through the extension's kernels over
-# a materialized element array; non-concrete models keep var/par/refs
-# type-erased so the model's type is a function of its families alone.
+# `_finalize_merged` runs on a concretized core (tuple storage). On the host it
+# is the identity. On a device backend each merged block's lazy iterator is
+# materialized into a device element array, which the extension's kernels
+# index directly; the map over the block tuples keeps the result inferable.
 
-_is_merged(b) = false
-_is_merged(::Constraint{F, I}) where {F, I <: _MergedItr} = true
-_is_merged(::Objective{F, I}) where {F, I <: _MergedItr} = true
-_has_merged(cons) = any(_is_merged, cons)
-
-_erase_refs(refs::NamedTuple) = Pair{Symbol, Any}[k => v for (k, v) in pairs(refs)]
-_erase_refs(refs) = refs
-
-# device finalization: merged iterators become device element arrays
 _materialize_block(backend, b) = b
 _materialize_block(backend, b::Constraint{F, I}) where {F, I <: _MergedItr} =
     Constraint(b.f, _materialize_mergeditr(backend, getfield(b, :itr)), 0, b.size, b.tag)
@@ -578,35 +590,14 @@ _materialize_mergeditr(backend, s::SegmentedItr) =
     convert_array([s[i] for i in 1:length(s)], backend)
 _materialize_mergeditr(backend, m::MergedRows) = convert_array(m.rows, backend)
 
-_finalize_merged(c::ExaCore) = _finalize_merged2(c, c.backend, getfield(c, :var))
-
-# plain CPU, concrete storage: identity, fully static
-@inline _finalize_merged2(c::ExaCore, ::Nothing, ::Tuple) = c
-# plain CPU, erased storage: keep var/par/refs erased when anything merged
-function _finalize_merged2(c::ExaCore, ::Nothing, ::Vector{Any})
-    (_has_merged(c.cons) || _has_merged(c.obj)) || return c
-    return ExaCore(
-        c; cons = Tuple(Any[b for b in c.cons]),
-        obj = Tuple(Any[b for b in c.obj]),
-        var = Any[c.var...], par = Any[c.par...],
-        refs = _erase_refs(getfield(c, :refs))
-    )
-end
-# device: additionally materialize merged iterators as device arrays
-function _finalize_merged2(c::ExaCore, backend, var::Vector{Any})
-    return ExaCore(
-        c; cons = Tuple(Any[_materialize_block(backend, b) for b in c.cons]),
-        obj = Tuple(Any[_materialize_block(backend, b) for b in c.obj]),
-        var = Any[c.var...], par = Any[c.par...],
-        refs = _erase_refs(getfield(c, :refs))
-    )
-end
-function _finalize_merged2(c::ExaCore, backend, var)
-    return ExaCore(
-        c; cons = Tuple(Any[_materialize_block(backend, b) for b in c.cons]),
-        obj = Tuple(Any[_materialize_block(backend, b) for b in c.obj])
-    )
-end
+_finalize_merged(c::ExaCore) = _finalize_merged2(c, c.backend)
+@inline _finalize_merged2(c::ExaCore, ::Nothing) = c
+@inline _finalize_merged2(c::ExaCore, backend) = _with_blocks(
+    c, c.var, c.par,
+    map(b -> _materialize_block(backend, b), c.obj),
+    map(b -> _materialize_block(backend, b), c.cons),
+    c.refs,
+)
 
 # ── specialized hot loops for the lazy iterator ──────────────────────────────
 # One affine @simd inner loop per segment, materializing the isbits row

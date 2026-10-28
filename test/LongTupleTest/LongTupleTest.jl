@@ -1,6 +1,7 @@
 module LongTupleTest
 
 using Test, ExaModels
+import SparseArrays
 import NLPModels
 
 # Backend list comes from the suite driver when available; standalone runs
@@ -168,13 +169,16 @@ function _test_backend_matches_host(backend)
     rb = _evalall(mb)
     rh = _evalall(ExaModel(_build(nothing)))
     @test rb[1] ≈ rh[1] rtol = tight
-    for k in (2, 3, 6, 9)                       # grad, cons, jac vals, hess vals
-        @test sum(rb[k]) ≈ sum(rh[k]) rtol = loose
-        @test maximum(abs, rb[k]) ≈ maximum(abs, rh[k]) rtol = loose
-    end
-    for k in (4, 5, 7, 8)                       # sparsity coordinates
-        @test sort(rb[k]) == sort(rh[k])
-    end
+    @test rb[2] ≈ rh[2] rtol = loose                 # grad
+    @test rb[3] ≈ rh[3] rtol = loose                 # cons
+    # Jacobian and Hessian: the coordinate lists may legitimately differ in
+    # order between host and device, so compare the assembled matrices
+    # (duplicate coordinates sum), not sums or norms of the value vectors
+    nvar, ncon = length(rh[2]), length(rh[3])
+    @test SparseArrays.sparse(rb[4], rb[5], rb[6], ncon, nvar) ≈
+        SparseArrays.sparse(rh[4], rh[5], rh[6], ncon, nvar) rtol = loose
+    @test SparseArrays.sparse(rb[7], rb[8], rb[9], nvar, nvar) ≈
+        SparseArrays.sparse(rh[7], rh[8], rh[9], nvar, nvar) rtol = loose
     return
 end
 
