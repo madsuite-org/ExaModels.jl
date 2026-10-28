@@ -29,9 +29,9 @@ function write_model(path::AbstractString, m::ExaModel; solution = nothing)
         f["structure"] = JSON3.write(structure)
         arrays = HDF5.create_group(f, "arrays")
         for (k, v) in (
-            "x0" => meta.x0, "lvar" => meta.lvar, "uvar" => meta.uvar,
-            "y0" => meta.y0, "lcon" => meta.lcon, "ucon" => meta.ucon, "theta" => m.θ,
-        )
+                "x0" => meta.x0, "lvar" => meta.lvar, "uvar" => meta.uvar,
+                "y0" => meta.y0, "lcon" => meta.lcon, "ucon" => meta.ucon, "theta" => m.θ,
+            )
             arrays[k] = Array(v)
         end
         for (k, v) in columns
@@ -48,7 +48,7 @@ function _write_solution(f, s)
         hasproperty(s, k) && (g[string(k)] = Array(getproperty(s, k)))
     end
     hasproperty(s, :objective) && (g["objective"] = getproperty(s, :objective))
-    hasproperty(s, :status) && (g["status"] = string(getproperty(s, :status)))
+    return hasproperty(s, :status) && (g["status"] = string(getproperty(s, :status)))
 end
 
 _dims(size) = Any[d isa Integer ? d : [first(d), last(d)] for d in size]
@@ -66,17 +66,21 @@ _warn_tag(tag) = tag === nothing ||
 
 function describe(m::ExaModel{T}) where {T}
     refs = m.refs === nothing ? (;) : m.refs
-    columns = Pair{String,Vector}[]
+    columns = Pair{String, Vector}[]
 
     variables = map(collect(_in_order(m.vars))) do v
         _warn_tag(v.tag)
-        Dict("name" => _ref_name(refs, ExaModels.Variable, v.offset), "size" => _dims(v.size),
-             "offset" => v.offset)
+        Dict(
+            "name" => _ref_name(refs, ExaModels.Variable, v.offset), "size" => _dims(v.size),
+            "offset" => v.offset
+        )
     end
     parameters = map(collect(_in_order(m.pars))) do p
         _warn_tag(p.tag)
-        Dict("name" => _ref_name(refs, ExaModels.Parameter, p.offset), "size" => _dims(p.size),
-             "offset" => p.offset)
+        Dict(
+            "name" => _ref_name(refs, ExaModels.Parameter, p.offset), "size" => _dims(p.size),
+            "offset" => p.offset
+        )
     end
 
     function store(group, itr)
@@ -91,7 +95,7 @@ function describe(m::ExaModel{T}) where {T}
     function block(kind, b::PlainBlock, k)
         _warn_tag(b.tag)
         group = "data/$(kind)_$k"
-        d = Dict{String,Any}("group" => group)
+        d = Dict{String, Any}("group" => group)
         if b.size !== nothing && length(b.size) > 1 && !(b.tree isa ExaModels.Null) &&
                 isequal(vec(collect(b.itr)), vec(collect(Iterators.product(b.size...))))
             d["iterator"] = Dict("product" => [store("$group/axis_$i", a) for (i, a) in enumerate(b.size)])
@@ -115,8 +119,11 @@ function describe(m::ExaModel{T}) where {T}
         d["offset"] = b.offset
         d["shape"] = collect(size(b.itr))
         if b.tree isa ExaModels.Null && b.tree.value === nothing  # add_con(core, dims...), filled by add_con!
-            all(a -> a isa Integer || a isa AbstractUnitRange, b.size) || throw(ArgumentError(
-                "ExaModelsIO cannot store constraint dimensions $(b.size)"))
+            all(a -> a isa Integer || a isa AbstractUnitRange, b.size) || throw(
+                ArgumentError(
+                    "ExaModelsIO cannot store constraint dimensions $(b.size)"
+                )
+            )
             d["size"] = _dims(b.size)
             d["expr"] = nothing
         else
@@ -170,7 +177,7 @@ function _collect_extensions!(exts, d)
     d isa AbstractDict || return exts
     for (k, v) in d
         if k == "op"
-            startswith(v[1], EXT_PREFIX) && push!(exts, v[1][length(EXT_PREFIX)+1:end])
+            startswith(v[1], EXT_PREFIX) && push!(exts, v[1][(length(EXT_PREFIX) + 1):end])
             foreach(a -> _collect_extensions!(exts, a), v[2:end])
         elseif v isa AbstractVector
             foreach(a -> _collect_extensions!(exts, a), v)

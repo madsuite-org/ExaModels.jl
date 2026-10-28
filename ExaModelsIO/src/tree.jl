@@ -33,7 +33,7 @@ _number_type_name(::Type{T}) where {T} =
     haskey(_NUMBER_TYPES, string(T)) ? string(T) :
     throw(ArgumentError("ExaModelsIO cannot store numbers of type $T"))
 
-_number_value(v::Union{Bool,Integer}) = v
+_number_value(v::Union{Bool, Integer}) = v
 _number_value(v::AbstractFloat) =
     isnan(v) ? "nan" : isinf(v) ? (v > 0 ? "inf" : "-inf") : Float64(v)
 
@@ -43,7 +43,7 @@ function parse_number(n)
     T = _NUMBER_TYPES[n[1]]
     v = n[2]
     v isa AbstractString || return T(v)
-    v == "inf" ? T(Inf) : v == "-inf" ? T(-Inf) : v == "nan" ? T(NaN) :
+    return v == "inf" ? T(Inf) : v == "-inf" ? T(-Inf) : v == "nan" ? T(NaN) :
         throw(ArgumentError("invalid number $(n)"))
 end
 
@@ -58,7 +58,7 @@ encode(n::ExaModels.Null) =
 encode(n::ExaModels.Var) = Dict("var" => encode(n.i))
 encode(n::ExaModels.ParameterNode) = Dict("par" => encode(n.i))
 encode(::ExaModels.DataSource) = Dict("data" => Any[])
-function encode(n::ExaModels.DataIndexed{I,J}) where {I,J}
+function encode(n::ExaModels.DataIndexed{I, J}) where {I, J}
     path = encode(getfield(n, :inner))["data"]
     return Dict("data" => push!(copy(path), J isa Symbol ? string(J) : J))
 end
@@ -72,8 +72,13 @@ encode(n::ExaModels.ProdNode) = Dict("prod" => Any[encode(a) for a in n.inners])
 encode(::Val{V}) where {V} = Dict("val" => number(V))
 encode(t::Tuple) = Dict("tuple" => Any[encode(a) for a in t])
 # ArgLeaf exists from ExaModels 0.13 on; checking for it keeps the writer usable on older versions.
-isdefined(ExaModels, :ArgLeaf) && (encode(n::ExaModels.ArgLeaf) = throw(ArgumentError(
-    "the model still holds a recipe argument; instantiate it before writing")))
+isdefined(ExaModels, :ArgLeaf) && (
+    encode(n::ExaModels.ArgLeaf) = throw(
+        ArgumentError(
+            "the model still holds a recipe argument; instantiate it before writing"
+        )
+    )
+)
 encode(n) = throw(ArgumentError("ExaModelsIO cannot store expression node $(typeof(n))"))
 
 # ---------------------------------------------------------------- decode
@@ -110,8 +115,11 @@ function decode(d, p, functions)
     elseif k == "tuple"
         return Tuple(decode(a, p, functions) for a in v)
     elseif k == "sub"
-        _has(:SubexprNode) || throw(ArgumentError(
-            "the file uses buffered subexpressions, which ExaModels $(pkgversion(ExaModels)) does not have"))
+        _has(:SubexprNode) || throw(
+            ArgumentError(
+                "the file uses buffered subexpressions, which ExaModels $(pkgversion(ExaModels)) does not have"
+            )
+        )
         return ExaModels.SubexprNode(decode(v, p, functions))
     elseif k == "sum"
         return ExaModels.SumNode(Tuple(decode(a, p, functions) for a in v))

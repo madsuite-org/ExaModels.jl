@@ -17,12 +17,12 @@
 # position, and the struct's type may not exist when the file is read.
 
 function data_schema(itr::AbstractUnitRange{<:Integer})
-    return Dict("range" => [first(itr), last(itr)]), Pair{String,Vector}[]
+    return Dict("range" => [first(itr), last(itr)]), Pair{String, Vector}[]
 end
 
 function data_schema(itr)
     a = collect(itr)  # also copies GPU arrays to the CPU
-    cols = Pair{String,Vector}[]
+    cols = Pair{String, Vector}[]
     elem = _elem_schema!(cols, "", vec(a))
     return Dict("array" => collect(size(a)), "elem" => elem), cols
 end
@@ -35,15 +35,24 @@ function _elem_schema!(cols, path, v::AbstractVector{T}) where {T}
         return Dict("scalar" => _number_type_name(T))
     elseif T <: NamedTuple || (isconcretetype(T) && isstructtype(T) && !(T <: Tuple))
         names = fieldnames(T)
-        return Dict("namedtuple" => Any[
-            [string(n), _elem_schema!(cols, _join(path, n), [getfield(e, n) for e in v])]
-            for n in names])
+        return Dict(
+            "namedtuple" => Any[
+                [string(n), _elem_schema!(cols, _join(path, n), [getfield(e, n) for e in v])]
+                    for n in names
+            ]
+        )
     elseif T <: Tuple
-        return Dict("tuple" => Any[
-            _elem_schema!(cols, _join(path, i), [e[i] for e in v]) for i in 1:fieldcount(T)])
+        return Dict(
+            "tuple" => Any[
+                _elem_schema!(cols, _join(path, i), [e[i] for e in v]) for i in 1:fieldcount(T)
+            ]
+        )
     end
-    throw(ArgumentError(
-        "ExaModelsIO can store generator data made of numbers, tuples, named tuples and structs of these; got $T"))
+    throw(
+        ArgumentError(
+            "ExaModelsIO can store generator data made of numbers, tuples, named tuples and structs of these; got $T"
+        )
+    )
 end
 
 # Zip typed columns into rows. A function barrier: `parts` is a concretely typed

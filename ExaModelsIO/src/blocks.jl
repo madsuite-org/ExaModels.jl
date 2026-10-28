@@ -34,7 +34,7 @@ _unhoist(n::ExaModels.ParameterNode, iv, fv) = ExaModels.ParameterNode(_unhoist(
 _unhoist(n::ExaModels.SumNode, iv, fv) = ExaModels.SumNode(map(a -> _unhoist(a, iv, fv), n.inners))
 _unhoist(n::ExaModels.ProdNode, iv, fv) = ExaModels.ProdNode(map(a -> _unhoist(a, iv, fv), n.inners))
 _unhoist(n::Pair, iv, fv) = _unhoist(n.first, iv, fv) => _unhoist_root(n.second, iv, fv)
-function _unhoist(n::ExaModels.DataIndexed{I,J}, iv, fv) where {I,J}
+function _unhoist(n::ExaModels.DataIndexed{I, J}, iv, fv) where {I, J}
     inner = getfield(n, :inner)
     # DataIndexed(DataSource(), _MROW_D) is the source element
     inner isa ExaModels.DataSource && J == ExaModels._MROW_D && return ExaModels.DataSource()
@@ -53,10 +53,14 @@ end
 # The plain blocks a merged constraint or objective was built from, in order.
 function _segments(b)
     tree = b.f.f
-    return [PlainBlock(_unhoist_root(tree, s.iv, s.fv), s.itr, s.o0,
-                       _segment_size(s.itr),
-                       b isa ExaModels.Constraint ? b.tag : nothing)
-            for s in b.itr.segs]
+    return [
+        PlainBlock(
+            _unhoist_root(tree, s.iv, s.fv), s.itr, s.o0,
+            _segment_size(s.itr),
+            b isa ExaModels.Constraint ? b.tag : nothing
+        )
+            for s in b.itr.segs
+    ]
 end
 
 # A merged block records only its row count; the segment's own iterator still
@@ -66,8 +70,12 @@ _segment_size(itr::AbstractArray) = size(itr)
 _segment_size(itr) = (length(itr),)
 
 function _unsupported_merged(b)
-    throw(ArgumentError("ExaModelsIO cannot store a merged block with row-wise targets or a " *
-        "device layout; write the model built on the CPU"))
+    throw(
+        ArgumentError(
+            "ExaModelsIO cannot store a merged block with row-wise targets or a " *
+                "device layout; write the model built on the CPU"
+        )
+    )
 end
 
 # ---------------------------------------------------------------- the model
@@ -75,11 +83,14 @@ end
 # ExaModels keeps blocks in reverse order of addition.
 _in_order(t::Tuple) = reverse(t)
 
-objective_blocks(m) = reduce(vcat, (
-    _is_merged(o.itr) ? _segments(o) :
-    _is_merged_rows(o.itr) ? _unsupported_merged(o) :
-    [PlainBlock(o.f.f, o.itr, 0, nothing, nothing)]
-    for o in _in_order(m.objs)); init = PlainBlock[])
+objective_blocks(m) = reduce(
+    vcat, (
+        _is_merged(o.itr) ? _segments(o) :
+            _is_merged_rows(o.itr) ? _unsupported_merged(o) :
+            [PlainBlock(o.f.f, o.itr, 0, nothing, nothing)]
+            for o in _in_order(m.objs)
+    ); init = PlainBlock[]
+)
 
 # Constraint blocks in row order, then augmentations in the order they were added.
 function constraint_blocks(m)
@@ -104,8 +115,11 @@ function stage_blocks(m)
     hasproperty(m, :subexprs) || return PlainBlock[]
     out = PlainBlock[]
     for s in _in_order(m.subexprs)
-        s isa ExaModels.SubexprStage || throw(ArgumentError(
-            "ExaModelsIO cannot store a $(typeof(s).name.name) (buffered sum); use add_expr(...; buffered = true)"))
+        s isa ExaModels.SubexprStage || throw(
+            ArgumentError(
+                "ExaModelsIO cannot store a $(typeof(s).name.name) (buffered sum); use add_expr(...; buffered = true)"
+            )
+        )
         push!(out, PlainBlock(s.f.f, s.itr, s.offset, nothing, nothing))
     end
     return out

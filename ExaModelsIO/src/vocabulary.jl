@@ -56,18 +56,25 @@ end
 # The function a vocabulary or "ext:" name stands for.
 function operator_function(name::AbstractString, functions)
     if startswith(name, EXT_PREFIX)
-        key = name[length(EXT_PREFIX)+1:end]
+        key = name[(length(EXT_PREFIX) + 1):end]
         haskey(functions, key) && return functions[key]
-        throw(ArgumentError("the file uses the user function `$key`; register it with " *
-            "ExaModels and pass it as `functions = Dict(\"$key\" => f)`"))
+        throw(
+            ArgumentError(
+                "the file uses the user function `$key`; register it with " *
+                    "ExaModels and pass it as `functions = Dict(\"$key\" => f)`"
+            )
+        )
     end
     s = Symbol(name)
     s in BASE_OPERATORS && return getfield(Base, s)
     name == "bselect" && return ExaModels.bselect
     if s in SPECIAL_OPERATORS
         sf = _specialfunctions()
-        sf === nothing && throw(ArgumentError(
-            "the file uses `$name` from SpecialFunctions; load SpecialFunctions first"))
+        sf === nothing && throw(
+            ArgumentError(
+                "the file uses `$name` from SpecialFunctions; load SpecialFunctions first"
+            )
+        )
         return getfield(sf, s)
     end
     throw(ArgumentError("unknown operator `$name`"))
