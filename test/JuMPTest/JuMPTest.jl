@@ -116,6 +116,7 @@ function test_fixed_variable_e2etest()
     JuMP.@objective(jm, Min, sum(2 * x[i]^2 for i in 1:N))
     em = ExaModels.ExaModel(jm)
     @test only(em.meta.lcon) == only(em.meta.ucon) == 1.0
+    @test length(em.cons) == 2                      # the base row and its augmentation
     @test em.cons[1] isa ExaModels.ConstraintAugmentation
     # the row is an augmentation (stored plain), checked by value: at
     # x = (1, 2, ..., N) the single row
@@ -208,6 +209,7 @@ function test_generic_e2etest()
     @test typeof(em) <: ExaModels.ExaModel{Float32}
     # the MOI lowering's rows are augmentations (`add_con!`), which are
     # stored plain on every backend
+    @test length(em.cons) == 2
     @test eltype(em.cons[1].itr) <: Tuple{Int, Float32, Int}
     return
 end

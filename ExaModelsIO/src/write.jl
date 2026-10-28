@@ -56,13 +56,24 @@ _in_order(t::Tuple) = reverse(t)
 
 _dims(size) = Any[d isa Integer ? d : [first(d), last(d)] for d in size]
 
-# The name under which `block` is registered in `refs`, or nothing.
+# The name under which `block` is registered in `refs`, or nothing. Matched by
+# kind and offset: a handle and the stored block can differ in type (a device
+# model's handle holds a device iterator, a merged block is expanded into
+# source blocks by `ExaModels.expand_family`).
+_kind(::ExaModels.AbstractVariable) = :var
+_kind(::ExaModels.AbstractParameter) = :par
+_kind(::ExaModels.Constraint) = :con
+_kind(::ExaModels.ConstraintAugmentation) = :aug
+_kind(x) = typeof(x)
 function _ref_name(refs, block)
     for (k, v) in pairs(refs)
-        typeof(v) === typeof(block) && v.offset == block.offset && return string(k)
+        _kind(v) === _kind(block) && hasproperty(v, :offset) && v.offset == block.offset && return string(k)
     end
     return nothing
 end
+# Merged blocks (ExaModels 0.14 family merging) are written as their source
+# blocks, one per segment.
+_blocks(t) = reduce(vcat, [ExaModels.expand_family(b) for b in _in_order(t)]; init = Any[])
 
 function describe(m::ExaModel{T}) where {T}
     refs = m.refs === nothing ? (;) : m.refs
@@ -101,13 +112,13 @@ function describe(m::ExaModel{T}) where {T}
         return d
     end
 
-    objectives = map(enumerate(_in_order(m.objs))) do (k, o)
+    objectives = map(enumerate(_blocks(m.objs))) do (k, o)
         d = block("obj", o, k)
         d["expr"] = encode(o.f.f)
         d
     end
 
-    constraints = map(enumerate(_in_order(m.cons))) do (k, c)
+    constraints = map(enumerate(_blocks(m.cons))) do (k, c)
         d = block("con", c, k)
         if c isa ExaModels.ConstraintAugmentation
             d["kind"] = "augmentation"

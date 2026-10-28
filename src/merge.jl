@@ -184,7 +184,10 @@ _mergeable(::Type{<:Constant}) = true
 _mergeable(::Type{VarSource}) = true
 _mergeable(::Type{ParameterSource}) = true
 _mergeable(::Type{<:Val}) = true
-_mergeable(::Type{Null{T}}) where {T} = T <: Real || T === Nothing
+# a dims-form constraint (`add_con(c, n1, n2)`, a `Null{Nothing}` tree) stays
+# plain: it has no tree to share, and a family keeps only a flat row count
+# where augmentations and writers need the block's own dims
+_mergeable(::Type{Null{T}}) where {T} = T <: Real
 _mergeable(::Type{T}) where {T <: Real} = true
 _mergeable(::Type{Pair{A, B}}) where {A, B} = _mergeable(B)   # aug: idx => expr
 _mergeable(::Type) = false
@@ -754,6 +757,84 @@ _finalize_merged(c::ExaCore) = _finalize_merged2(c, c.backend)
     map(b -> _materialize_block(backend, b), c.cons),
     c.refs,
 )
+
+# ── source-block view of a family (writers such as ExaModelsIO) ──────────────
+# A family stores one merged tree plus per-segment leaf values. A writer that
+# serializes expressions wants the source blocks back: for each segment, the
+# merged tree with the segment's leaf values substituted for the slot
+# references (the inverse of `_stree`), its own row offset and its own
+# iterator. `expand_family` returns those plain blocks for a merged block and
+# `[b]` for any other block.
+@inline function _unhoist(a::Node1{F, I}, iv, fv) where {F, I}
+    n = _unhoist(getfield(a, :inner), iv, fv)
+    return Node1{F, typeof(n)}(n)
+end
+@inline function _unhoist(a::Node2{F, I1, I2}, iv, fv) where {F, I1, I2}
+    n1 = _unhoist(getfield(a, :inner1), iv, fv)
+    n2 = _unhoist(getfield(a, :inner2), iv, fv)
+    return Node2{F, typeof(n1), typeof(n2)}(n1, n2)
+end
+@inline function _unhoist(a::Var, iv, fv)
+    n = _unhoist(getfield(a, :i), iv, fv)
+    return Var{typeof(n)}(n)
+end
+@inline function _unhoist(a::ParameterNode, iv, fv)
+    n = _unhoist(getfield(a, :i), iv, fv)
+    return ParameterNode{typeof(n)}(n)
+end
+@inline function _unhoist(a::DataIndexed{I, J}, iv, fv) where {I, J}
+    inner = getfield(a, :inner)
+    # `_stree` wrapped the element access as `DataIndexed(DataSource(), _MROW_D)`
+    (inner isa DataSource && J === _MROW_D) && return DataSource()
+    return DataIndexed(_unhoist(inner, iv, fv), J)
+end
+@inline _unhoist(a::IvRef, iv, fv) = @inbounds iv[a.k]
+@inline _unhoist(a::FvRef, iv, fv) = @inbounds fv[a.k]
+@inline _unhoist(a, iv, fv) = a
+
+# (o0, o1, o2, iv, fv, elements) per segment, on the host
+_family_segments(s::SegmentedItr) =
+    [(seg.o0, seg.o1, seg.o2, seg.iv, seg.fv, collect(seg.itr)) for seg in s.segs]
+function _family_segments(s::DeviceSeg1Itr)
+    h = _host_array(s)
+    return [(h.o0, h.o1, h.o2, h.iv, h.fv, collect(h.d))]
+end
+function _family_segments(s::DeviceSegItr)
+    h = _host_array(s)
+    return [
+        (h.seg_o0[j], h.seg_o1[j], h.seg_o2[j], h.seg_iv[j], h.seg_fv[j],
+            collect(h.d[(j == 1 ? 0 : h.offs[j - 1]) + 1:h.offs[j]]))
+            for j in eachindex(h.offs)
+    ]
+end
+_family_segments(::MergedRows) = throw(
+    ArgumentError("a merged pair-headed block (`add_con(c, i => expr for ...)`) cannot be expanded into its source blocks"),
+)
+
+_mrow_T(::Type{MergedRow{K, S, T, D}}) where {K, S, T, D} = T
+_is_family(b) = false
+_is_family(::Constraint{F, I}) where {F, I <: Union{_MergedItr, _DeviceMergedItr}} = true
+_is_family(::Objective{F, I}) where {F, I <: Union{_MergedItr, _DeviceMergedItr}} = true
+
+"""
+    expand_family(block)
+
+The source blocks of a merged constraint or objective block, as plain blocks
+(one per segment, each with its own tree, row offset and iterator); `[block]`
+for a block that is not a family. Used by writers that serialize expressions.
+"""
+function expand_family(b)
+    _is_family(b) || return Any[b]
+    T = _mrow_T(eltype(getfield(b, :itr)))
+    out = Any[]
+    for (o0, o1, o2, iv, fv, itr) in _family_segments(getfield(b, :itr))
+        f = _simdfunction(T, _unhoist(getfield(b, :f).f, iv, fv), o0, o1, o2)
+        push!(out, _plain_block(b, f, itr, o0))
+    end
+    return out
+end
+_plain_block(b::Constraint, f, itr, o0) = Constraint(f, itr, o0, (length(itr),), b.tag)
+_plain_block(b::Objective, f, itr, o0) = Objective(f, itr)
 
 # ── specialized hot loops for the lazy iterator ──────────────────────────────
 # One affine @simd inner loop per segment, materializing the isbits row

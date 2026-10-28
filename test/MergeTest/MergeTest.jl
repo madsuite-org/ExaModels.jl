@@ -44,6 +44,23 @@ function _build(backend)
     return c
 end
 
+function _evalprods(m)
+    T = eltype(m.meta.x0)
+    x0 = copy(m.meta.x0) .+ T(0.01)
+    v = similar(x0)
+    copyto!(v, [sin(1.3k) for k in 1:length(x0)])
+    w = similar(x0, m.meta.ncon)
+    copyto!(w, [cos(0.7k) for k in 1:m.meta.ncon])
+    y = fill!(similar(w), one(T))
+    Jv = fill!(similar(w), zero(T))
+    Jtw = fill!(similar(x0), zero(T))
+    Hv = fill!(similar(x0), zero(T))
+    NLPModels.jprod_nln!(m, x0, v, Jv)
+    NLPModels.jtprod_nln!(m, x0, w, Jtw)
+    NLPModels.hprod!(m, x0, y, v, Hv)
+    return (Array(Jv), Array(Jtw), Array(Hv))
+end
+
 function _evalall(m)
     T = eltype(m.meta.x0)
     x0 = copy(m.meta.x0) .+ T(0.01)   # a Float64 literal would promote a Float32 device vector
@@ -112,7 +129,9 @@ function _test_host_derivatives()
     @test count(b -> b.itr isa ExaModels._MergedItr, m.cons) == 4   # four families
     @test count(b -> b isa ExaModels.ConstraintAugmentation, m.cons) == 2
     @test length(m.objs) == 2
-    return _check_fd_derivatives(m)
+    _check_fd_derivatives(m)
+    # the product-helper path (prod = true) over the same families
+    return _check_fd_derivatives(ExaModel(_build(nothing); prod = true))
 end
 
 # Jacobian and Lagrangian Hessian of a host model against central finite
@@ -148,7 +167,20 @@ function _check_fd_derivatives(m)
         xm = copy(x0); xm[j] -= h
         Hfd[:, j] .= (_gradL(m, xp, y) .- _gradL(m, xm, y)) ./ (2h)
     end
-    return @test isapprox(H, Hfd; rtol = 1.0e-4, atol = 1.0e-6)
+    @test isapprox(H, Hfd; rtol = 1.0e-4, atol = 1.0e-6)
+    # the matrix-vector products against the assembled, FD-validated J and H
+    v = [sin(1.3k) for k in 1:length(x0)]
+    w = [cos(0.7k) for k in 1:m.meta.ncon]
+    Jv = zeros(m.meta.ncon)
+    NLPModels.jprod_nln!(m, x0, v, Jv)
+    @test Jv ≈ J * v rtol = 1.0e-10
+    Jtw = zeros(length(x0))
+    NLPModels.jtprod_nln!(m, x0, w, Jtw)
+    @test Jtw ≈ J' * w rtol = 1.0e-10
+    Hv = zeros(length(x0))
+    NLPModels.hprod!(m, x0, y, v, Hv)
+    @test Hv ≈ H * v rtol = 1.0e-10
+    return nothing
 end
 
 function _test_backend_matches_host(backend)
@@ -184,6 +216,12 @@ function _test_backend_matches_host(backend)
         SparseArrays.sparse(rh[4], rh[5], rh[6], ncon, nvar) rtol = loose
     @test SparseArrays.sparse(rb[7], rb[8], rb[9], nvar, nvar) ≈
         SparseArrays.sparse(rh[7], rh[8], rh[9], nvar, nvar) rtol = loose
+    # matrix-vector products (prod = true builds the product helper on device)
+    pb = _evalprods(ExaModel(_build(backend); prod = true))
+    ph = _evalprods(ExaModel(_build(nothing); prod = true))
+    for k in 1:3
+        @test pb[k] ≈ ph[k] rtol = loose
+    end
     return
 end
 
@@ -308,6 +346,29 @@ function _test_slot_sharing()
     @test m.meta.nnzj == 16 * 1 + 8 * 2
     @test m.meta.ncon == 24
     _check_fd_derivatives(m)
+
+    # dynamic storage: a recipe (plain) build and the direct (merged) build of
+    # one model agree exactly on nnz, structures and coordinate order
+    function hx(c, x, N)
+        h = 1 / (N + 1)
+        c, _ = add_obj(c, h * (x[i] - 2.0)^2 for i in collect(1:N))
+        c, _ = add_con(c, h * x[i] + x[i] for i in collect(1:N); lcon = 0.0, ucon = Inf)
+        return c
+    end
+    cd = ExaCore()
+    cd, xd = add_var(cd, 6; start = 1.0)
+    md = ExaModel(hx(cd, xd, 6))
+    cr, _ = ExaCore(nargs = Val(1))
+    cr, xr = add_var(cr, 6; start = 1.0)
+    mr = ExaModel(hx(cr, xr, 6), (N = 6,))
+    @test md.cons[1].itr isa ExaModels._MergedItr && !(mr.cons[1].itr isa ExaModels._MergedItr)
+    @test md.meta.nnzj == mr.meta.nnzj && md.meta.nnzh == mr.meta.nnzh
+    @test NLPModels.jac_structure(md) == NLPModels.jac_structure(mr)
+    @test NLPModels.hess_structure(md) == NLPModels.hess_structure(mr)
+    pt = collect(0.1:0.1:0.6)
+    mult = collect(0.6:-0.1:0.1)
+    @test NLPModels.jac_coord(md, pt) ≈ NLPModels.jac_coord(mr, pt)
+    @test NLPModels.hess_coord(md, pt, mult) ≈ NLPModels.hess_coord(mr, pt, mult)
 
     # concrete storage keeps one slot per leaf position (the family decision
     # must stay a function of types), so the same two blocks form ONE family
@@ -465,6 +526,7 @@ function runtests()
             cS = NLPModels.cons(mS, x0)
             cL = NLPModels.cons(mL, vcat(x0, e1v, e2v))
             @test maximum(abs, cL[1:20]) < 1.0e-14          # defining rows at consistent point
+            _check_fd_derivatives(mL)                        # the defining rows are a merged family
             @test cL[21:end] ≈ cS atol = 1.0e-14
             # each lifted layer is pinned by its OWN equation
             cL2 = NLPModels.cons(mL, vcat(x0, e1v, e2v .+ 0.5))
