@@ -34,23 +34,26 @@
 # same (statically decided) path and the whole suite exercises merged form.
 
 """
-    MergedRow{K, S, T, D, C1, C2}
+    MergedRow{T, IV, FV, D, C1, C2}
 
 One row of a merged family: global row offset `o0`, Jacobian/Hessian nonzero
-bases `o1`/`o2`, the `K` hoisted Integer leaves `iv`, the `S` hoisted Float
-leaves `fv` (of type `T`, shared by every row of the segment), the original
+bases `o1`/`o2`, the hoisted Integer leaves `iv`, the hoisted Float leaves
+`fv` (of type `T`; both shared by every row of the segment), the original
 iterator element `d`, and the source block's own nonzero compressors
 `comp1`/`comp2` (shared by every row of the segment).  The derivative passes
 read the compressors from the row (`_comp1`/`_comp2`), never from the
 family's `SIMDFunction`, so each segment keeps the sparsity its plain block
-had.
+had.  On the host `iv`/`fv` are tuples and the compressors `Compressor`s; on
+a device they are views into the layout's arrays ([`SegView`](@ref),
+[`CompView`](@ref)), since a dynamic index into a tuple held by value in a
+kernel stages the tuple into per-thread local memory.
 """
-struct MergedRow{K, S, T, D, C1, C2}
+struct MergedRow{T, IV, FV, D, C1, C2}
     o0::Int
     o1::Int
     o2::Int
-    iv::NTuple{K, Int}
-    fv::NTuple{S, T}
+    iv::IV
+    fv::FV
     d::D
     comp1::C1
     comp2::C2
@@ -93,7 +96,7 @@ later arrivals.  Appending copies the segment containers (`_merged_append_itr`)
 so earlier cores and models keep the iterator they had; the copy changes no
 types, so the core's type is stable as a family grows.
 """
-struct SegmentedItr{K, S, T, D, I, RF, C1, C2} <: AbstractVector{MergedRow{K, S, T, D, C1, C2}}
+struct SegmentedItr{K, S, T, D, I, RF, C1, C2} <: AbstractVector{MergedRow{T, NTuple{K, Int}, NTuple{S, T}, D, C1, C2}}
     rep::RF
     segs::Vector{MergedSeg{K, S, T, I, C1, C2}}
     offs::Vector{Int}           # cumulative row counts
@@ -128,9 +131,9 @@ the element array every merged block is finalized into.  Growing a family
 copies the row vector (`_merged_append_itr`), so earlier cores and models keep
 the rows they had.
 """
-struct MergedRows{K, S, T, D, RF, C1, C2} <: AbstractVector{MergedRow{K, S, T, D, C1, C2}}
+struct MergedRows{K, S, T, D, RF, C1, C2} <: AbstractVector{MergedRow{T, NTuple{K, Int}, NTuple{S, T}, D, C1, C2}}
     rep::RF
-    rows::Vector{MergedRow{K, S, T, D, C1, C2}}
+    rows::Vector{MergedRow{T, NTuple{K, Int}, NTuple{S, T}, D, C1, C2}}
 end
 Base.size(m::MergedRows) = Base.size(m.rows)
 Base.IndexStyle(::Type{<:MergedRows}) = IndexLinear()
@@ -140,7 +143,7 @@ const _MergedItr = Union{SegmentedItr, MergedRows}
 
 _mrep(s::SegmentedItr) = s.rep
 _mrep(m::MergedRows) = m.rep
-_mrow_dtype(::Type{MergedRow{K, S, T, D, C1, C2}}) where {K, S, T, D, C1, C2} = D
+_mrow_dtype(::Type{MergedRow{T, IV, FV, D, C1, C2}}) where {T, IV, FV, D, C1, C2} = D
 
 # ── per-row offsets for merged blocks ────────────────────────────────────────
 @inbounds @inline offset0(f::F, itr::AbstractVector{<:MergedRow}, i, dims) where {F <: SIMDFunction} =
@@ -397,23 +400,16 @@ end
 # row element, never from here; the compressor fields hold the first block's
 # (the right type, and the right values for a one-segment family), the steps
 # are zero so that a generic affine reader would address slot 0 rather than
-# a plausible wrong one.  The probe over the merged tree runs once per family
-# and serves one purpose: a source block's compressors address leaf positions
-# of ITS tree, and the check confirms the hoisted tree has the same layout.
-@inline function _family_function(::Type{T}, tree, rep) where {T}
-    probe = _simdfunction(T, tree, 0, 0, 0)
-    _same_layout(probe.comp1, rep.comp1)
-    _same_layout(probe.comp2, rep.comp2)
-    return SIMDFunction(probe.f, rep.comp1, rep.comp2, 0, 0, 0, 0, 0)
-end
-@inline _same_layout(::C, ::C) where {C} = nothing
-# one literal: a `*` over many string pieces is a vararg call that `juliac --trim`
-# cannot resolve, and this error sits on the model-building path
-_same_layout(a, b) = error("internal error: a merged tree's leaf layout differs from its source block's")
+# a plausible wrong one.  No sparsity probe runs over the merged tree: a
+# source block's compressors address the leaf positions of its own tree, and
+# `_stree` keeps every position (it replaces leaf scalars with accessors and
+# nothing else), so the layout agrees by construction.  A probe here was
+# measured at 3.6 s of compilation per family on a 93-leaf tree, against
+# 1.3 s for the source block's own probe; MergeTest's recipe-parity fixtures
+# check the agreement instead.
+@inline _family_function(::Type{T}, tree, rep) where {T} =
+    SIMDFunction(replace_T(T, tree), rep.comp1, rep.comp2, 0, 0, 0, 0, 0)
 
-# a plain (non-pair) head gets the lazy segmented iterator on every backend;
-# a device backend materializes it into a per-segment device layout at
-# finalization (`DeviceSegItr`)
 @inline function _merged_first_itr(::Type{T}, head, backend, rep, f, pars, dims, ivs, fvt) where {T}
     seg = _mergedseg(T, f, pars, ivs, fvt)
     K = length(ivs)
@@ -437,7 +433,7 @@ end
 function _block_rows(::Type{T}, f, pars, dims, ivs::NTuple{K, Int}, fvt::NTuple{S, T}, itrc) where {K, S, T}
     o0s = _row_o0s(f, pars, dims)
     return [
-        MergedRow{K, S, T, eltype(itrc), typeof(f.comp1), typeof(f.comp2)}(
+        MergedRow{T, NTuple{K, Int}, NTuple{S, T}, eltype(itrc), typeof(f.comp1), typeof(f.comp2)}(
                 o0s[r], f.o1 + f.o1step * (r - 1), f.o2 + f.o2step * (r - 1),
                 ivs, fvt, itrc[r], f.comp1, f.comp2
             ) for r in eachindex(itrc)
@@ -569,31 +565,65 @@ _materialize_block(backend, b::Objective{F, I}) where {F, I <: _MergedItr} =
     Objective(b.f, _materialize_mergeditr(backend, getfield(b, :itr)))
 
 """
-    DeviceSegItr{K, S, T, D}
+    SegView{V}
 
-Device layout of a [`SegmentedItr`](@ref): the hoisted leaves and offsets once
-per segment (`seg_*`), the original iterator elements of all segments
+A segment's hoisted leaves on a device: a slice (`base + 1 : base + K`) of
+the layout's flat leaf vector `v`, read by [`IvRef`](@ref)/[`FvRef`](@ref)
+with `view[k]`. A row holds this instead of a copy of the tuple: a dynamic
+index into a tuple held by value in a kernel stages the whole tuple into
+per-thread local memory (PTX `__local_depot` of 1016 bytes, 85 `ld.local`
+per row, for the COPS dirichlet PDE block with `K = 94`, whose Jacobian
+kernel then ran 4x slower than main's), while a read through the view is
+one global load at an address uniform across the segment's threads.
+"""
+struct SegView{V}
+    v::V
+    base::Int
+end
+@inline Base.getindex(s::SegView, k::Int) = @inbounds s.v[s.base + k]
+
+"""
+    CompView{V}
+
+A segment's nonzero compressor on a device: a slice of the layout's flat
+compressor vector, callable like a `Compressor` (`comp(n)`), for the same
+reason as [`SegView`](@ref).
+"""
+struct CompView{V}
+    v::V
+    base::Int
+end
+@inline (c::CompView)(n) = @inbounds c.v[c.base + n]
+
+"""
+    DeviceSegItr{T, D}
+
+Device layout of a [`SegmentedItr`](@ref) with several segments: offsets and
+steps once per segment (`seg_*`), the hoisted leaves and compressors of all
+segments in flat vectors (`iv`, `fv`, `comp1`, `comp2`; `K`, `S`, `N1`, `N2`
+entries per segment), the original iterator elements of all segments
 concatenated (`d`), and the cumulative row counts (`offs`). `getindex`
-assembles the `MergedRow` on the fly, so a row costs its element and nothing
-else on the device; a `MergedRow` per row would carry its own copy of the `K`
-Integer and `S` Float leaves (880 bytes per row against 96 at `K = 94`).
+assembles the `MergedRow` on the fly, with views into the flat vectors, so a
+row costs its element and nothing else on the device.
 """
 struct DeviceSegItr{
-        K, S, T, D, C1, C2, VI <: AbstractVector{Int}, VIV <: AbstractVector{NTuple{K, Int}},
-        VFV <: AbstractVector{NTuple{S, T}}, VC1 <: AbstractVector{C1}, VC2 <: AbstractVector{C2},
-        VD <: AbstractVector{D},
-    } <: AbstractVector{MergedRow{K, S, T, D, C1, C2}}
+        T, D, VI <: AbstractVector{Int}, VT <: AbstractVector{T}, VD <: AbstractVector{D},
+    } <: AbstractVector{MergedRow{T, SegView{VI}, SegView{VT}, D, CompView{VI}, CompView{VI}}}
     seg_o0::VI
     seg_o1::VI
     seg_o2::VI
-    seg_iv::VIV
-    seg_fv::VFV
-    seg_comp1::VC1
-    seg_comp2::VC2
     seg_o1step::VI
     seg_o2step::VI
+    iv::VI                      # K Integer leaves per segment
+    fv::VT                      # S Float leaves per segment
+    comp1::VI                   # N1 compressor entries per segment
+    comp2::VI                   # N2 compressor entries per segment
     offs::VI                    # cumulative row counts, one per segment
     d::VD                       # all segments' iterator elements, in order
+    K::Int
+    S::Int
+    N1::Int
+    N2::Int
     seglen::Int                 # > 0 when all segments have equal length
     n::Int
 end
@@ -618,99 +648,105 @@ end
         s.seg_o0[j] + r,
         s.seg_o1[j] + s.seg_o1step[j] * (r - 1),
         s.seg_o2[j] + s.seg_o2step[j] * (r - 1),
-        s.seg_iv[j], s.seg_fv[j], s.d[i], s.seg_comp1[j], s.seg_comp2[j],
+        SegView(s.iv, (j - 1) * s.K), SegView(s.fv, (j - 1) * s.S), s.d[i],
+        CompView(s.comp1, (j - 1) * s.N1), CompView(s.comp2, (j - 1) * s.N2),
     )
 end
 # kernels receive the device arrays through Adapt (KernelAbstractions adapts
 # every kernel argument); the Int fields pass through. The parameters are
-# written out: with no Float slots the empty `seg_fv` eltype leaves `T`
-# undetermined for the implicit constructor.
-@inline function _devsegitr(K::Int, S::Int, ::Type{T}, ::Type{D}, o0, o1, o2, iv, fv, c1, c2, s1, s2, offs, d, seglen, n) where {T, D}
-    return DeviceSegItr{K, S, T, D, eltype(c1), eltype(c2), typeof(o0), typeof(iv), typeof(fv), typeof(c1), typeof(c2), typeof(d)}(
-        o0, o1, o2, iv, fv, c1, c2, s1, s2, offs, d, seglen, n,
+# written out so that an empty Float vector still names `T`.
+@inline function _devsegitr(::Type{T}, ::Type{D}, o0, o1, o2, s1, s2, iv, fv, c1, c2, offs, d, K, S, N1, N2, seglen, n) where {T, D}
+    return DeviceSegItr{T, D, typeof(o0), typeof(fv), typeof(d)}(
+        o0, o1, o2, s1, s2, iv, fv, c1, c2, offs, d, K, S, N1, N2, seglen, n,
     )
 end
-function Adapt.adapt_structure(to, s::DeviceSegItr{K, S, T, D}) where {K, S, T, D}
+function Adapt.adapt_structure(to, s::DeviceSegItr{T, D}) where {T, D}
     return _devsegitr(
-        K, S, T, D, Adapt.adapt(to, s.seg_o0), Adapt.adapt(to, s.seg_o1), Adapt.adapt(to, s.seg_o2),
-        Adapt.adapt(to, s.seg_iv), Adapt.adapt(to, s.seg_fv),
-        Adapt.adapt(to, s.seg_comp1), Adapt.adapt(to, s.seg_comp2),
+        T, D, Adapt.adapt(to, s.seg_o0), Adapt.adapt(to, s.seg_o1), Adapt.adapt(to, s.seg_o2),
         Adapt.adapt(to, s.seg_o1step), Adapt.adapt(to, s.seg_o2step),
-        Adapt.adapt(to, s.offs), Adapt.adapt(to, s.d), s.seglen, s.n,
+        Adapt.adapt(to, s.iv), Adapt.adapt(to, s.fv), Adapt.adapt(to, s.comp1), Adapt.adapt(to, s.comp2),
+        Adapt.adapt(to, s.offs), Adapt.adapt(to, s.d), s.K, s.S, s.N1, s.N2, s.seglen, s.n,
     )
 end
 
 """
-    DeviceSeg1Itr{K, S, T, D}
+    DeviceSeg1Itr{T, D}
 
 Device layout of a single-segment [`SegmentedItr`](@ref): the segment's
-offsets and hoisted leaves are fields of the iterator itself, so they reach a
-kernel inside its argument struct (parameter space, uniform across threads),
-the way the leaf values inside a plain block's tree do; only the iterator
-elements `d` are a device array. A per-thread load of `K` Integer leaves from
-a segment table (the [`DeviceSegItr`](@ref) layout) cost the COPS dirichlet
-PDE block (`K = 94`) about 2x in `jac_coord!`/`hess_coord!` against main.
+offsets and steps are fields of the iterator itself (kernel parameter space),
+its leaves and compressors are device vectors read through views, and the
+iterator elements `d` are a device vector. The common case on a GPU: one
+block per family, so no segment search per row.
 """
-struct DeviceSeg1Itr{K, S, T, D, C1, C2, VD <: AbstractVector{D}} <: AbstractVector{MergedRow{K, S, T, D, C1, C2}}
+struct DeviceSeg1Itr{
+        T, D, VI <: AbstractVector{Int}, VT <: AbstractVector{T}, VD <: AbstractVector{D},
+    } <: AbstractVector{MergedRow{T, SegView{VI}, SegView{VT}, D, CompView{VI}, CompView{VI}}}
     o0::Int
     o1::Int
     o2::Int
-    iv::NTuple{K, Int}
-    fv::NTuple{S, T}
-    d::VD
-    comp1::C1
-    comp2::C2
     o1step::Int
     o2step::Int
+    iv::VI
+    fv::VT
+    comp1::VI
+    comp2::VI
+    d::VD
     n::Int
 end
 Base.size(s::DeviceSeg1Itr) = (s.n,)
 Base.IndexStyle(::Type{<:DeviceSeg1Itr}) = IndexLinear()
 @inline function Base.getindex(s::DeviceSeg1Itr, i::Int)
     return @inbounds eltype(s)(
-        s.o0 + i, s.o1 + s.o1step * (i - 1), s.o2 + s.o2step * (i - 1), s.iv, s.fv, s.d[i],
-        s.comp1, s.comp2,
+        s.o0 + i, s.o1 + s.o1step * (i - 1), s.o2 + s.o2step * (i - 1),
+        SegView(s.iv, 0), SegView(s.fv, 0), s.d[i], CompView(s.comp1, 0), CompView(s.comp2, 0),
     )
 end
-@inline _devseg1itr(::Type{T}, ::Type{D}, o0, o1, o2, iv::NTuple{K, Int}, fv::NTuple{S, T}, d, c1, c2, o1step, o2step, n) where {K, S, T, D} =
-    DeviceSeg1Itr{K, S, T, D, typeof(c1), typeof(c2), typeof(d)}(o0, o1, o2, iv, fv, d, c1, c2, o1step, o2step, n)
-Adapt.adapt_structure(to, s::DeviceSeg1Itr{K, S, T, D}) where {K, S, T, D} =
-    _devseg1itr(T, D, s.o0, s.o1, s.o2, s.iv, s.fv, Adapt.adapt(to, s.d), s.comp1, s.comp2, s.o1step, s.o2step, s.n)
+@inline _devseg1itr(::Type{T}, ::Type{D}, o0, o1, o2, s1, s2, iv, fv, c1, c2, d, n) where {T, D} =
+    DeviceSeg1Itr{T, D, typeof(iv), typeof(fv), typeof(d)}(o0, o1, o2, s1, s2, iv, fv, c1, c2, d, n)
+Adapt.adapt_structure(to, s::DeviceSeg1Itr{T, D}) where {T, D} =
+    _devseg1itr(
+    T, D, s.o0, s.o1, s.o2, s.o1step, s.o2step, Adapt.adapt(to, s.iv), Adapt.adapt(to, s.fv),
+    Adapt.adapt(to, s.comp1), Adapt.adapt(to, s.comp2), Adapt.adapt(to, s.d), s.n,
+)
 
 const _DeviceMergedItr = Union{DeviceSegItr, DeviceSeg1Itr}
 # host copy for the host-side passes that read every block's rows
 # (`_build_subexpr_jac` and friends): adapt the arrays to `Array`, which is a
 # bulk copy, where `Array(itr)` would index the device arrays element by element
 _host_array(s::_DeviceMergedItr) = Adapt.adapt(Array, s)
-# the Float-slot tuple travels as a field, so a backend without Float64 (Metal)
-# gets it rewritten here; `convert_array` only sees arrays
-@inline _fvt(::Type{T}, fv::NTuple{S, T}, backend) where {S, T} = fv
 
+# the layout's `T` is the Float leaves' eltype AFTER `convert_array`, so a
+# backend without Float64 (Metal) rewrites it along with the arrays
 function _materialize_mergeditr(backend, s::SegmentedItr{K, S, T, D}) where {K, S, T, D}
     segs = s.segs
+    cv = v -> convert_array(v, backend)
     if length(segs) == 1
         seg = @inbounds segs[1]
         # a 2-D generator's iterator is a Matrix; the layout holds a vector, in the
         # same (column-major) order the host's linear getindex uses
-        dd = convert_array(vec(collect(D, seg.itr)), backend)   # may rewrite Float64 inside D (Metal)
+        dd = cv(vec(collect(D, seg.itr)))   # may rewrite Float64 inside D (Metal)
+        fv = cv(collect(T, seg.fv))
         return _devseg1itr(
-            T, eltype(dd), seg.o0, seg.o1, seg.o2, seg.iv, _fvt(T, seg.fv, backend),
-            dd, seg.comp1, seg.comp2, seg.o1step, seg.o2step, length(s),
+            eltype(fv), eltype(dd), seg.o0, seg.o1, seg.o2, seg.o1step, seg.o2step,
+            cv(collect(Int, seg.iv)), fv, cv(collect(Int, seg.comp1.inner)), cv(collect(Int, seg.comp2.inner)),
+            dd, length(s),
         )
     end
-    cv = v -> convert_array(v, backend)
     d = D[]
     for seg in segs
         Base.append!(d, seg.itr)   # ExaModels has its own `append!`
     end
     dd = cv(d)   # may rewrite Float64 inside D (Metal): the layout takes its D from the device array
+    fv = cv(T[x for seg in segs for x in seg.fv])
+    N1 = length(first(segs).comp1.inner)
+    N2 = length(first(segs).comp2.inner)
     return _devsegitr(
-        K, S, T, eltype(dd),
+        eltype(fv), eltype(dd),
         cv(Int[seg.o0 for seg in segs]), cv(Int[seg.o1 for seg in segs]), cv(Int[seg.o2 for seg in segs]),
-        cv(NTuple{K, Int}[seg.iv for seg in segs]), cv(NTuple{S, T}[seg.fv for seg in segs]),
-        cv([seg.comp1 for seg in segs]), cv([seg.comp2 for seg in segs]),
         cv(Int[seg.o1step for seg in segs]), cv(Int[seg.o2step for seg in segs]),
-        cv(copy(s.offs)), dd, s.seglen, length(s),
+        cv(Int[x for seg in segs for x in seg.iv]), fv,
+        cv(Int[x for seg in segs for x in seg.comp1.inner]), cv(Int[x for seg in segs for x in seg.comp2.inner]),
+        cv(copy(s.offs)), dd, K, S, N1, N2, s.seglen, length(s),
     )
 end
 _materialize_mergeditr(backend, m::MergedRows) = convert_array(m.rows, backend)
@@ -763,13 +799,16 @@ _family_segments(s::SegmentedItr) =
     [(seg.o0, seg.o1, seg.o2, seg.iv, seg.fv, collect(seg.itr)) for seg in s.segs]
 function _family_segments(s::DeviceSeg1Itr)
     h = _host_array(s)
-    return [(h.o0, h.o1, h.o2, h.iv, h.fv, collect(h.d))]
+    return [(h.o0, h.o1, h.o2, Tuple(h.iv), Tuple(h.fv), collect(h.d))]
 end
 function _family_segments(s::DeviceSegItr)
     h = _host_array(s)
     return [
-        (h.seg_o0[j], h.seg_o1[j], h.seg_o2[j], h.seg_iv[j], h.seg_fv[j],
-            collect(h.d[(j == 1 ? 0 : h.offs[j - 1]) + 1:h.offs[j]]))
+        (
+            h.seg_o0[j], h.seg_o1[j], h.seg_o2[j],
+            Tuple(h.iv[((j - 1) * h.K + 1):(j * h.K)]), Tuple(h.fv[((j - 1) * h.S + 1):(j * h.S)]),
+            collect(h.d[(j == 1 ? 0 : h.offs[j - 1]) + 1:h.offs[j]]),
+        )
             for j in eachindex(h.offs)
     ]
 end
@@ -777,7 +816,7 @@ _family_segments(::MergedRows) = throw(
     ArgumentError("a merged pair-headed block (`add_con(c, i => expr for ...)`) cannot be expanded into its source blocks"),
 )
 
-_mrow_T(::Type{MergedRow{K, S, T, D, C1, C2}}) where {K, S, T, D, C1, C2} = T
+_mrow_T(::Type{MergedRow{T, IV, FV, D, C1, C2}}) where {T, IV, FV, D, C1, C2} = T
 _is_family(b) = false
 _is_family(::Constraint{F, I}) where {F, I <: Union{_MergedItr, _DeviceMergedItr}} = true
 _is_family(::Objective{F, I}) where {F, I <: Union{_MergedItr, _DeviceMergedItr}} = true

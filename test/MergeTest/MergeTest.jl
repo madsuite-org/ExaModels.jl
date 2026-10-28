@@ -198,7 +198,7 @@ function _test_backend_matches_host(backend)
         b.itr isa ExaModels._MergedItr && @test false   # no host-side merged iterator survives finalization
         if b.itr isa ExaModels.DeviceSegItr
             @test length(b.itr.d) == length(b.itr)
-            @test length(b.itr.seg_iv) == length(b.itr.offs)
+            @test length(b.itr.iv) == b.itr.K * length(b.itr.offs)
             @test length(b.itr.offs) > 1                 # single segments take the field layout
         elseif b.itr isa ExaModels.DeviceSeg1Itr
             @test length(b.itr.d) == length(b.itr)
@@ -307,10 +307,13 @@ function _test_layout_float32_rewrite()
         dev = ExaModels._materialize_mergeditr(_F32Backend(), s)
         @test dev isa (length(s.segs) == 1 ? ExaModels.DeviceSeg1Itr : ExaModels.DeviceSegItr)
         @test eltype(dev.d) === Tuple{Int, Float32}                 # the rewrite reached the layout's type
+        @test eltype(dev.fv) === Float32 && ExaModels._mrow_T(eltype(dev)) === Float32
         @test length(dev) == length(rows)
         for i in eachindex(rows)
             r, q = rows[i], dev[i]
-            @test (q.o0, q.o1, q.o2, q.iv) == (r.o0, r.o1, r.o2, r.iv)
+            @test (q.o0, q.o1, q.o2) == (r.o0, r.o1, r.o2)
+            @test ntuple(k -> q.iv[k], length(r.iv)) == r.iv
+            @test ntuple(k -> q.fv[k], length(r.fv)) == Float32.(r.fv)
             @test q.d == (r.d[1], Float32(r.d[2]))
         end
     end
