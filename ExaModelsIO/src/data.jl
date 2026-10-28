@@ -46,6 +46,10 @@ function _elem_schema!(cols, path, v::AbstractVector{T}) where {T}
         "ExaModelsIO can store generator data made of numbers, tuples, named tuples and structs of these; got $T"))
 end
 
+# Zip typed columns into rows. A function barrier: `parts` is a concretely typed
+# tuple of vectors here, so the loop compiles to plain loads.
+_rows(wrap, parts::Tuple) = [wrap(map(p -> @inbounds(p[k]), parts)) for k in eachindex(parts[1])]
+
 # Inverse of `data_schema`.  `col(path)` returns the stored column.
 function data_value(schema, col)
     haskey(schema, "range") && return schema["range"][1]:schema["range"][2]
@@ -59,11 +63,11 @@ function _elem_value(s, path, col)
         return col(isempty(path) ? "value" : path)
     elseif haskey(s, "namedtuple")
         names = Tuple(Symbol(n) for (n, _) in s["namedtuple"])
-        parts = [_elem_value(e, _join(path, n), col) for (n, e) in s["namedtuple"]]
-        return [NamedTuple{names}(Tuple(p[k] for p in parts)) for k in eachindex(parts[1])]
+        parts = Tuple(_elem_value(e, _join(path, n), col) for (n, e) in s["namedtuple"])
+        return _rows(NamedTuple{names}, parts)
     elseif haskey(s, "tuple")
-        parts = [_elem_value(e, _join(path, i), col) for (i, e) in enumerate(s["tuple"])]
-        return [Tuple(p[k] for p in parts) for k in eachindex(parts[1])]
+        parts = Tuple(_elem_value(e, _join(path, i), col) for (i, e) in enumerate(s["tuple"]))
+        return _rows(identity, parts)
     end
     throw(ArgumentError("unknown data schema $(keys(s))"))
 end
