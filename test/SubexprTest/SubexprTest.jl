@@ -243,7 +243,40 @@ function _device_tests(backend)
         H1[i, j] += v
         i != j && (H1[j, i] += v)
     end
-    return @test H1 ≈ _dense_hess(m0, xh, yh; obj_weight = 0.7) rtol = 10tol
+    @test H1 ≈ _dense_hess(m0, xh, yh; obj_weight = 0.7) rtol = tol
+
+    pvh = [sin(5i) + 0.25 for i in 1:10]
+    pvd = copyto!(similar(m1.meta.x0, 10), pvh)
+    hp0 = zeros(10)
+    hp1 = fill!(similar(m1.meta.x0, 10), 0)
+    NLPModels.hprod!(m0, xh, yh, pvh, hp0; obj_weight = 0.7)
+    NLPModels.hprod!(m1, xd, yd, pvd, hp1; obj_weight = 0.7)
+    @test Array(hp1) ≈ hp0 rtol = tol
+    NLPModels.hprod!(m0, xh, pvh, hp0)
+    NLPModels.hprod!(m1, xd, pvd, hp1)
+    @test Array(hp1) ≈ hp0 rtol = tol
+
+    # A device model with no buffered stage and no prodhelper keeps the host
+    # hprod! it had before the buffered methods existed. That fallback indexes
+    # the arrays on the host, so it is only usable where the device arrays are
+    # host arrays (the CPU backend); on a GPU it scalar-indexes, as it always did.
+    backend isa CPU || return nothing
+    function plain(bk)
+        c2 = ExaCore(concrete = Val(true), backend = bk)
+        c2, x2 = add_var(c2, 10)
+        c2, _ = add_obj(c2, (x2[i]^2 * x2[i + 1] for i in 1:9))
+        c2, _ = add_con(c2, (x2[i] * x2[i + 2] - 1.0 for i in 1:8))
+        return ExaModel(c2)
+    end
+    m2, m3 = plain(backend), plain(nothing)
+    hp2 = fill!(similar(m2.meta.x0, 10), 0)
+    hp3 = zeros(10)
+    NLPModels.hprod!(m3, xh, yh, pvh, hp3; obj_weight = 0.7)
+    NLPModels.hprod!(m2, xd, yd, pvd, hp2; obj_weight = 0.7)
+    @test Array(hp2) ≈ hp3 rtol = tol
+    NLPModels.hprod!(m3, xh, pvh, hp3)
+    NLPModels.hprod!(m2, xd, pvd, hp2)
+    return @test Array(hp2) ≈ hp3 rtol = tol
 end
 
 function runtests(; backends = Any[CPU()])
@@ -687,6 +720,7 @@ function runtests(; backends = Any[CPU()])
         @testset "Buffered subexpressions (device: $backend)" begin
             _device_tests(backend)
             _device_merged_plus_buffered(backend)
+            _device_augmented_con_buffered(backend)
         end
         @testset "add_reduce (device: $backend)" begin
             _device_vs_host(
@@ -743,6 +777,46 @@ function _device_merged_plus_buffered(backend)
     for (i, j, v) in zip(hr, hc, Array(hv))
         H1[i, j] += v
     end
+    return @test H1 ≈ H0 rtol = (eltype(m1.meta.x0) == Float32 ? 1.0e-4 : 1.0e-13)
+end
+
+# A constraint row added with `add_con!` into a pre-declared block is a
+# ConstraintAugmentation rather than a Constraint. The Hessian elimination seeds
+# each stage slot with ∂c/∂s weighted by y and replays the stage against that
+# seed, which is the only place the (∂c/∂s)·∇²s term of the row comes from; a
+# λ-seed pass restricted to plain Constraint blocks leaves it out. The μ seeds
+# travel by a separate path and keep the off-diagonals right on their own, so
+# the assertion has to be the full dense Hessian against the inlined reference,
+# not a norm over the stored nonzeros.
+function _device_augmented_con_buffered(backend)
+    function build(bk; buffered = true)
+        c = ExaCore(concrete = Val(true), backend = bk)
+        c, x = add_var(c, 8)
+        c, con = add_con(c, 6; lcon = 0.0, ucon = 0.0)
+        c, s = add_expr(c, (x[i]^3 + sin(x[i + 1]) for i in 1:7); buffered)
+        c, _ = add_obj(c, (s[i] * x[i] for i in 1:7))
+        c, _ = add_con!(c, con, (i => s[i] + s[i + 1] * x[i] for i in 1:6))
+        return ExaModel(c)
+    end
+    m0 = build(nothing; buffered = false)
+    m1 = build(backend; buffered = true)
+    @test m1.meta.ncon == 6 == m0.meta.ncon
+    xh = [0.4 + 0.1i for i in 1:8]
+    xd = copyto!(similar(m1.meta.x0, 8), xh)
+    yh = [cos(2i) + 1.5 for i in 1:6]
+    yd = copyto!(similar(m1.meta.x0, 6), yh)
+    H0 = _dense_hess(m0, xh, yh; obj_weight = 0.7)
+    hr = zeros(Int, m1.meta.nnzh)
+    hc = zeros(Int, m1.meta.nnzh)
+    NLPModels.hess_structure!(m1, hr, hc)
+    hv = fill!(similar(m1.meta.x0, m1.meta.nnzh), 0)
+    NLPModels.hess_coord!(m1, xd, yd, hv; obj_weight = 0.7)
+    H1 = zeros(8, 8)
+    for (i, j, v) in zip(hr, hc, Array(hv))
+        H1[i, j] += v
+        i != j && (H1[j, i] += v)
+    end
+    # Float32 backends (Metal) need a looser comparison than Float64 ones
     return @test H1 ≈ H0 rtol = (eltype(m1.meta.x0) == Float32 ? 1.0e-4 : 1.0e-13)
 end
 

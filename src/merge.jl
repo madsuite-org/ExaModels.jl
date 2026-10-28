@@ -14,16 +14,22 @@
 # `ProdNode`, recipe placeholders, registered-function internals) are
 # statically non-mergeable and are stored plain, as before this feature.
 #
-# The slot layout is a pure function of the tree type (one slot per scalar
-# leaf position; no value-dependent sharing), so the merged block's type, the
-# sparsity footprint, and all compiled code are identical at any replication
-# count.  The hoisting walk is three single-purpose dispatch recursions
-# (tree, Integer slots, Float slots); the walk section below says why the
-# split is load-bearing under `juliac --trim`.
-# The cost of position-wise slots: a tree
-# relying on ===-shared spliced subtrees (deep `add_expr` chains) carries a
-# correspondingly larger per-row sparsity footprint; `add_expr(...; lift =
-# true)` is the remedy for such models.
+# The slot layout is a function of the tree type (one slot per scalar leaf
+# position), so the merged block's type and all compiled code are identical at
+# any replication count.  Which slots a tree's Integer leaves READ is a
+# function of the first block's leaf values: leaves holding the same value in
+# the arriving block read the same slot (`_iv_classes`), and that sharing
+# pattern is part of the family key alongside the tree type.  It is what lets
+# two sites that reference the same variable (`x[i+1]` twice) compare `===`
+# in the sparsity probe and share one Jacobian slot, exactly as the plain
+# block did; a block with the same tree type but a different pattern starts
+# its own family.  The pattern is carried as data on the iterator, never in a
+# type parameter, so no type depends on leaf values.  The hoisting walk is
+# three single-purpose dispatch recursions (tree, Integer slots, Float
+# slots); the walk section below says why the split is load-bearing under
+# `juliac --trim`.  A tree relying on ===-shared spliced subtrees (deep
+# `add_expr` chains) still carries one slot per use site; `add_expr(...;
+# lift = true)` is the remedy for such models.
 #
 # Merging is unconditional: there is no off switch, so every core pays the
 # same (statically decided) path and the whole suite exercises merged form.
@@ -89,6 +95,7 @@ types, so the core's type is stable as a family grows.
 """
 struct SegmentedItr{K, S, T, D, I, RF} <: AbstractVector{MergedRow{K, S, T, D}}
     rep::RF
+    cls::NTuple{K, Int}         # Integer-slot sharing pattern (`_iv_classes`), part of the family key
     segs::Vector{MergedSeg{K, S, T, I}}
     offs::Vector{Int}           # cumulative row counts
     seglen::Base.RefValue{Int}  # > 0 when all segments have equal length
@@ -121,6 +128,7 @@ models keep the rows they had.
 """
 struct MergedRows{K, S, T, D, RF} <: AbstractVector{MergedRow{K, S, T, D}}
     rep::RF
+    cls::NTuple{K, Int}         # as in SegmentedItr
     rows::Vector{MergedRow{K, S, T, D}}
 end
 Base.size(m::MergedRows) = Base.size(m.rows)
@@ -208,37 +216,40 @@ end
 # travel DOWN as plain Int arguments and subtree slot COUNTS come back up in
 # the same recursion, so no separate counting traversal is needed; the return
 # type stays small (a node plus two Ints) at any depth.
-@inline function _stree(a::Node1{F, I}, io::Int, fo::Int) where {F, I}
-    n, k, s = _stree(getfield(a, :inner), io, fo)
+# `cls` is the Integer-slot sharing pattern (`_iv_classes`): the leaf at
+# position p reads slot cls[p], which is the first position holding the same
+# value, so equal-valued leaves become identical `IvRef`s.
+@inline function _stree(a::Node1{F, I}, io::Int, fo::Int, cls) where {F, I}
+    n, k, s = _stree(getfield(a, :inner), io, fo, cls)
     return Node1{F, typeof(n)}(n), k, s
 end
-@inline function _stree(a::Node2{F, I1, I2}, io::Int, fo::Int) where {F, I1, I2}
-    n1, k1, s1 = _stree(getfield(a, :inner1), io, fo)
-    n2, k2, s2 = _stree(getfield(a, :inner2), io + k1, fo + s1)
+@inline function _stree(a::Node2{F, I1, I2}, io::Int, fo::Int, cls) where {F, I1, I2}
+    n1, k1, s1 = _stree(getfield(a, :inner1), io, fo, cls)
+    n2, k2, s2 = _stree(getfield(a, :inner2), io + k1, fo + s1, cls)
     return Node2{F, typeof(n1), typeof(n2)}(n1, n2), k1 + k2, s1 + s2
 end
-@inline function _stree(a::Var, io::Int, fo::Int)
-    n, k, s = _stree(getfield(a, :i), io, fo)
+@inline function _stree(a::Var, io::Int, fo::Int, cls)
+    n, k, s = _stree(getfield(a, :i), io, fo, cls)
     return Var{typeof(n)}(n), k, s
 end
-@inline function _stree(a::ParameterNode, io::Int, fo::Int)
-    n, k, s = _stree(getfield(a, :i), io, fo)
+@inline function _stree(a::ParameterNode, io::Int, fo::Int, cls)
+    n, k, s = _stree(getfield(a, :i), io, fo, cls)
     return ParameterNode{typeof(n)}(n), k, s
 end
-@inline function _stree(a::DataIndexed{I, J}, io::Int, fo::Int) where {I, J}
-    n, k, s = _stree(getfield(a, :inner), io, fo)
+@inline function _stree(a::DataIndexed{I, J}, io::Int, fo::Int, cls) where {I, J}
+    n, k, s = _stree(getfield(a, :inner), io, fo, cls)
     return DataIndexed(n, J), k, s
 end
-@inline _stree(a::DataSource, io::Int, fo::Int) = DataIndexed(DataSource(), _MROW_D), 0, 0
-@inline _stree(a::Constant, io::Int, fo::Int) = a, 0, 0
-@inline _stree(a::VarSource, io::Int, fo::Int) = a, 0, 0
-@inline _stree(a::ParameterSource, io::Int, fo::Int) = a, 0, 0
-@inline _stree(a::Val, io::Int, fo::Int) = a, 0, 0
-@inline _stree(a::Null{Nothing}, io::Int, fo::Int) = a, 0, 0
+@inline _stree(a::DataSource, io::Int, fo::Int, cls) = DataIndexed(DataSource(), _MROW_D), 0, 0
+@inline _stree(a::Constant, io::Int, fo::Int, cls) = a, 0, 0
+@inline _stree(a::VarSource, io::Int, fo::Int, cls) = a, 0, 0
+@inline _stree(a::ParameterSource, io::Int, fo::Int, cls) = a, 0, 0
+@inline _stree(a::Val, io::Int, fo::Int, cls) = a, 0, 0
+@inline _stree(a::Null{Nothing}, io::Int, fo::Int, cls) = a, 0, 0
 # a Null's value is a scalar field like any other: hoist it
-@inline _stree(a::Null{T}, io::Int, fo::Int) where {T <: Real} = FvRef(fo + 1), 0, 1
-@inline _stree(a::T, io::Int, fo::Int) where {T <: Integer} = IvRef(io + 1), 1, 0
-@inline _stree(a::T, io::Int, fo::Int) where {T <: Real} = FvRef(fo + 1), 0, 1
+@inline _stree(a::Null{T}, io::Int, fo::Int, cls) where {T <: Real} = FvRef(fo + 1), 0, 1
+@inline _stree(a::T, io::Int, fo::Int, cls) where {T <: Integer} = IvRef(@inbounds cls[io + 1]), 1, 0
+@inline _stree(a::T, io::Int, fo::Int, cls) where {T <: Real} = FvRef(fo + 1), 0, 1
 
 # the slots.  Concatenating a tuple per node would mint one tuple TYPE per
 # slot (81 of them on a deep capture tree), and inference pays for each, so
@@ -298,7 +309,27 @@ end
     return ntuple(i -> (@inbounds out[i]), Val(S))
 end
 
-@inline _shoist(::Type{T}, b) where {T} = (first(_stree(b, 0, 0)), _siv(b), _sfv(T, b))
+# Integer-slot sharing pattern of a block: entry p is the first slot whose
+# value equals slot p's, in slot order. Two blocks of one tree type merge only
+# when their patterns agree, so every row of a family satisfies the sharing its
+# merged tree encodes. The tuple's length is the type-level slot count, so this
+# is inferable; only the entries depend on values.
+@inline function _iv_classes(ivs::NTuple{K, Int}) where {K}
+    return ntuple(k -> _first_equal(ivs, k), Val(K))
+end
+@inline function _first_equal(ivs, k::Int)
+    j = 1
+    @inbounds while j < k && ivs[j] != ivs[k]
+        j += 1
+    end
+    return j
+end
+
+@inline function _shoist(::Type{T}, b) where {T}
+    ivs = _siv(b)
+    cls = _iv_classes(ivs)
+    return first(_stree(b, 0, 0, cls)), ivs, _sfv(T, b), cls
+end
 
 # ── block kind ───────────────────────────────────────────────────────────────
 # Constraints and objectives share the whole merge machinery and differ only
@@ -320,11 +351,15 @@ end
 
 # ── family membership: dispatch on the stored representative's type ─────────
 
-@inline _same_family(a, f, ::Type{E}) where {E} = false
-@inline _same_family(a::Constraint{F2, I}, f::F, ::Type{E}) where {F2, F, E, I <: _MergedItr} =
-    typeof(_mrep(getfield(a, :itr))) == F && _mrow_dtype(eltype(getfield(a, :itr))) == E
-@inline _same_family(a::Objective{F2, I}, f::F, ::Type{E}) where {F2, F, E, I <: _MergedItr} =
-    typeof(_mrep(getfield(a, :itr))) == F && _mrow_dtype(eltype(getfield(a, :itr))) == E
+# same representative type (tree type), same data eltype, and the same
+# Integer-slot sharing pattern
+@inline _same_family(a, f, ::Type{E}, cls) where {E} = false
+@inline _same_family(a::Constraint{F2, I}, f::F, ::Type{E}, cls) where {F2, F, E, I <: _MergedItr} =
+    typeof(_mrep(getfield(a, :itr))) == F && _mrow_dtype(eltype(getfield(a, :itr))) == E &&
+    getfield(getfield(a, :itr), :cls) == cls
+@inline _same_family(a::Objective{F2, I}, f::F, ::Type{E}, cls) where {F2, F, E, I <: _MergedItr} =
+    typeof(_mrep(getfield(a, :itr))) == F && _mrow_dtype(eltype(getfield(a, :itr))) == E &&
+    getfield(getfield(a, :itr), :cls) == cls
 
 # ── block creation and appends ───────────────────────────────────────────────
 
@@ -342,11 +377,11 @@ end
 # own counters (f.o0/f.o1/f.o2 were taken from the core at this add).
 @inline function _merged_first(::Type{T}, kind, f, pars, dims, tag, backend) where {T}
     rep = f
-    tree, ivs, fvt = _shoist(T, _family_tree(rep))
+    tree, ivs, fvt, cls = _shoist(T, _family_tree(rep))
     mf = _simdfunction(T, tree, 0, 0, 0)
     itr = _merged_first_itr(
         T, getfield(f, :f), backend, rep, mf, f, pars, dims,
-        ivs, fvt
+        ivs, fvt, cls
     )
     return _mkblock(kind, mf, itr, length(pars), tag), mf
 end
@@ -354,28 +389,28 @@ end
 # a plain (non-pair) head on the host gets the lazy segmented iterator
 @inline function _merged_first_itr(
         ::Type{T}, head, ::Nothing, rep, mf, f, pars, dims,
-        ivs, fvt
+        ivs, fvt, cls
     ) where {T}
     K = length(ivs)
     S = length(fvt)
     segs = MergedSeg{K, S, T, typeof(pars)}[MergedSeg{K, S, T, typeof(pars)}(pars, f.o0, f.o1, f.o2, ivs, fvt)]
     return SegmentedItr{K, S, T, eltype(pars), typeof(pars), typeof(rep)}(
-        rep, segs, Int[length(pars)], Ref(length(pars)), mf.o1step, mf.o2step
+        rep, cls, segs, Int[length(pars)], Ref(length(pars)), mf.o1step, mf.o2step
     )
 end
 # pair heads (data-driven row targets) and device backends materialize rows
 @inline _merged_first_itr(
     ::Type{T}, head::Pair, ::Nothing, rep, mf, f, pars, dims,
-    ivs, fvt
+    ivs, fvt, cls
 ) where {T} =
-    _merged_rows(T, rep, mf, f, pars, dims, ivs, fvt)
+    _merged_rows(T, rep, mf, f, pars, dims, ivs, fvt, cls)
 @inline _merged_first_itr(
     ::Type{T}, head, backend, rep, mf, f, pars, dims,
-    ivs, fvt
+    ivs, fvt, cls
 ) where {T} =
-    _merged_rows(T, rep, mf, f, pars, dims, ivs, fvt)
+    _merged_rows(T, rep, mf, f, pars, dims, ivs, fvt, cls)
 
-@inline function _merged_rows(::Type{T}, rep, mf, f, pars, dims, ivs, fvt) where {T}
+@inline function _merged_rows(::Type{T}, rep, mf, f, pars, dims, ivs, fvt, cls) where {T}
     K = length(ivs)
     S = length(fvt)
     o0s = _row_o0s(f, pars, dims)
@@ -386,7 +421,7 @@ end
                 f.o2 + mf.o2step * (r - 1), ivs, fvt, itrc[r]
             ) for r in eachindex(itrc)
     ]
-    return MergedRows{K, S, T, eltype(itrc), typeof(rep)}(rep, rows)
+    return MergedRows{K, S, T, eltype(itrc), typeof(rep)}(rep, cls, rows)
 end
 
 # A later arrival: extract in the representative's layout, append one
@@ -394,7 +429,7 @@ end
 @inline function _merged_append(::Type{T}, prev, f, pars, dims, tag) where {T}
     # same family means same tree type, so the arriving tree's own walk uses
     # the representative's slot layout by construction
-    _, ivs, fvt = _shoist(T, _family_tree(f))
+    _, ivs, fvt, _ = _shoist(T, _family_tree(f))
     return _merged_append_itr(
         getfield(prev, :itr), prev, f, pars, dims, tag,
         ivs, fvt
@@ -415,7 +450,7 @@ end
     newlen = length(pars)
     push!(offs, offs[end] + newlen)
     seglen = Ref((m.seglen[] == newlen) ? newlen : 0)
-    m2 = typeof(m)(m.rep, segs, offs, seglen, m.o1step, m.o2step)
+    m2 = typeof(m)(m.rep, m.cls, segs, offs, seglen, m.o1step, m.o2step)
     return _rewrap(prev, prev.f, m2, offs[end], tag)
 end
 @inline function _merged_append_itr(m::MergedRows, prev, f, pars, dims, tag, ivs, fvt)
@@ -431,7 +466,7 @@ end
             )
         )
     end
-    m2 = typeof(m)(m.rep, rows)
+    m2 = typeof(m)(m.rep, m.cls, rows)
     return _rewrap(prev, prev.f, m2, length(rows), tag)
 end
 
@@ -445,8 +480,9 @@ end
     _mergeable(typeof(f.f)) || return nothing
     _merge_allowed(getfield(c, :nargs), getfield(f, :f), c.backend) || return nothing
     _merge_itr_ok(pars) || return nothing
+    cls = _iv_classes(_siv(_family_tree(f)))
     return _merge_result(
-        _smerge(T, Constraint, c.cons, f, pars, dims, tag, eltype(pars)),
+        _smerge(T, Constraint, c.cons, f, pars, dims, tag, eltype(pars), cls),
         T, Constraint, c, c.cons, f, pars, dims, tag
     )
 end
@@ -458,8 +494,9 @@ end
     _merge_allowed(getfield(c, :nargs), getfield(f, :f), c.backend) || return nothing
     _merge_itr_ok(pars) || return nothing
     dims = (length(pars),)
+    cls = _iv_classes(_siv(_family_tree(f)))
     return _merge_result(
-        _smerge(T, Objective, c.obj, f, pars, dims, nothing, eltype(pars)),
+        _smerge(T, Objective, c.obj, f, pars, dims, nothing, eltype(pars), cls),
         T, Objective, c, c.obj, f, pars, dims, nothing
     )
 end
@@ -485,24 +522,24 @@ end
 
 # scan + replace in one recursion; typed for tuple storage, dynamic for the
 # Vector{Any} default; the same fold either way
-@inline _smerge(::Type{T}, kind, cons::Tuple{}, f, pars, dims, tag, ::Type{E}) where {T, E} = nothing
-@inline function _smerge(::Type{T}, kind, cons::Tuple, f, pars, dims, tag, ::Type{E}) where {T, E}
+@inline _smerge(::Type{T}, kind, cons::Tuple{}, f, pars, dims, tag, ::Type{E}, cls) where {T, E} = nothing
+@inline function _smerge(::Type{T}, kind, cons::Tuple, f, pars, dims, tag, ::Type{E}, cls) where {T, E}
     b = first(cons)
     rest = Base.tail(cons)
-    if _same_family(b, f, E) && _blocktag(b) === tag &&
+    if _same_family(b, f, E, cls) && _blocktag(b) === tag &&
             _appendable(getfield(b, :itr), pars)
         nb = _merged_append(T, b, f, pars, dims, tag)
         mf = getfield(nb, :f)
         return (nb, rest...), mf.o1step, mf.o2step
     end
-    r = _smerge(T, kind, rest, f, pars, dims, tag, E)
+    r = _smerge(T, kind, rest, f, pars, dims, tag, E, cls)
     r === nothing && return nothing
     ncons, s1, s2 = r
     return (b, ncons...), s1, s2
 end
-function _smerge(::Type{T}, kind, cons::Vector{Any}, f, pars, dims, tag, ::Type{E}) where {T, E}
+function _smerge(::Type{T}, kind, cons::Vector{Any}, f, pars, dims, tag, ::Type{E}, cls) where {T, E}
     for (i, b) in enumerate(cons)
-        if _same_family(b, f, E) && _blocktag(b) === tag &&
+        if _same_family(b, f, E, cls) && _blocktag(b) === tag &&
                 _appendable(getfield(b, :itr), pars)
             nb = _merged_append(T, b, f, pars, dims, tag)
             out = copy(cons)

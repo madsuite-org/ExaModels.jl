@@ -104,6 +104,12 @@ function _test_host_derivatives()
     # plus one merged family for the 8 loop-written ones
     @test length(m.cons) == 6
     @test length(m.objs) == 2
+    return _check_fd_derivatives(m)
+end
+
+# Jacobian and Lagrangian Hessian of a host model against central finite
+# differences (of cons!, and of grad(obj) + J(x)'y respectively)
+function _check_fd_derivatives(m)
     x0 = copy(m.meta.x0) .+ 0.01
     # Jacobian values against central finite differences of cons!
     jr = zeros(Int, m.meta.nnzj); jc = zeros(Int, m.meta.nnzj)
@@ -232,8 +238,55 @@ function _test_merged_row_float32_rewrite()
     return @test r2[1].iv == rows[1].iv && r2[1].o0 == rows[1].o0 && r2[1].o1 == rows[1].o1 && r2[1].o2 == rows[1].o2
 end
 
+# Integer-leaf slot sharing: equal-valued leaves of a block read one slot, so
+# two sites that reference the same variable compare === in the sparsity probe
+# and share a Jacobian slot (and Hessian pairs), as the plain block did. The
+# sharing pattern is part of the family key.
+function _test_slot_sharing()
+    # LuksanVlcek: x[i+1] appears 5 times, x[i+2] 3 times, x[i] 2 times per
+    # row; main's footprint is 3 Jacobian entries per row and 6 Hessian pairs
+    # per constraint row plus 3 per objective row
+    N = 50
+    c = ExaCore()
+    c, x = add_var(c, N; start = [mod(i, 2) == 1 ? -1.2 : 1.0 for i in 1:N])
+    c, _ = add_con(c, 3x[i + 1]^3 + 2 * x[i + 2] - 5 + sin(x[i + 1] - x[i + 2])sin(x[i + 1] + x[i + 2]) + 4x[i + 1] - x[i]exp(x[i] - x[i + 1]) - 3 for i in 1:(N - 2))
+    c, _ = add_obj(c, 100 * (x[i - 1]^2 - x[i])^2 + (x[i - 1] - 1)^2 for i in 2:N)
+    m = ExaModel(c)
+    @test m.meta.nnzj == 3 * (N - 2)
+    @test m.meta.nnzh == 6 * (N - 2) + 3 * (N - 1)
+    _check_fd_derivatives(m)
+
+    # the ArgumentTest fixture that lost its exact nnz check: one entry per row
+    c = ExaCore()
+    c, x = add_var(c, 10)
+    c, _ = add_con(c, 0.5 * x[i] + x[i] for i in 1:10)
+    c, _ = add_obj(c, x[i]^2 for i in 1:10)
+    m = ExaModel(c)
+    @test m.meta.nnzj == 10
+    @test m.meta.nnzh == 10
+
+    # same tree type, different sharing pattern: two families, each with its
+    # own footprint; same pattern with other leaf values: one family
+    c = ExaCore()
+    c, x = add_var(c, 12; start = 0.3)
+    c, _ = add_con(c, x[i + 1] * x[i + 1] for i in 1:8)     # pattern (a, b, a, b)
+    c, _ = add_con(c, x[i + 1] * x[i + 2] for i in 1:8)     # pattern (a, b, c, b)
+    c, _ = add_con(c, x[i + 2] * x[i + 2] for i in 1:8)     # (a, b, a, b) again: joins the first
+    c, _ = add_obj(c, x[i]^2 for i in 1:12)
+    m = ExaModel(c)
+    @test length(m.cons) == 2
+    @test sort([length(b.itr) for b in m.cons]) == [8, 16]
+    @test m.meta.nnzj == 16 * 1 + 8 * 2
+    @test m.meta.ncon == 24
+    _check_fd_derivatives(m)
+    return nothing
+end
+
 function runtests()
     return @testset "Family merge" begin
+        @testset "Integer-leaf slot sharing" begin
+            _test_slot_sharing()
+        end
         @testset "merged rows rewrite Float64 to Float32" begin
             _test_merged_row_float32_rewrite()
         end
