@@ -278,28 +278,35 @@ function _test_core_persistence()
     end
 end
 
-# Backends without Float64 (Metal) upload merged rows through
-# `replace_float_64_by_32`. The generic struct rebuild cannot reconstruct a
-# `MergedRow` (an empty Float-slot tuple leaves its `T` undetermined), so the
-# row has a dedicated method; host-only check that it rewrites `d` and keeps
-# the row's layout.
-function _test_merged_row_float32_rewrite()
+# A backend without Float64 (Metal) rewrites Float64 inside the iterator
+# elements when a merged block is finalized into its device layout. Host-only
+# check through a converter that applies the same rewrite: the layouts take
+# their element type from the converted array and reproduce the host rows.
+struct _F32Backend end
+ExaModels.convert_array(v, ::_F32Backend) = ExaModels.replace_float_64_by_32.(v)
+function _test_layout_float32_rewrite()
     c = ExaCore()
     c, x = add_var(c, 4)
     data = [(i, 0.5 * i) for i in 1:4]
-    c, _ = add_con(c, x[d[1]] * d[2] + x[1] for d in data)
+    c, _ = add_con(c, x[d[1]] * d[2] + x[1] for d in data)           # single-segment family
+    c, _ = add_con(c, x[d[1]] * d[2] + 2.0 for d in data)            # same tree type, same pattern: joins
+    c, _ = add_obj(c, (x[d[1]] - d[2])^2 for d in data)              # single-segment objective
     m = ExaModel(c)
-    itr = m.cons[1].itr
-    @test itr isa ExaModels.SegmentedItr
-    rows = [itr[i] for i in 1:length(itr)]
-    @test ExaModels._contains_float64(eltype(rows))          # the fixture does carry a Float64
-    K, S = eltype(rows).parameters[1], eltype(rows).parameters[2]
-    r2 = ExaModels.replace_float_64_by_32.(rows)
-    @test !ExaModels._contains_float64(eltype(r2))
-    @test eltype(r2) <: ExaModels.MergedRow{K, S, Float32}   # K, S kept; T rewritten, not Union{}
-    @test r2[1].d === (1, 0.5f0)
-    @test r2[2].d === (2, 1.0f0)
-    return @test r2[1].iv == rows[1].iv && r2[1].o0 == rows[1].o0 && r2[1].o1 == rows[1].o1 && r2[1].o2 == rows[1].o2
+    for b in (m.cons[1], m.objs[1])
+        s = b.itr
+        @test s isa ExaModels.SegmentedItr
+        rows = [s[i] for i in 1:length(s)]
+        dev = ExaModels._materialize_mergeditr(_F32Backend(), s)
+        @test dev isa (length(s.segs) == 1 ? ExaModels.DeviceSeg1Itr : ExaModels.DeviceSegItr)
+        @test eltype(dev.d) === Tuple{Int, Float32}                 # the rewrite reached the layout's type
+        @test length(dev) == length(rows)
+        for i in eachindex(rows)
+            r, q = rows[i], dev[i]
+            @test (q.o0, q.o1, q.o2, q.iv) == (r.o0, r.o1, r.o2, r.iv)
+            @test q.d == (r.d[1], Float32(r.d[2]))
+        end
+    end
+    return nothing
 end
 
 # Integer-leaf slot sharing: equal-valued leaves of a block read one slot, so
@@ -390,8 +397,8 @@ function runtests()
         @testset "Integer-leaf slot sharing" begin
             _test_slot_sharing()
         end
-        @testset "merged rows rewrite Float64 to Float32" begin
-            _test_merged_row_float32_rewrite()
+        @testset "device layouts rewrite Float64 to Float32" begin
+            _test_layout_float32_rewrite()
         end
         @testset "host derivatives against finite differences" begin
             _test_host_derivatives()

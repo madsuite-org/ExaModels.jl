@@ -59,19 +59,6 @@ const _MROW_IV = 4  # field position of `iv` in MergedRow
 const _MROW_FV = 5  # field position of `fv` in MergedRow
 const _MROW_D = 6  # field position of `d` in MergedRow
 
-# Float64 -> Float32 rewrite for backends without Float64 (Metal). The generic
-# struct rebuild in templates.jl cannot reconstruct a MergedRow: with no Float
-# slots (S = 0) the empty `fv` tuple leaves `T` undetermined for the default
-# constructor. The parameters are written out instead.
-function replace_float_64_by_32(r::MergedRow{K, S, T, D}) where {K, S, T, D}
-    fv = map(replace_float_64_by_32, getfield(r, :fv))
-    d = replace_float_64_by_32(getfield(r, :d))
-    return MergedRow{K, S, _f32type(T), typeof(d)}(
-        getfield(r, :o0), getfield(r, :o1), getfield(r, :o2), getfield(r, :iv), fv, d,
-    )
-end
-_f32type(::Type{Float64}) = Float32
-_f32type(::Type{T}) where {T} = T
 
 # ── merged iterators ─────────────────────────────────────────────────────────
 
@@ -499,7 +486,7 @@ end
     push!(offs, offs[end] + newlen)
     seglen = (m.seglen == newlen) ? newlen : 0
     m2 = typeof(m)(m.rep, m.cls, segs, offs, seglen, m.o1step, m.o2step)
-    return _rewrap(prev, prev.f, m2, offs[end], tag)
+    return _rewrap(prev, prev.f, m2, offs[end], _blocktag(prev))   # the family keeps its first block's tag
 end
 @inline function _merged_append_itr(m::MergedRows, prev, f, pars, dims, tag, ivs, fvt)
     mf = prev.f
@@ -515,7 +502,7 @@ end
         )
     end
     m2 = typeof(m)(m.rep, m.cls, rows)
-    return _rewrap(prev, prev.f, m2, length(rows), tag)
+    return _rewrap(prev, prev.f, m2, length(rows), _blocktag(prev))
 end
 
 # ── the merge entry point used by _add_con / _add_con! ───────────────────────
