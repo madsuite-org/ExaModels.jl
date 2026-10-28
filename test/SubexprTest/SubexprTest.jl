@@ -124,6 +124,39 @@ function _device_tests(backend)
         i != j && (H1[j, i] += v)
     end
     @test H1 ≈ _dense_hess(m0, xh, yh; obj_weight = 0.7) rtol = rt
+
+    pvh = [sin(5i) + 0.25 for i in 1:10]
+    pvd = copyto!(similar(m1.meta.x0, 10), pvh)
+    hp0 = zeros(10)
+    hp1 = fill!(similar(m1.meta.x0, 10), 0)
+    NLPModels.hprod!(m0, xh, yh, pvh, hp0; obj_weight = 0.7)
+    NLPModels.hprod!(m1, xd, yd, pvd, hp1; obj_weight = 0.7)
+    @test Array(hp1) ≈ hp0 rtol = rt
+    NLPModels.hprod!(m0, xh, pvh, hp0)
+    NLPModels.hprod!(m1, xd, pvd, hp1)
+    @test Array(hp1) ≈ hp0 rtol = rt
+
+    # A device model with no buffered stage and no prodhelper keeps the host
+    # hprod! it had before the buffered methods existed. That fallback indexes
+    # the arrays on the host, so it is only usable where the device arrays are
+    # host arrays (the CPU backend); on a GPU it scalar-indexes, as it always did.
+    backend isa CPU || return nothing
+    function plain(bk)
+        c2 = ExaCore(concrete = Val(true), backend = bk)
+        c2, x2 = add_var(c2, 10)
+        c2, _ = add_obj(c2, (x2[i]^2 * x2[i + 1] for i in 1:9))
+        c2, _ = add_con(c2, (x2[i] * x2[i + 2] - 1.0 for i in 1:8))
+        return ExaModel(c2)
+    end
+    m2, m3 = plain(backend), plain(nothing)
+    hp2 = fill!(similar(m2.meta.x0, 10), 0)
+    hp3 = zeros(10)
+    NLPModels.hprod!(m3, xh, yh, pvh, hp3; obj_weight = 0.7)
+    NLPModels.hprod!(m2, xd, yd, pvd, hp2; obj_weight = 0.7)
+    @test Array(hp2) ≈ hp3 rtol = rt
+    NLPModels.hprod!(m3, xh, pvh, hp3)
+    NLPModels.hprod!(m2, xd, pvd, hp2)
+    @test Array(hp2) ≈ hp3 rtol = rt
 end
 
 function runtests(; backends = Any[CPU()])

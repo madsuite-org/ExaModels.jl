@@ -436,6 +436,36 @@ function ExaModels.jprod_nln!(
 ) where {T,VT,E<:KAExtension{T,VT,Nothing}}
     error("Prodhelper is not defined. Use ExaModels(c; prod=true) to use jprod_nln!")
 end
+function ExaModels.hprod!(
+    m::ExaModels.AbstractExaModel{T,VT,E},
+    x::AbstractVector,
+    v::AbstractVector,
+    Hv::AbstractVector;
+    obj_weight = one(eltype(x)),
+) where {T,VT,E<:KAExtension{T,VT,Nothing}}
+    _ska(m) === nothing || return _hprod_buffered!(m, x, nothing, v, Hv, T(obj_weight))
+    # no buffered stage and no prodhelper: the host implementation in nlp.jl,
+    # exactly the method this call reached before the buffered methods existed
+    return Base.invoke(
+        ExaModels.hprod!, Tuple{ExaModels.AbstractExaModel,AbstractVector,AbstractVector,AbstractVector},
+        m, x, v, Hv; obj_weight,
+    )
+end
+function ExaModels.hprod!(
+    m::ExaModels.AbstractExaModel{T,VT,E},
+    x::AbstractVector,
+    y::AbstractVector,
+    v::AbstractVector,
+    Hv::AbstractVector;
+    obj_weight = one(eltype(x)),
+) where {T,VT,E<:KAExtension{T,VT,Nothing}}
+    _ska(m) === nothing || return _hprod_buffered!(m, x, y, v, Hv, T(obj_weight))
+    return Base.invoke(
+        ExaModels.hprod!,
+        Tuple{ExaModels.AbstractExaModel,AbstractVector,AbstractVector,AbstractVector,AbstractVector},
+        m, x, y, v, Hv; obj_weight,
+    )
+end
 function ExaModels.jtprod_nln!(
     m::ExaModels.AbstractExaModel{T,VT,E},
     x::AbstractVector,
@@ -498,9 +528,7 @@ function ExaModels.hprod!(
     Hv::AbstractVector;
     obj_weight = one(eltype(x)),
 ) where {T,VT,N<:NamedTuple,E<:KAExtension{T,VT,N}}
-    _ska(m) === nothing || error(
-        "jprod/jtprod/hprod with buffered subexpressions are not yet supported on device backends",
-    )
+    _ska(m) === nothing || return _hprod_buffered!(m, x, y, v, Hv, T(obj_weight))
 
     if isnothing(m.ext.prodhelper)
         error("Prodhelper is not defined. Use ExaModels(c; prod=true) to use hprod!")
@@ -537,9 +565,7 @@ function ExaModels.hprod!(
     Hv::AbstractVector;
     obj_weight = one(eltype(x)),
 ) where {T,VT,N<:NamedTuple,E<:KAExtension{T,VT,N}}
-    _ska(m) === nothing || error(
-        "jprod/jtprod/hprod with buffered subexpressions are not yet supported on device backends",
-    )
+    _ska(m) === nothing || return _hprod_buffered!(m, x, nothing, v, Hv, T(obj_weight))
 
     if isnothing(m.ext.prodhelper)
         error("Prodhelper is not defined. Use ExaModels(c; prod=true) to use hprod!")

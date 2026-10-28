@@ -276,6 +276,8 @@ struct SubexprKA{T,VT<:AbstractVector{T},VI}
     amul::Vector{SegProdC{VI,VT}}
     hmul::Vector{SegProdC{VI,VT}}
     hess_copy::SegCopy{VI}
+    hess_vals::VT                          # composed Hessian values (hprod scratch)
+    hprod::SegProd{VI}                     # Hv += hess_vals·v over the symmetric COO
 end
 
 function ExaModels.build_subexpr_ka(
@@ -414,6 +416,21 @@ function ExaModels.build_subexpr_ka(
         for r in shess.lvl_hmul
     ]
 
+    # Symmetric COO product Hv = H·v over the composed Hessian: one term per
+    # stored entry plus the mirrored term for off-diagonal entries.  Destination
+    # segments make each workitem the only writer of its Hv entry.
+    hp_dst = Int[]
+    hp_a = Int[]
+    hp_b = Int[]
+    for k in eachindex(shess.rows, shess.cols)
+        row = shess.rows[k]
+        col = shess.cols[k]
+        push!(hp_dst, row); push!(hp_a, k); push!(hp_b, col)
+        if row != col
+            push!(hp_dst, col); push!(hp_a, k); push!(hp_b, row)
+        end
+    end
+
     VI = typeof(similar(x0, Int, 0))
     return SubexprKA(
         Int(nvar),
@@ -446,6 +463,8 @@ function ExaModels.build_subexpr_ka(
         SegProdC{VI,typeof(similar(x0, 0))}[seg_amul...],
         SegProdC{VI,typeof(similar(x0, 0))}[seg_hmul...],
         _seg_copy(x0, shess.hess_copy_dst, shess.hess_copy_src),
+        similar(x0, length(shess.rows)),
+        _seg_prod(x0, hp_dst, hp_a, hp_b),
     )
 end
 
@@ -573,6 +592,18 @@ _stageh_hmul!(backend, ska, hess) =
     for seg in ska.hmul
         _run!(backend, seg, hess, ska.C, ska.stage_ext)
     end
+
+# Hessian-vector product: compose the Hessian values on the device, then run
+# the symmetric COO product against them.
+function _hprod_buffered!(m, x, yv, v, Hv, obj_weight)
+    backend = m.ext.backend
+    ska = m.ska
+    _hess_buffered!(m, x, yv, ska.hess_vals, obj_weight)
+    fill!(Hv, zero(eltype(Hv)))
+    _run!(backend, ska.hprod, Hv, ska.hess_vals, v)
+    KernelAbstractions.synchronize(backend)
+    return Hv
+end
 
 function _hess_buffered!(m, x, yv, hess, obj_weight)
     backend = m.ext.backend
