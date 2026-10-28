@@ -61,7 +61,7 @@ Number of inequality constraint evaluations          = 0
 Number of equality constraint Jacobian evaluations   = 7
 Number of inequality constraint Jacobian evaluations = 0
 Number of Lagrangian Hessian evaluations             = 6
-Total seconds in IPOPT                               = 2.363
+Total seconds in IPOPT                               = 2.330
 
 EXIT: Optimal Solution Found.
 </code></pre><p>Behind the scenes, <code>ExaModels.Optimizer</code> converts the JuMP model into an equivalent <code>ExaModels.ExaModel</code> before passing it to NLPModelsIpopt.</p><p>For large structured nonlinear models, using <code>ExaModels.Optimizer</code> can be significantly faster than using <code>Ipopt.Optimizer</code> directly because <code>ExaModels.Optimizer</code> uses ExaModel&#39;s automatic differentiation routines instead using JuMP&#39;s default automatic differentiation library.</p><h2 id="Accessing-the-ExaModel"><a class="docs-heading-anchor" href="#Accessing-the-ExaModel">Accessing the ExaModel</a><a id="Accessing-the-ExaModel-1"></a><a class="docs-heading-anchor-permalink" href="#Accessing-the-ExaModel" title="Permalink"></a></h2><p>You can also construct the ExaModel directly:</p><pre><code class="language-julia hljs">exa_model = ExaModels.ExaModel(model)</code></pre><pre><code class="nohighlight hljs">An ExaModel{Float64, Vector{Float64}, ...}
@@ -128,7 +128,7 @@ Number of inequality constraint evaluations          = 0
 Number of equality constraint Jacobian evaluations   = 7
 Number of inequality constraint Jacobian evaluations = 0
 Number of Lagrangian Hessian evaluations             = 6
-Total seconds in IPOPT                               = 15.175
+Total seconds in IPOPT                               = 17.337
 
 EXIT: Optimal Solution Found.
 </code></pre><h2 id="GPUs"><a class="docs-heading-anchor" href="#GPUs">GPUs</a><a id="GPUs-1"></a><a class="docs-heading-anchor-permalink" href="#GPUs" title="Permalink"></a></h2><p>To use MadNLP&#39;s GPU support, do:</p><pre><code class="language-julia hljs">import CUDA
@@ -159,20 +159,20 @@ iter    objective    inf_pr   inf_du inf_compl lg(mu) lg(rg) alpha_pr ir ls
    0  2.0570000e+03 2.48e+01 1.00e+02 1.98e-08  -1.0     -   0.00e+00  0  0 
    1  2.0569998e+03 2.48e+01 1.50e-03 1.00e-06  -1.0     -   1.00e-07  1  2h
    2  1.1078128e+03 1.50e+01 1.13e-03 1.00e-06  -1.0     -   1.00e+00  7  1h
-   3  1.1173896e+02 2.13e+00 2.67e-03 1.00e-06  -1.0     -   1.00e+00  9  1h
+   3  1.1173896e+02 2.13e+00 2.67e-03 1.00e-06  -1.0     -   1.00e+00  8  1h
    4  6.4942270e+00 1.16e-01 2.31e-04 1.00e-06  -1.0     -   1.00e+00  5  1h
-   5  6.2325596e+00 1.50e-03 3.93e-05 1.00e-06  -2.5     -   1.00e+00  3  1h
-   6  6.2324586e+00 1.03e-06 4.73e-06 1.00e-06  -5.7     -   1.00e+00  2  1h
-   7  6.2324586e+00 5.46e-14 6.15e-11 5.21e-09  -8.6     -   1.00e+00  1  1h
+   5  6.2325590e+00 1.50e-03 3.92e-05 1.00e-06  -2.5     -   1.00e+00  2  1h
+   6  6.2324586e+00 1.03e-06 4.68e-06 1.00e-06  -5.7     -   1.00e+00  2  1h
+   7  6.2324586e+00 5.38e-14 8.53e-11 5.21e-09  -8.6     -   1.00e+00  1  1h
 
 Number of Iterations....: 7
 
                                    (scaled)                 (unscaled)
-Objective...............:   7.8692659499581075e-01    6.2324586323668223e+00
-Dual infeasibility......:   6.1549591876523422e-11    4.8747276766206562e-10
-Constraint violation....:   5.4623805399780578e-14    5.4623805399780578e-14
-Complementarity.........:   6.5841546538672229e-10    5.2146504858628416e-09
-Overall NLP error.......:   5.2146504858628416e-09    5.2146504858628416e-09
+Objective...............:   7.8692659499581019e-01    6.2324586323668179e+00
+Dual infeasibility......:   8.5286836742763140e-11    6.7547174700268415e-10
+Constraint violation....:   5.3846626475113790e-14    5.3846626475113790e-14
+Complementarity.........:   6.5841546538663471e-10    5.2146504858621476e-09
+Overall NLP error.......:   5.2146504858621476e-09    5.2146504858621476e-09
 
 Number of objective function evaluations              = 9
 Number of objective gradient evaluations              = 8
@@ -180,13 +180,13 @@ Number of constraint evaluations                      = 9
 Number of constraint Jacobian evaluations             = 8
 Number of Lagrangian Hessian evaluations              = 7
 Number of KKT factorizations                          = 7
-Number of KKT backsolves                              = 28
+Number of KKT backsolves                              = 26
 
-Total wall secs in initialization                     = 63.421 s
+Total wall secs in initialization                     = 62.057 s
 Total wall secs in linear solver                      =  unavailable
-Total wall secs in NLP function evaluations           =  4.289 s
+Total wall secs in NLP function evaluations           =  4.306 s
 Total wall secs in solver (w/o init./fun./lin. alg.)  =  unavailable
-Total wall secs                                       = 163.247 s
+Total wall secs                                       = 162.638 s
 
 [32mEXIT: Optimal Solution Found (tol = 1.0e-08).[0m
-</code></pre><hr/><p><em>This page was generated using <a href="https://github.com/fredrikekre/Literate.jl">Literate.jl</a>.</em></p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../oracle/">« Oracle Constraints</a><a class="docs-footer-nextpage" href="../core/">API Manual »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.19.0 on <span class="colophon-date" title="Wednesday 28 October 2026 10:38">Wednesday 28 October 2026</span>. Using Julia version 1.13.3.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
+</code></pre><hr/><p><em>This page was generated using <a href="https://github.com/fredrikekre/Literate.jl">Literate.jl</a>.</em></p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../oracle/">« Oracle Constraints</a><a class="docs-footer-nextpage" href="../core/">API Manual »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.19.0 on <span class="colophon-date" title="Wednesday 28 October 2026 10:49">Wednesday 28 October 2026</span>. Using Julia version 1.13.3.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
