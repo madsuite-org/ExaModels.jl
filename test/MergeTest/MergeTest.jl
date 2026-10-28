@@ -293,14 +293,18 @@ function _test_slot_sharing()
     @test m.meta.ncon == 24
     _check_fd_derivatives(m)
 
-    # in concrete storage the family decision is static (the core's type must
-    # not depend on leaf values), so the same pattern mismatch is an error
+    # concrete storage keeps one slot per leaf position (the family decision
+    # must stay a function of types), so the same two blocks form ONE family
+    # there and each row carries two Jacobian entries
     cc = ExaCore(concrete = Val(true))
     cc, xx = add_var(cc, 12; start = 0.3)
     cc, _ = add_con(cc, xx[i + 1] * xx[i + 1] for i in 1:8)
-    @test_throws ArgumentError add_con(cc, xx[i + 1] * xx[i + 2] for i in 1:8)
-    cc, _ = add_con(cc, xx[i + 2] * xx[i + 2] for i in 1:8)   # same pattern: joins
-    @test length(ExaModel(cc).cons) == 1
+    cc, _ = add_con(cc, xx[i + 1] * xx[i + 2] for i in 1:8)
+    cc, _ = add_obj(cc, xx[i]^2 for i in 1:12)
+    mc = ExaModel(cc)
+    @test length(mc.cons) == 1 && length(mc.cons[1].itr) == 16
+    @test mc.meta.nnzj == 16 * 2
+    _check_fd_derivatives(mc)
     return nothing
 end
 

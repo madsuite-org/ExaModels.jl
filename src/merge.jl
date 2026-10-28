@@ -9,10 +9,11 @@
 # the output vectors the way θ reads would).  A later `add_con` / `add_obj`
 # whose tree type matches an existing family appends one segment; the core's
 # type does not change.  All decisions are static: there is no runtime merge
-# heuristic.  The block's Integer-slot sharing pattern must match the family's
-# as well: dynamic storage starts a second family on a mismatch, concrete
-# storage (whose block-list type must stay a function of types) raises an
-# error.  Stored plain instead: trees containing
+# heuristic.  In dynamic storage equal-valued Integer leaves of a block share
+# one slot and the sharing pattern is part of the family key (a mismatch
+# starts another family); concrete storage keeps one slot per leaf position so
+# that the family decision stays a function of types (`_slot_pattern`).
+# Stored plain instead: trees containing
 # node kinds outside the hoisting walk (`SumNode`, `ProdNode`, recipe
 # placeholders, registered-function internals), augmentation (`add_con!`)
 # blocks, recipe cores (`nargs > 0`), and pair-headed blocks on device
@@ -20,15 +21,14 @@
 #
 # The slot layout is a function of the tree type (one slot per scalar leaf
 # position), so the merged block's type and all compiled code are identical at
-# any replication count.  Which slots a tree's Integer leaves READ is a
-# function of the first block's leaf values: leaves holding the same value in
-# the arriving block read the same slot (`_iv_classes`), and that sharing
-# pattern is part of the family key alongside the tree type.  It is what lets
-# two sites that reference the same variable (`x[i+1]` twice) compare `===`
-# in the sparsity probe and share one Jacobian slot, exactly as the plain
-# block did; a block with the same tree type but a different pattern starts
-# its own family.  The pattern is carried as data on the iterator, never in a
-# type parameter, so no type depends on leaf values.  The hoisting walk is
+# any replication count.  Which slots a tree's Integer leaves READ is the
+# family's slot pattern: in dynamic storage leaves holding the same value in
+# the first block read the same slot (`_iv_classes`), which lets two sites
+# that reference the same variable (`x[i+1]` twice) compare `===` in the
+# sparsity probe and share one Jacobian slot, exactly as the plain block did,
+# and the pattern is part of the family key; in concrete storage every leaf
+# position reads its own slot (`_slot_pattern`).  The pattern is carried as
+# data on the iterator, never in a type parameter.  The hoisting walk is
 # three single-purpose dispatch recursions (tree, Integer slots, Float
 # slots); the walk section below says why the split is load-bearing under
 # `juliac --trim`.  A tree relying on ===-shared spliced subtrees (deep
@@ -348,10 +348,20 @@ end
     return j
 end
 
-@inline function _shoist(::Type{T}, b) where {T}
-    ivs = _siv(b)
-    cls = _iv_classes(ivs)
-    return first(_stree(b, 0, 0, cls)), ivs, _sfv(T, b), cls
+# The slot pattern a block is hoisted with depends on the core's block storage.
+# Dynamic (`Vector{Any}`) storage shares slots between equal-valued leaves,
+# and a block whose pattern differs from its family's starts a new family (the
+# block list's type is erased, so that costs nothing). Concrete (tuple)
+# storage keeps one slot per leaf position: there the family decision must be
+# a function of types alone, or the core's type would depend on leaf values
+# and model builders would no longer infer (which `juliac --trim=safe`
+# requires), and a block with a different pattern can neither share the
+# family's merged tree nor start a second family without changing that type.
+@inline _slot_pattern(::Vector{Any}, ivs::NTuple{K, Int}) where {K} = _iv_classes(ivs)
+@inline _slot_pattern(::Tuple, ivs::NTuple{K, Int}) where {K} = ntuple(identity, Val(K))
+
+@inline function _shoist(::Type{T}, b, cls) where {T}
+    return first(_stree(b, 0, 0, cls)), _siv(b), _sfv(T, b)
 end
 
 # ── block kind ───────────────────────────────────────────────────────────────
@@ -381,11 +391,8 @@ end
     typeof(_mrep(getfield(a, :itr))) == F && _mrow_dtype(eltype(getfield(a, :itr))) == E
 @inline _same_family(a::Objective{F2, I}, f::F, ::Type{E}) where {F2, F, E, I <: _MergedItr} =
     typeof(_mrep(getfield(a, :itr))) == F && _mrow_dtype(eltype(getfield(a, :itr))) == E
-# same Integer-slot sharing pattern: a value-level test. Only the dynamic
-# (`Vector{Any}`) storage consults it when choosing a family, since there the
-# block list's type is erased anyway; in concrete storage the family decision
-# must stay a function of types, so a pattern mismatch is an error there
-# (`_merged_append`) rather than a second family.
+# same Integer-slot sharing pattern: a value-level test, consulted only by the
+# dynamic (`Vector{Any}`) family search (see `_slot_pattern`)
 @inline _same_cls(a, cls) = getfield(getfield(a, :itr), :cls) == cls
 
 # ── block creation and appends ───────────────────────────────────────────────
@@ -402,9 +409,9 @@ end
 # the family's footprint is fixed by the type from the start and later
 # arrivals can never mismatch.  Segment bases come from the arriving block's
 # own counters (f.o0/f.o1/f.o2 were taken from the core at this add).
-@inline function _merged_first(::Type{T}, kind, f, pars, dims, tag, backend) where {T}
+@inline function _merged_first(::Type{T}, kind, f, pars, dims, tag, backend, cls) where {T}
     rep = f
-    tree, ivs, fvt, cls = _shoist(T, _family_tree(rep))
+    tree, ivs, fvt = _shoist(T, _family_tree(rep), cls)
     mf = _simdfunction(T, tree, 0, 0, 0)
     itr = _merged_first_itr(
         T, getfield(f, :f), backend, rep, mf, f, pars, dims,
@@ -454,16 +461,17 @@ end
 # A later arrival: extract in the representative's layout, append one
 # segment.  nnz bases again come from the arriving block's own counters.
 # one literal: a `*` over many string pieces is a vararg call that `juliac --trim`
-# cannot resolve, and this throw sits on the model-building path
-const _CLS_MISMATCH_MSG = "a block with the same expression structure as an existing family but a different pattern of repeated index values (such as `x[i + 1] * x[i + 1]` after `x[i + 1] * x[i + 2]`) cannot join that family, and in concrete mode (`concrete = Val(true)`) the family decision must be static. Build the core with `concrete = Val(false)`, where such a block starts its own family, or give the two blocks distinct structures."
+# cannot resolve, and this error sits on the model-building path
+const _CLS_MISMATCH_MSG = "internal error: a block reached a family whose Integer-slot pattern differs from its own"
 
-@inline function _merged_append(::Type{T}, prev, f, pars, dims, tag) where {T}
+@inline function _merged_append(::Type{T}, prev, f, pars, dims, tag, cls) where {T}
     # same family means same tree type, so the arriving tree's own walk uses
-    # the representative's slot layout by construction; the slot-sharing
-    # pattern must agree too, or the family's merged tree would read one slot
-    # for two leaves that differ in this block
-    _, ivs, fvt, cls = _shoist(T, _family_tree(f))
-    cls == getfield(getfield(prev, :itr), :cls) || throw(ArgumentError(_CLS_MISMATCH_MSG))
+    # the representative's slot layout by construction; the slot pattern
+    # agrees by construction too (identity in concrete storage, and the dynamic
+    # family search compares it), so the family's merged tree never reads one
+    # slot for two leaves that differ in this block
+    cls == getfield(getfield(prev, :itr), :cls) || error(_CLS_MISMATCH_MSG)
+    _, ivs, fvt = _shoist(T, _family_tree(f), cls)
     return _merged_append_itr(
         getfield(prev, :itr), prev, f, pars, dims, tag,
         ivs, fvt
@@ -514,10 +522,10 @@ end
     _mergeable(typeof(f.f)) || return nothing
     _merge_allowed(getfield(c, :nargs), getfield(f, :f), c.backend) || return nothing
     _merge_itr_ok(pars) || return nothing
-    cls = _iv_classes(_siv(_family_tree(f)))
+    cls = _slot_pattern(c.cons, _siv(_family_tree(f)))
     return _merge_result(
         _smerge(T, Constraint, c.cons, f, pars, dims, tag, eltype(pars), cls),
-        T, Constraint, c, c.cons, f, pars, dims, tag
+        T, Constraint, c, c.cons, f, pars, dims, tag, cls
     )
 end
 
@@ -528,10 +536,10 @@ end
     _merge_allowed(getfield(c, :nargs), getfield(f, :f), c.backend) || return nothing
     _merge_itr_ok(pars) || return nothing
     dims = (length(pars),)
-    cls = _iv_classes(_siv(_family_tree(f)))
+    cls = _slot_pattern(c.obj, _siv(_family_tree(f)))
     return _merge_result(
         _smerge(T, Objective, c.obj, f, pars, dims, nothing, eltype(pars), cls),
-        T, Objective, c, c.obj, f, pars, dims, nothing
+        T, Objective, c, c.obj, f, pars, dims, nothing, cls
     )
 end
 
@@ -544,9 +552,9 @@ end
 @inline _merge_allowed(nargs, head, backend) = false
 
 # an existing family absorbed the block, or (on `nothing`) it starts one
-@inline _merge_result(r::Tuple, ::Type, kind, c, blocks, f, pars, dims, tag) = r
-@inline function _merge_result(::Nothing, ::Type{T}, kind, c, blocks, f, pars, dims, tag) where {T}
-    b, mf = _merged_first(T, kind, f, pars, dims, tag, c.backend)
+@inline _merge_result(r::Tuple, ::Type, kind, c, blocks, f, pars, dims, tag, cls) = r
+@inline function _merge_result(::Nothing, ::Type{T}, kind, c, blocks, f, pars, dims, tag, cls) where {T}
+    b, mf = _merged_first(T, kind, f, pars, dims, tag, c.backend, cls)
     return _prep(blocks, b), mf.o1step, mf.o2step
 end
 
@@ -562,7 +570,7 @@ end
     rest = Base.tail(cons)
     if _same_family(b, f, E) && _blocktag(b) === tag &&
             _appendable(getfield(b, :itr), pars)
-        nb = _merged_append(T, b, f, pars, dims, tag)
+        nb = _merged_append(T, b, f, pars, dims, tag, cls)
         mf = getfield(nb, :f)
         return (nb, rest...), mf.o1step, mf.o2step
     end
@@ -575,7 +583,7 @@ function _smerge(::Type{T}, kind, cons::Vector{Any}, f, pars, dims, tag, ::Type{
     for (i, b) in enumerate(cons)
         if _same_family(b, f, E) && _same_cls(b, cls) && _blocktag(b) === tag &&
                 _appendable(getfield(b, :itr), pars)
-            nb = _merged_append(T, b, f, pars, dims, tag)
+            nb = _merged_append(T, b, f, pars, dims, tag, cls)
             out = copy(cons)
             out[i] = nb
             mf = getfield(nb, :f)
