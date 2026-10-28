@@ -421,3 +421,31 @@ jobs:
           # The org-wide token cannot imply a repository; the slug says
           # which repo this upload is for.
           slug: ${{ github.repository }}
+
+  # ExaModelsIO writes models to version-independent files and reads them back.
+  # Its suite round-trips a set of models and compares every NLPModels quantity.
+  examodelsio:
+    # Julia 1 only: the test environment finds this repository's ExaModels through
+    # [sources], which Julia 1.10 ignores.
+    name: examodelsio
+    runs-on: ['self-hosted', 'Linux', 'shin-compute']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1'
+      - name: Run ExaModelsIO tests
+        run: |
+          julia --startup-file=no --color=yes --code-coverage=user --project=ExaModelsIO/test -e '
+            using Pkg
+            Pkg.instantiate()
+            include("ExaModelsIO/test/runtests.jl")'
+      - uses: julia-actions/julia-processcoverage@v1
+        with:
+          directories: ExaModelsIO/src
+      - uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          flags: examodelsio
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: ${{ github.repository }}
