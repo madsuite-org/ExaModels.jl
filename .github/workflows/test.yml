@@ -127,7 +127,10 @@ jobs:
         exclude:
           - julia-version: 'lts'
             backend: 'oneapi'
-    runs-on: ['self-hosted', 'gpu', '${{ matrix.backend }}', 'shin-compute']
+    # cuda/amdgpu run on the shin-compute nodes; the oneapi leg accepts any
+    # self-hosted oneapi runner (the external one included), so it is not
+    # pinned to shin-compute
+    runs-on: ${{ fromJSON(matrix.backend == 'oneapi' && '["self-hosted", "gpu", "oneapi"]' || format('["self-hosted", "gpu", "{0}", "shin-compute"]', matrix.backend)) }}
     continue-on-error: ${{ matrix.backend == 'oneapi' }}
     env:
       # oneAPI specific variables
@@ -302,7 +305,7 @@ jobs:
   bench-oneapi:
     if: github.event_name == 'pull_request'
     needs: [github, cpu, gpu, metal]
-    runs-on: ['self-hosted', 'gpu', 'oneapi', 'shin-compute']
+    runs-on: ['self-hosted', 'gpu', 'oneapi']
     continue-on-error: true
     env:
       OverrideDefaultFP64Settings: '1'
