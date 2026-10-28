@@ -400,6 +400,7 @@ function runtests(; backends = Any[CPU()])
         @testset "Buffered subexpressions (device: $backend)" begin
             _device_tests(backend)
             _device_merged_plus_buffered(backend)
+            _device_augmented_con_buffered(backend)
         end
     end
 end
@@ -443,6 +444,46 @@ function _device_merged_plus_buffered(backend)
     for (i, j, v) in zip(hr, hc, Array(hv))
         H1[i, j] += v
     end
+    return @test H1 ≈ H0 rtol = (eltype(m1.meta.x0) == Float32 ? 1.0e-4 : 1.0e-13)
+end
+
+# A constraint row added with `add_con!` into a pre-declared block is a
+# ConstraintAugmentation rather than a Constraint. The Hessian elimination seeds
+# each stage slot with ∂c/∂s weighted by y and replays the stage against that
+# seed, which is the only place the (∂c/∂s)·∇²s term of the row comes from; a
+# λ-seed pass restricted to plain Constraint blocks leaves it out. The μ seeds
+# travel by a separate path and keep the off-diagonals right on their own, so
+# the assertion has to be the full dense Hessian against the inlined reference,
+# not a norm over the stored nonzeros.
+function _device_augmented_con_buffered(backend)
+    function build(bk; buffered = true)
+        c = ExaCore(concrete = Val(true), backend = bk)
+        c, x = add_var(c, 8)
+        c, con = add_con(c, 6; lcon = 0.0, ucon = 0.0)
+        c, s = add_expr(c, (x[i]^3 + sin(x[i + 1]) for i in 1:7); buffered)
+        c, _ = add_obj(c, (s[i] * x[i] for i in 1:7))
+        c, _ = add_con!(c, con, (i => s[i] + s[i + 1] * x[i] for i in 1:6))
+        return ExaModel(c)
+    end
+    m0 = build(nothing; buffered = false)
+    m1 = build(backend; buffered = true)
+    @test m1.meta.ncon == 6 == m0.meta.ncon
+    xh = [0.4 + 0.1i for i in 1:8]
+    xd = copyto!(similar(m1.meta.x0, 8), xh)
+    yh = [cos(2i) + 1.5 for i in 1:6]
+    yd = copyto!(similar(m1.meta.x0, 6), yh)
+    H0 = _dense_hess(m0, xh, yh; obj_weight = 0.7)
+    hr = zeros(Int, m1.meta.nnzh)
+    hc = zeros(Int, m1.meta.nnzh)
+    NLPModels.hess_structure!(m1, hr, hc)
+    hv = fill!(similar(m1.meta.x0, m1.meta.nnzh), 0)
+    NLPModels.hess_coord!(m1, xd, yd, hv; obj_weight = 0.7)
+    H1 = zeros(8, 8)
+    for (i, j, v) in zip(hr, hc, Array(hv))
+        H1[i, j] += v
+        i != j && (H1[j, i] += v)
+    end
+    # Float32 backends (Metal) need a looser comparison than Float64 ones
     return @test H1 ≈ H0 rtol = (eltype(m1.meta.x0) == Float32 ? 1.0e-4 : 1.0e-13)
 end
 
