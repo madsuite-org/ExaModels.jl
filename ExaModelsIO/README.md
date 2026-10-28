@@ -65,3 +65,5 @@ the same fields, so reading does not need the package that defined it.
 - Block tags are not stored (a warning is printed).
 - Models with oracles (`ExaModelWithOracle`) and two-stage models are not
   supported.
+- Pair-headed constraints (`add_con(c, i => expr for ...)`) are not
+  supported; writing such a model throws an `ArgumentError`.

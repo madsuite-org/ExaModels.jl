@@ -71,8 +71,8 @@ function _ref_name(refs, block)
     end
     return nothing
 end
-# Merged blocks (ExaModels 0.14 family merging) are written as their source
-# blocks, one per segment.
+# Merged blocks (same-structure blocks that ExaModels merges into one family)
+# are written as their source blocks, one per segment.
 _blocks(t) = reduce(vcat, [ExaModels.expand_family(b) for b in _in_order(t)]; init = Any[])
 
 function describe(m::ExaModel{T}) where {T}

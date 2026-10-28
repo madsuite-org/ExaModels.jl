@@ -27,6 +27,13 @@ ExaModels.@register_univariate(myf, x -> 2x + 1, x -> 2.0)
         @test m2.g isa ExaModels.Constraint
     end
 
+    @testset "pair-headed constraints are refused" begin
+        c = ExaCore()
+        x = @add_var(c, x, 4)
+        @add_con(c, i => sin(x[i]) for i in 1:4)
+        @test_throws ArgumentError ExaModelsIO.write_model(tempname() * ".h5", ExaModel(c))
+    end
+
     @testset "2-D variables, named-tuple data, augmentation" begin
         c = ExaCore()
         x = @add_var(c, x, 10)

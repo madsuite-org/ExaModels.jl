@@ -124,10 +124,12 @@ import ExaModels: instantiate, ArgSource
         end
         jm_r, jm_c = NLPModels.jac_structure(m)
         jr_r, jr_c = NLPModels.jac_structure(ref)
+        @test (jm_r, jm_c) == (jr_r, jr_c)
         @test _dense(jm_r, jm_c, NLPModels.jac_coord(m, pt), m.meta.ncon, m.meta.nvar) ≈
             _dense(jr_r, jr_c, NLPModels.jac_coord(ref, pt), ref.meta.ncon, ref.meta.nvar)
         hm_r, hm_c = NLPModels.hess_structure(m)
         hr_r, hr_c = NLPModels.hess_structure(ref)
+        @test (hm_r, hm_c) == (hr_r, hr_c)
         @test _dense(hm_r, hm_c, NLPModels.hess_coord(m, pt, mult), m.meta.nvar, m.meta.nvar) ≈
             _dense(hr_r, hr_c, NLPModels.hess_coord(ref, pt, mult), ref.meta.nvar, ref.meta.nvar)
 

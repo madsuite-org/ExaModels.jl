@@ -268,6 +268,7 @@ function _test_core_persistence()
         g = zeros(m1.meta.ncon)
         NLPModels.cons!(m1, fill(0.5, 10), g)
         @test g ≈ fill(sin(0.5), 5)
+        _check_fd_derivatives(m1)   # m1's nonzero bases survive the append
         m2 = ExaModel(c2)
         @test m2.meta.ncon == 10 && length(m2.cons[1].itr) == 10
         g2 = zeros(10)
