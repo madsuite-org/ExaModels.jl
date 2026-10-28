@@ -7,6 +7,11 @@ on:
     tags: '*'
   pull_request:
 
+# Serialize runs on the same ref so concurrent gh-pages deploys don't race
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on:
