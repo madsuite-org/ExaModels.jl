@@ -2477,10 +2477,7 @@ end
 
 @inline function _obj((obj, objs...), x, θ)
     s = _obj(objs, x, θ)
-    for i in obj.itr
-        s += obj.f(i, x, θ)
-    end
-    return s
+    return s + _obj_block(obj, x, θ)
 end
 
 @inline _obj(obj::Tuple{}, x, θ) = zero(eltype(x))

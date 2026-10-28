@@ -916,7 +916,7 @@ function sjacobian!(y1, y2, f::Constraint{F, I}, x, θ, adj) where {F, I <: Segm
     return
 end
 
-function shessian!(y1, y2, f::Constraint{F, I}, x, θ, adj1, adj2) where {F, I <: SegmentedItr}
+function shessian!(y1, y2, f::Union{Constraint{F, I}, Objective{F, I}}, x, θ, adj1, adj2) where {F, I <: SegmentedItr}
     s = getfield(f, :itr)
     for j in eachindex(s.segs)
         seg = @inbounds s.segs[j]
@@ -938,6 +938,43 @@ function shessian!(y1, y2, f::Constraint{F, I}, x, θ, adj1s::V, adj2) where {F,
         end
     end
     return
+end
+
+# merged objectives: the same per-segment loops for the value and the dense
+# and sparse gradients (the generic drivers index the lazy iterator per row,
+# which finds the segment and assembles the row element every time; the
+# CI benchmark read the CPU objective 3x to 20x slower that way)
+function _obj_block(obj::Objective{F, I}, x, θ) where {F, I <: SegmentedItr}
+    s = getfield(obj, :itr)
+    acc = zero(eltype(x))
+    for j in eachindex(s.segs)
+        seg = @inbounds s.segs[j]
+        @simd for r in 1:length(seg.itr)
+            acc += obj.f(_segrow(s, seg, r), x, θ)
+        end
+    end
+    return acc
+end
+function gradient!(y, f::Objective{F, I}, x, θ, adj) where {F, I <: SegmentedItr}
+    s = getfield(f, :itr)
+    for j in eachindex(s.segs)
+        seg = @inbounds s.segs[j]
+        @simd for r in 1:length(seg.itr)
+            @inbounds gradient!(y, f.f, x, θ, _segrow(s, seg, r), adj)
+        end
+    end
+    return y
+end
+function sgradient!(y, f::Objective{F, I}, x, θ, adj) where {F, I <: SegmentedItr}
+    s = getfield(f, :itr)
+    for j in eachindex(s.segs)
+        seg = @inbounds s.segs[j]
+        @simd for r in 1:length(seg.itr)
+            el = _segrow(s, seg, r)
+            @inbounds sgradient!(y, f.f, el, x, θ, seg.comp1, el.o1, adj)
+        end
+    end
+    return y
 end
 
 function _cons_rows!(g, con::Constraint{F, I}, x, θ) where {F, I <: SegmentedItr}
