@@ -52,6 +52,8 @@ ExaModels.@register_univariate(myf, x -> 2x + 1, x -> 2.0)
         # the form ExaModelsMOI builds: no index, element k adds to row k
         g = @add_con(c, g, 3; ucon = 1.0)
         c, _ = ExaModels.add_con!(c, g, Base.Generator(p -> p[2] * x[p[1]]^2, [(1, 2.0), (4, 3.0), (6, 1.5)]))
+        # constant terms over empty-tuple data, as ExaModels' MOI converter builds them
+        c, _ = ExaModels.add_con!(c, g, Base.Generator(_ -> ExaModels.Null(0.25), [(), (), ()]))
         data = [(q = i, w = (0.5i, 1.0, -i)) for i in 1:4]
         @add_obj(c, x[d.q] * sum(d.w[k] * x[k] for k in 1:3) for d in data)
         roundtrip_check(ExaModel(c))
