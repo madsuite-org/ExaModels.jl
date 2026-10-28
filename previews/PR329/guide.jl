@@ -143,7 +143,9 @@ c2 = ExaCore(concrete = Val(true))
 #     written as a loop of scalar `add_con`/`add_obj` calls costs what the
 #     single-generator form costs to compile. Merging does not change the
 #     sparsity of a block: repeated references to one variable in a row share
-#     one Jacobian entry, as in a plain block. Two things do affect `meta.nnzj`/`meta.nnzh`
+#     one Jacobian entry, as in a plain block (in a `concrete = Val(true)` core
+#     each such reference keeps its own entry, since the family decision must
+#     then be a function of types). Two things do affect `meta.nnzj`/`meta.nnzh`
 #     and the coordinate lists, which are representation details: an inlined
 #     subexpression spliced at several use sites carries one derivative entry
 #     per site (duplicate coordinates are summed on assembly), and
