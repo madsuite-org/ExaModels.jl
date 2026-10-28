@@ -25,8 +25,10 @@ import JSON3
 export write_model, read_model, read_solution
 
 const FORMAT = "ExaModelsIO"
-const FORMAT_VERSION = 1
+# major.minor: a reader accepts files of its major version; a minor version only adds.
+const FORMAT_VERSION = v"1.0"
 
+include("vocabulary.jl")
 include("tree.jl")
 include("data.jl")
 include("write.jl")

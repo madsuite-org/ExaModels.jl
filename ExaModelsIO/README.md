@@ -33,15 +33,17 @@ memory.
 | `/data/<block>/...` | the data each block iterates over, one array per field       |
 | `/solution`         | optional solver output                                       |
 
-An expression is a tree of plain JSON objects. Functions are named by their
-qualified name (`"Base.+"`, `"Base.Math.sin"`), variables and parameters by
-their global index, and generator data by its field path. For example,
+An expression is a tree of plain JSON objects. Functions are named from a fixed
+operator vocabulary (`"+"`, `"sin"`, `"erf"`), variables and parameters by their
+global index, and generator data by its field path. For example,
 `p.a * sin(y[p.i, p.j])` is stored as
 
 ```json
-{"op": ["Base.*", {"data": ["a"]},
-        {"op": ["Base.Math.sin", {"var": {"op": ["Base.+", ...]}}]}]}
+{"op": ["*", {"data": ["a"]},
+        {"op": ["sin", {"var": {"op": ["+", ...]}}]}]}
 ```
+
+The format is defined in [SPEC.md](SPEC.md).
 
 Derivative structures and sparsity patterns are not stored. `read_model`
 rebuilds the model with `add_var`, `add_par`, `add_obj`, `add_con` and
@@ -55,9 +57,11 @@ the same fields, so reading does not need the package that defined it.
 
 ## Limitations
 
-- Functions registered with `@register_univariate` / `@register_bivariate`
-  must be registered again before reading. If their module is not loaded, pass
-  them as `read_model(path; functions = Dict("MyModule.f" => f))`.
+- Functions registered with `@register_univariate` / `@register_bivariate` are
+  stored by name only. Register them again and pass them as
+  `read_model(path; functions = Dict("MyModule.f" => f))`; the file lists the
+  names it needs, and reading fails if one is missing.
+- Functions from SpecialFunctions.jl need that package loaded when reading.
 - Block tags are not stored (a warning is printed).
 - Models with oracles (`ExaModelWithOracle`) and two-stage models are not
   supported.

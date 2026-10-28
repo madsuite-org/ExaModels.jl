@@ -24,7 +24,7 @@ function write_model(path::AbstractString, m::ExaModel; solution = nothing)
     meta = m.meta
     HDF5.h5open(path, "w") do f
         HDF5.attributes(f)["format"] = FORMAT
-        HDF5.attributes(f)["format_version"] = FORMAT_VERSION
+        HDF5.attributes(f)["format_version"] = string(FORMAT_VERSION.major, ".", FORMAT_VERSION.minor)
         HDF5.attributes(f)["examodels_version"] = string(pkgversion(ExaModels))
         f["structure"] = JSON3.write(structure)
         arrays = HDF5.create_group(f, "arrays")
@@ -94,9 +94,9 @@ function describe(m::ExaModel{T}) where {T}
         d = Dict{String,Any}("group" => group)
         if b isa ExaModels.Constraint && length(b.size) > 1 && !(b.f.f isa ExaModels.Null) &&
                 isequal(vec(collect(b.itr)), vec(collect(Iterators.product(b.size...))))
-            d["axes"] = [store("$group/axis_$i", a) for (i, a) in enumerate(b.size)]
+            d["iterator"] = Dict("product" => [store("$group/axis_$i", a) for (i, a) in enumerate(b.size)])
         else
-            d["data"] = store(group, b.itr)
+            d["iterator"] = Dict("collection" => store(group, b.itr))
         end
         return d
     end
@@ -136,7 +136,13 @@ function describe(m::ExaModel{T}) where {T}
         d
     end
 
+    exts = Set{String}()
+    for b in Iterators.flatten((objectives, constraints)), k in ("expr", "index")
+        _collect_extensions!(exts, get(b, k, nothing))
+    end
+
     structure = Dict(
+        "extensions" => sort!(collect(exts)),
         "eltype" => _number_type_name(T),
         "name" => string(m.name),
         "minimize" => m.meta.minimize,
@@ -145,4 +151,20 @@ function describe(m::ExaModel{T}) where {T}
         "objectives" => objectives, "constraints" => constraints,
     )
     return structure, columns
+end
+
+# The "ext:" operator names used anywhere in a tree.
+function _collect_extensions!(exts, d)
+    d isa AbstractDict || return exts
+    for (k, v) in d
+        if k == "op"
+            startswith(v[1], EXT_PREFIX) && push!(exts, v[1][length(EXT_PREFIX)+1:end])
+            foreach(a -> _collect_extensions!(exts, a), v[2:end])
+        elseif v isa AbstractVector
+            foreach(a -> _collect_extensions!(exts, a), v)
+        else
+            _collect_extensions!(exts, v)
+        end
+    end
+    return exts
 end

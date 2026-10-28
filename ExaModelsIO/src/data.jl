@@ -48,7 +48,11 @@ end
 
 # Zip typed columns into rows. A function barrier: `parts` is a concretely typed
 # tuple of vectors here, so the loop compiles to plain loads.
-_rows(wrap, parts::Tuple) = [wrap(map(p -> @inbounds(p[k]), parts)) for k in eachindex(parts[1])]
+function _rows(wrap, parts::Tuple)
+    n = length(parts[1])
+    all(p -> length(p) == n, parts) || error("columns of one data block have different lengths")
+    return [wrap(map(p -> @inbounds(p[k]), parts)) for k in 1:n]
+end
 
 # Inverse of `data_schema`.  `col(path)` returns the stored column.
 function data_value(schema, col)

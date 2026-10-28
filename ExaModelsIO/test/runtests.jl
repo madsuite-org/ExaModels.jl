@@ -2,6 +2,10 @@ using Test
 using ExaModelsIO, ExaModels, NLPModels
 include("roundtrip.jl")
 
+# A function outside the operator vocabulary, registered with ExaModels.
+myf(x) = x^2 + x
+ExaModels.@register_univariate(myf, x -> 2x + 1, x -> 2.0)
+
 @testset "ExaModelsIO" begin
     @testset "rosenbrock with parameters" begin
         c = ExaCore()
@@ -51,6 +55,52 @@ include("roundtrip.jl")
         data = [(q = i, w = (0.5i, 1.0, -i)) for i in 1:4]
         @add_obj(c, x[d.q] * sum(d.w[k] * x[k] for k in 1:3) for d in data)
         roundtrip_check(ExaModel(c))
+    end
+
+    @testset "Float32 literals, non-finite constants" begin
+        c = ExaCore(Float32)
+        x = @add_var(c, x, 4; start = 0.5f0, lvar = -Inf32, uvar = 2.5f0)
+        @add_obj(c, 1.5f0 * x[i]^3 + 0.1f0 * exp(x[i]) for i in 1:4)
+        @add_con(c, g, min(x[i], Inf32) - 0.3f0 * x[i+1] for i in 1:3; lcon = -Inf32)
+        m = ExaModel(c)
+        path = tempname() * ".h5"
+        write_model(path, m)
+        m2 = read_model(path)
+        x0 = m.meta.x0
+        @test eltype(m2.meta.x0) == Float32
+        @test obj(m, x0) == obj(m2, x0) && grad(m, x0) == grad(m2, x0) && cons(m, x0) == cons(m2, x0)
+        @test m2.meta.lvar == m.meta.lvar && m2.meta.lcon == m.meta.lcon
+    end
+
+    @testset "operator vocabulary and user functions" begin
+        c = ExaCore()
+        x = @add_var(c, x, 3; start = 0.7)
+        @add_obj(c, sin(x[i]) + hypot(x[i], 2.0) + myf(x[i]) for i in 1:3)
+        m = ExaModel(c)
+        path = tempname() * ".h5"
+        write_model(path, m)
+        s = ExaModelsIO.HDF5.h5open(f -> read(f["structure"]), path)
+        @test occursin("\"sin\"", s) && occursin("\"hypot\"", s) && !occursin("Base.", s)
+        @test occursin("\"extensions\":[\"Main.myf\"]", s)
+        @test_throws ArgumentError read_model(path)          # user function not supplied
+        m2 = read_model(path; functions = Dict("Main.myf" => myf))
+        x0 = m.meta.x0
+        @test obj(m, x0) ≈ obj(m2, x0) && grad(m, x0) ≈ grad(m2, x0)
+    end
+
+    @testset "format version" begin
+        c = ExaCore(); x = @add_var(c, x, 2); @add_obj(c, x[i]^2 for i in 1:2)
+        path = tempname() * ".h5"
+        write_model(path, ExaModel(c))
+        H = ExaModelsIO.HDF5
+        @test H.h5open(f -> read(H.attributes(f)["format_version"]), path) == "1.0"
+        setversion(v) = H.h5open(path, "r+") do f
+            a = H.attrs(f); delete!(a, "format_version"); a["format_version"] = v
+        end
+        setversion("1.7")
+        @test read_model(path).meta.nvar == 2                  # newer minor version: read
+        setversion("2.0")
+        @test_throws ArgumentError read_model(path)             # other major version: refuse
     end
 
     @testset "Float32, maximize, solution" begin

@@ -1,22 +1,24 @@
-# Expression trees <-> plain dictionaries.
+# Expression trees <-> plain dictionaries (the grammar is in SPEC.md).
 #
 # Every node becomes a Dict with exactly one key naming its kind:
 #
-#   "op"    => [name, args...]       function application; name is the function's
-#                                    qualified name, e.g. "Base.+", "Base.Math.sin"
-#   "sum"   => [args...]             ExaModels.SumNode
-#   "prod"  => [args...]             ExaModels.ProdNode
+#   "op"    => [name, args...]       function application; name from the operator
+#                                    vocabulary (vocabulary.jl), or "ext:<name>"
+#   "sum"   => [args...]             sum of the arguments
+#   "prod"  => [args...]             product of the arguments
 #   "var"   => index                 decision variable, global 1-based index
 #   "par"   => index                 parameter, global 1-based index
 #   "data"  => [path...]             generator element; path entries are field
 #                                    names (strings) or positions (integers)
-#   "const" => [type, value]         literal number; value is a string so that
-#                                    Inf/NaN and exact floats survive JSON
-#   "null"  => [type, value] or null ExaModels.Null, a constant leaf
-#   "static"=> [type, value]         ExaModels.Constant (value in the type domain)
-#   "val"   => [type, value]         Val(value), e.g. the exponent of a literal power x^3
+#   "const" => number                a literal
+#   "null"  => number or null        a constant leaf standing where ExaModels needs a node
+#   "static"=> number                a constant ExaModels keeps in the type domain
+#   "val"   => number                Val(value), the exponent of a literal power x^3
 #   "tuple" => [args...]             a tuple, e.g. the row index (i, j) of a 2-D constraint
 #
+# A number is [type, value]: value is a JSON integer or boolean for integer and
+# Bool types, and for floating-point types a JSON number holding the value
+# converted to Float64 (exact for Float16/Float32/Float64), or "inf", "-inf", "nan".
 # `index` is itself a node, since a variable index usually depends on the data.
 
 const _NUMBER_TYPES = Dict(
@@ -30,22 +32,28 @@ _number_type_name(::Type{T}) where {T} =
     haskey(_NUMBER_TYPES, string(T)) ? string(T) :
     throw(ArgumentError("ExaModelsIO cannot store numbers of type $T"))
 
-_parse_number(t::AbstractString, v::AbstractString) =
-    (T = _NUMBER_TYPES[t]; T === Bool ? parse(Bool, v) : parse(T, v))
+_number_value(v::Union{Bool,Integer}) = v
+_number_value(v::AbstractFloat) =
+    isnan(v) ? "nan" : isinf(v) ? (v > 0 ? "inf" : "-inf") : Float64(v)
 
-_const(v::Number) = Dict("const" => [_number_type_name(typeof(v)), repr(v)])
+number(v::Number) = Any[_number_type_name(typeof(v)), _number_value(v)]
 
-_function_name(f) = join((string.(fullname(parentmodule(f)))..., string(nameof(f))), ".")
+function parse_number(n)
+    T = _NUMBER_TYPES[n[1]]
+    v = n[2]
+    v isa AbstractString || return T(v)
+    v == "inf" ? T(Inf) : v == "-inf" ? T(-Inf) : v == "nan" ? T(NaN) :
+        throw(ArgumentError("invalid number $(n)"))
+end
 
 # ---------------------------------------------------------------- encode
 
-encode(v::Number) = _const(v)
-encode(::ExaModels.Constant{T}) where {T} =
-    Dict("static" => [_number_type_name(typeof(T)), repr(T)])
+encode(v::Number) = Dict("const" => number(v))
+encode(::ExaModels.Constant{T}) where {T} = Dict("static" => number(T))
 # A Null stays a Null: a whole expression may be a constant (`con[1] += -N`), and
 # ExaModels needs a node there, not a number.
 encode(n::ExaModels.Null) =
-    Dict("null" => n.value === nothing ? nothing : _const(n.value)["const"])
+    Dict("null" => n.value === nothing ? nothing : number(n.value))
 encode(n::ExaModels.Var) = Dict("var" => encode(n.i))
 encode(n::ExaModels.ParameterNode) = Dict("par" => encode(n.i))
 encode(::ExaModels.DataSource) = Dict("data" => Any[])
@@ -54,12 +62,12 @@ function encode(n::ExaModels.DataIndexed{I,J}) where {I,J}
     return Dict("data" => push!(copy(path), J isa Symbol ? string(J) : J))
 end
 encode(n::ExaModels.Node1{F}) where {F} =
-    Dict("op" => Any[_function_name(F.instance), encode(n.inner)])
+    Dict("op" => Any[operator_name(F.instance), encode(n.inner)])
 encode(n::ExaModels.Node2{F}) where {F} =
-    Dict("op" => Any[_function_name(F.instance), encode(n.inner1), encode(n.inner2)])
+    Dict("op" => Any[operator_name(F.instance), encode(n.inner1), encode(n.inner2)])
 encode(n::ExaModels.SumNode) = Dict("sum" => Any[encode(a) for a in n.inners])
 encode(n::ExaModels.ProdNode) = Dict("prod" => Any[encode(a) for a in n.inners])
-encode(::Val{V}) where {V} = Dict("val" => [_number_type_name(typeof(V)), repr(V)])
+encode(::Val{V}) where {V} = Dict("val" => number(V))
 encode(t::Tuple) = Dict("tuple" => Any[encode(a) for a in t])
 # ArgLeaf exists from ExaModels 0.13 on; checking for it keeps the writer usable on older versions.
 isdefined(ExaModels, :ArgLeaf) && (encode(n::ExaModels.ArgLeaf) = throw(ArgumentError(
@@ -68,33 +76,13 @@ encode(n) = throw(ArgumentError("ExaModelsIO cannot store expression node $(type
 
 # ---------------------------------------------------------------- decode
 
-# Resolve a qualified function name.  `functions` (name => function) wins, so
-# a caller can supply functions that were registered with ExaModels by the user.
-function resolve_function(name::AbstractString, functions)
-    haskey(functions, name) && return functions[name]
-    parts = split(name, ".")
-    root = Symbol(parts[1])
-    mod = root === :Base ? Base : root === :Core ? Core :
-        get(Dict(Symbol(m.name) => mod for (m, mod) in Base.loaded_modules), root, nothing)
-    mod === nothing && throw(ArgumentError(
-        "function `$name`: module $root is not loaded; load it or pass `functions`"))
-    obj = mod
-    for p in parts[2:end]
-        s = Symbol(p)
-        isdefined(obj, s) || throw(ArgumentError(
-            "function `$name` not found; pass it with `functions = Dict(\"$name\" => f)`"))
-        obj = getfield(obj, s)
-    end
-    return obj
-end
-
 # Rebuild the node for generator element `p`.  Called with `p` set to the
 # symbolic element ExaModels passes while tracing the generator, so the result
 # is built by ExaModels' own operator overloads.
 function decode(d, p, functions)
     k, v = only(d)
     if k == "op"
-        f = resolve_function(v[1], functions)
+        f = operator_function(v[1], functions)
         args = Tuple(decode(a, p, functions) for a in v[2:end])
         # x^3 with a literal exponent is stored as ^(x, Val(3)); rebuild it the same way
         f === (^) && args[2] isa Val && return Base.literal_pow(^, args[1], args[2])
@@ -110,13 +98,13 @@ function decode(d, p, functions)
         end
         return q
     elseif k == "null"
-        return v === nothing ? ExaModels.Null() : ExaModels.Null(_parse_number(v[1], v[2]))
+        return v === nothing ? ExaModels.Null() : ExaModels.Null(parse_number(v))
     elseif k == "const"
-        return _parse_number(v[1], v[2])
+        return parse_number(v)
     elseif k == "static"
-        return ExaModels.Constant(_parse_number(v[1], v[2]))
+        return ExaModels.Constant(parse_number(v))
     elseif k == "val"
-        return Val(_parse_number(v[1], v[2]))
+        return Val(parse_number(v))
     elseif k == "tuple"
         return Tuple(decode(a, p, functions) for a in v)
     elseif k == "sum"
