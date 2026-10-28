@@ -420,9 +420,11 @@ end
     return _mkblock(kind, mf, itr, length(pars), tag), mf
 end
 
-# a plain (non-pair) head on the host gets the lazy segmented iterator
+# a plain (non-pair) head gets the lazy segmented iterator on every backend;
+# a device backend materializes it into a per-segment device layout at
+# finalization (`DeviceSegItr`)
 @inline function _merged_first_itr(
-        ::Type{T}, head, ::Nothing, rep, mf, f, pars, dims,
+        ::Type{T}, head, backend, rep, mf, f, pars, dims,
         ivs, fvt, cls
     ) where {T}
     K = length(ivs)
@@ -432,14 +434,10 @@ end
         rep, cls, segs, Int[length(pars)], length(pars), mf.o1step, mf.o2step
     )
 end
-# pair heads (data-driven row targets) and device backends materialize rows
+# pair heads (data-driven row targets) materialize rows; they merge on the
+# host only (`_merge_allowed`)
 @inline _merged_first_itr(
     ::Type{T}, head::Pair, ::Nothing, rep, mf, f, pars, dims,
-    ivs, fvt, cls
-) where {T} =
-    _merged_rows(T, rep, mf, f, pars, dims, ivs, fvt, cls)
-@inline _merged_first_itr(
-    ::Type{T}, head, backend, rep, mf, f, pars, dims,
     ivs, fvt, cls
 ) where {T} =
     _merged_rows(T, rep, mf, f, pars, dims, ivs, fvt, cls)
@@ -608,8 +606,85 @@ _materialize_block(backend, b::Constraint{F, I}) where {F, I <: _MergedItr} =
 _materialize_block(backend, b::Objective{F, I}) where {F, I <: _MergedItr} =
     Objective(b.f, _materialize_mergeditr(backend, getfield(b, :itr)))
 
-_materialize_mergeditr(backend, s::SegmentedItr) =
-    convert_array([s[i] for i in 1:length(s)], backend)
+"""
+    DeviceSegItr{K, S, T, D}
+
+Device layout of a [`SegmentedItr`](@ref): the hoisted leaves and offsets once
+per segment (`seg_*`), the original iterator elements of all segments
+concatenated (`d`), and the cumulative row counts (`offs`). `getindex`
+assembles the `MergedRow` on the fly, so a row costs its element and nothing
+else on the device; a `MergedRow` per row would carry its own copy of the `K`
+Integer and `S` Float leaves (880 bytes per row against 96 at `K = 94`).
+"""
+struct DeviceSegItr{K, S, T, D, VI <: AbstractVector{Int}, VIV <: AbstractVector{NTuple{K, Int}},
+        VFV <: AbstractVector{NTuple{S, T}}, VD <: AbstractVector{D}} <: AbstractVector{MergedRow{K, S, T, D}}
+    seg_o0::VI
+    seg_o1::VI
+    seg_o2::VI
+    seg_iv::VIV
+    seg_fv::VFV
+    offs::VI                    # cumulative row counts, one per segment
+    d::VD                       # all segments' iterator elements, in order
+    seglen::Int                 # > 0 when all segments have equal length
+    o1step::Int
+    o2step::Int
+    n::Int
+end
+Base.size(s::DeviceSegItr) = (s.n,)
+Base.IndexStyle(::Type{<:DeviceSegItr}) = IndexLinear()
+@inline function _segof(s::DeviceSegItr, i::Int)
+    s.seglen > 0 && return div(i - 1, s.seglen) + 1
+    # first segment whose cumulative count reaches i (binary search; no
+    # allocation, runs inside device kernels)
+    lo, hi = 1, length(s.offs)
+    @inbounds while lo < hi
+        mid = (lo + hi) >> 1
+        s.offs[mid] < i ? (lo = mid + 1) : (hi = mid)
+    end
+    return lo
+end
+@inline function Base.getindex(s::DeviceSegItr{K, S, T, D}, i::Int) where {K, S, T, D}
+    j = _segof(s, i)
+    base = j == 1 ? 0 : @inbounds s.offs[j - 1]
+    r = i - base
+    return @inbounds MergedRow{K, S, T, D}(
+        s.seg_o0[j] + r,
+        s.seg_o1[j] + s.o1step * (r - 1),
+        s.seg_o2[j] + s.o2step * (r - 1),
+        s.seg_iv[j], s.seg_fv[j], s.d[i],
+    )
+end
+# kernels receive the device arrays through Adapt (KernelAbstractions adapts
+# every kernel argument); the Int fields pass through. The parameters are
+# written out: with no Float slots the empty `seg_fv` eltype leaves `T`
+# undetermined for the implicit constructor.
+@inline function _devsegitr(K::Int, S::Int, ::Type{T}, ::Type{D}, o0, o1, o2, iv, fv, offs, d, seglen, o1step, o2step, n) where {T, D}
+    return DeviceSegItr{K, S, T, D, typeof(o0), typeof(iv), typeof(fv), typeof(d)}(
+        o0, o1, o2, iv, fv, offs, d, seglen, o1step, o2step, n,
+    )
+end
+function Adapt.adapt_structure(to, s::DeviceSegItr{K, S, T, D}) where {K, S, T, D}
+    return _devsegitr(
+        K, S, T, D, Adapt.adapt(to, s.seg_o0), Adapt.adapt(to, s.seg_o1), Adapt.adapt(to, s.seg_o2),
+        Adapt.adapt(to, s.seg_iv), Adapt.adapt(to, s.seg_fv), Adapt.adapt(to, s.offs), Adapt.adapt(to, s.d),
+        s.seglen, s.o1step, s.o2step, s.n,
+    )
+end
+
+function _materialize_mergeditr(backend, s::SegmentedItr{K, S, T, D}) where {K, S, T, D}
+    segs = s.segs
+    cv = v -> convert_array(v, backend)
+    d = D[]
+    for seg in segs
+        Base.append!(d, seg.itr)   # ExaModels has its own `append!`
+    end
+    return _devsegitr(
+        K, S, T, D,
+        cv(Int[seg.o0 for seg in segs]), cv(Int[seg.o1 for seg in segs]), cv(Int[seg.o2 for seg in segs]),
+        cv(NTuple{K, Int}[seg.iv for seg in segs]), cv(NTuple{S, T}[seg.fv for seg in segs]),
+        cv(copy(s.offs)), cv(d), s.seglen, s.o1step, s.o2step, length(s),
+    )
+end
 _materialize_mergeditr(backend, m::MergedRows) = convert_array(m.rows, backend)
 
 _finalize_merged(c::ExaCore) = _finalize_merged2(c, c.backend)

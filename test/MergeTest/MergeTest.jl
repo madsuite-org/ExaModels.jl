@@ -153,6 +153,16 @@ end
 
 function _test_backend_matches_host(backend)
     mb = ExaModel(_build(backend))
+    # every merged block is in the per-segment device layout: hoisted leaves
+    # once per segment, one element per row
+    for b in mb.cons
+        b.itr isa ExaModels._MergedItr && @test false   # no host-side merged iterator survives finalization
+        if b.itr isa ExaModels.DeviceSegItr
+            @test length(b.itr.d) == length(b.itr)
+            @test length(b.itr.seg_iv) == length(b.itr.offs)
+        end
+    end
+    @test count(b -> b.itr isa ExaModels.DeviceSegItr, mb.cons) == 4
     # Float32 backends (Metal) carry ~1e-7 roundoff per operation
     tight, loose = eltype(mb.meta.x0) == Float32 ? (1.0e-4, 1.0e-4) : (1.0e-12, 1.0e-10)
     rb = _evalall(mb)

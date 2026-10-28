@@ -26,6 +26,7 @@ For more information, please visit https://github.com/madsuite-org/ExaModels.jl
 """
 module ExaModels
 
+import Adapt
 import Adapt: adapt
 import NLPModels:
     NLPModels,
