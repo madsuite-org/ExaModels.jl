@@ -910,7 +910,7 @@ function sjacobian!(y1, y2, f::Constraint{F, I}, x, θ, adj) where {F, I <: Segm
         seg = @inbounds s.segs[j]
         @simd for r in 1:length(seg.itr)
             el = _segrow(s, seg, r)
-            @inbounds sjacobian!(y1, y2, f.f.f, el, x, θ, seg.comp1, el.o0, el.o1, adj)
+            @inbounds @inline sjacobian!(y1, y2, f.f.f, el, x, θ, seg.comp1, el.o0, el.o1, adj)
         end
     end
     return
@@ -922,7 +922,7 @@ function shessian!(y1, y2, f::Union{Constraint{F, I}, Objective{F, I}}, x, θ, a
         seg = @inbounds s.segs[j]
         @simd for r in 1:length(seg.itr)
             el = _segrow(s, seg, r)
-            @inbounds shessian!(y1, y2, f.f.f, el, x, θ, seg.comp2, el.o2, adj1, adj2)
+            @inbounds @inline shessian!(y1, y2, f.f.f, el, x, θ, seg.comp2, el.o2, adj1, adj2)
         end
     end
     return
@@ -934,7 +934,7 @@ function shessian!(y1, y2, f::Constraint{F, I}, x, θ, adj1s::V, adj2) where {F,
         seg = @inbounds s.segs[j]
         @simd for r in 1:length(seg.itr)
             el = _segrow(s, seg, r)
-            @inbounds shessian!(y1, y2, f.f.f, el, x, θ, seg.comp2, el.o2, adj1s[el.o0], adj2)
+            @inbounds @inline shessian!(y1, y2, f.f.f, el, x, θ, seg.comp2, el.o2, adj1s[el.o0], adj2)
         end
     end
     return
@@ -960,7 +960,7 @@ function gradient!(y, f::Objective{F, I}, x, θ, adj) where {F, I <: SegmentedIt
     for j in eachindex(s.segs)
         seg = @inbounds s.segs[j]
         @simd for r in 1:length(seg.itr)
-            @inbounds gradient!(y, f.f, x, θ, _segrow(s, seg, r), adj)
+            @inbounds @inline gradient!(y, f.f, x, θ, _segrow(s, seg, r), adj)
         end
     end
     return y
@@ -971,7 +971,7 @@ function sgradient!(y, f::Objective{F, I}, x, θ, adj) where {F, I <: SegmentedI
         seg = @inbounds s.segs[j]
         @simd for r in 1:length(seg.itr)
             el = _segrow(s, seg, r)
-            @inbounds sgradient!(y, f.f, el, x, θ, seg.comp1, el.o1, adj)
+            @inbounds @inline sgradient!(y, f.f, el, x, θ, seg.comp1, el.o1, adj)
         end
     end
     return y
