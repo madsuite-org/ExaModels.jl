@@ -600,6 +600,30 @@ function _hprod_buffered!(m, x, yv, v, Hv, obj_weight)
     return Hv
 end
 
+# hprod! for a device model with buffered subexpressions and no prodhelper
+# (defined here, after SubexprKA). The methods are restricted to models whose `ska` type parameter is a `SubexprKA`,
+# so a model without a buffered stage never reaches them and keeps the generic
+# host method in nlp.jl it had before.
+function ExaModels.hprod!(
+    m::ExaModels.ExaModel{T,VT,E,V,P,O,C,S,R,SE,SJ,SH,SK},
+    x::AbstractVector,
+    v::AbstractVector,
+    Hv::AbstractVector;
+    obj_weight = one(eltype(x)),
+) where {T,VT,E<:KAExtension{T,VT,Nothing},V,P,O,C,S,R,SE,SJ,SH,SK<:SubexprKA}
+    return _hprod_buffered!(m, x, nothing, v, Hv, T(obj_weight))
+end
+function ExaModels.hprod!(
+    m::ExaModels.ExaModel{T,VT,E,V,P,O,C,S,R,SE,SJ,SH,SK},
+    x::AbstractVector,
+    y::AbstractVector,
+    v::AbstractVector,
+    Hv::AbstractVector;
+    obj_weight = one(eltype(x)),
+) where {T,VT,E<:KAExtension{T,VT,Nothing},V,P,O,C,S,R,SE,SJ,SH,SK<:SubexprKA}
+    return _hprod_buffered!(m, x, y, v, Hv, T(obj_weight))
+end
+
 function _hess_buffered!(m, x, yv, hess, obj_weight)
     backend = m.ext.backend
     ska = m.ska
