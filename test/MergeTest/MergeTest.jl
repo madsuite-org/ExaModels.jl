@@ -102,7 +102,7 @@ end
 
 function _test_host_derivatives()
     m = ExaModel(_build(nothing))
-    # the fixture's 11 constraint adds collapse to: one range family, one
+    # the fixture's 10 constraint adds collapse to: one range family, one
     # data-tuple family, the named block and the tanh block (one-segment
     # families: no sibling), two augmentations (plain) and one statically
     # non-mergeable plain block (the `sum` reduction); its 9 objective adds
@@ -226,10 +226,9 @@ end
 
 # Backends without Float64 (Metal) upload merged rows through
 # `replace_float_64_by_32`. The generic struct rebuild cannot reconstruct a
-# `MergedRow` (an empty Float-slot tuple leaves its `T` undetermined), so it
-# used to hand the row back unchanged with the Float64 still inside `d`; on
-# Julia 1.13.2 the rebuild segfaulted instead. Host-only check of the
-# dedicated method.
+# `MergedRow` (an empty Float-slot tuple leaves its `T` undetermined), so the
+# row has a dedicated method; host-only check that it rewrites `d` and keeps
+# the row's layout.
 function _test_merged_row_float32_rewrite()
     c = ExaCore()
     c, x = add_var(c, 4)
@@ -255,8 +254,8 @@ end
 # sharing pattern is part of the family key.
 function _test_slot_sharing()
     # LuksanVlcek: x[i+1] appears 5 times, x[i+2] 3 times, x[i] 2 times per
-    # row; main's footprint is 3 Jacobian entries per row and 6 Hessian pairs
-    # per constraint row plus 3 per objective row
+    # row; the plain-block footprint is 3 Jacobian entries per row and 6
+    # Hessian pairs per constraint row plus 3 per objective row
     N = 50
     c = ExaCore()
     c, x = add_var(c, N; start = [mod(i, 2) == 1 ? -1.2 : 1.0 for i in 1:N])
@@ -267,7 +266,7 @@ function _test_slot_sharing()
     @test m.meta.nnzh == 6 * (N - 2) + 3 * (N - 1)
     _check_fd_derivatives(m)
 
-    # the ArgumentTest fixture that lost its exact nnz check: one entry per row
+    # the compiler test's recipe fixture (`h * x[i] + x[i]`): one entry per row
     c = ExaCore()
     c, x = add_var(c, 10)
     c, _ = add_con(c, 0.5 * x[i] + x[i] for i in 1:10)
@@ -287,6 +286,9 @@ function _test_slot_sharing()
     m = ExaModel(c)
     @test length(m.cons) == 2
     @test sort([length(b.itr) for b in m.cons]) == [8, 16]
+    # slot references print as ⟨i k⟩ / ⟨f k⟩, with and without the type header
+    @test occursin("⟨i", sprint(show, m.cons[1].f.f))
+    @test sprint(show, MIME"text/plain"(), ExaModels.IvRef(1)) isa String
     @test m.meta.nnzj == 16 * 1 + 8 * 2
     @test m.meta.ncon == 24
     _check_fd_derivatives(m)

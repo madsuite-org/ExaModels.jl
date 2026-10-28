@@ -109,13 +109,19 @@ c2 = ExaCore(concrete = Val(true))
 # instead of as an expression tree: each slot is an affine combination of
 # existing buffered slots and variables with constant coefficients, so a slot
 # summing thousands of elements costs one stage and nothing grows with the term
-# count. Buffer the element functions, then sum:
+# count. Buffer the element functions, then sum. With `elems` the element data,
+# `terms` the (group, weight, element) triples and `b` the group constants:
 #
 # ```julia
 # c, e = add_expr(c, ((x[d.i] - d.c)^2 for d in elems); buffered = true)
 # c, v = add_sum(c, ngroups, (d.g => d.w * e[d.k] for d in terms); init = b)
 # c, _ = add_obj(c, v[g]^2 for g in 1:ngroups)
 # ```
+#
+# A third form, `add_expr(...; lift = true)`, introduces the subexpression as a
+# variable pinned by a defining equality constraint (adding rows and columns to
+# the problem), which keeps every consumer's tree shallow at the cost of a
+# larger KKT system.
 #
 # !!! tip "Choosing between inlined and buffered subexpressions"
 #     Inlining (the default) substitutes the subexpression into each use site at
@@ -137,7 +143,7 @@ c2 = ExaCore(concrete = Val(true))
 #     written as a loop of scalar `add_con`/`add_obj` calls costs what the
 #     single-generator form costs to compile. Merging does not change the
 #     sparsity of a block: repeated references to one variable in a row share
-#     one Jacobian entry, as before. Two things do affect `meta.nnzj`/`meta.nnzh`
+#     one Jacobian entry, as in a plain block. Two things do affect `meta.nnzj`/`meta.nnzh`
 #     and the coordinate lists, which are representation details: an inlined
 #     subexpression spliced at several use sites carries one derivative entry
 #     per site (duplicate coordinates are summed on assembly), and

@@ -256,10 +256,10 @@ function _device_tests(backend)
     NLPModels.hprod!(m1, xd, pvd, hp1)
     @test Array(hp1) ≈ hp0 rtol = tol
 
-    # A device model with no buffered stage and no prodhelper keeps the host
-    # hprod! it had before the buffered methods existed. That fallback indexes
-    # the arrays on the host, so it is only usable where the device arrays are
-    # host arrays (the CPU backend); on a GPU it scalar-indexes, as it always did.
+    # A device model with no buffered stage and no prodhelper uses the host
+    # hprod! from nlp.jl (the buffered methods dispatch on the ska type). That
+    # method indexes the arrays on the host, so it is only usable where the
+    # device arrays are host arrays (the CPU backend); on a GPU it scalar-indexes.
     backend isa CPU || return nothing
     function plain(bk)
         c2 = ExaCore(concrete = Val(true), backend = bk)
@@ -493,6 +493,13 @@ function runtests(; backends = Any[CPU()])
         NLPModels.grad!(m0, xv, d0)
         NLPModels.grad!(m1, xv, d1)
         @test d1 ≈ d0 rtol = 1.0e-14
+
+        # colon indexing and REPL display of a buffered handle's elements
+        cc = ExaCore(concrete = Val(true))
+        cc, xx = add_var(cc, 4)
+        cc, ss = add_expr(cc, (xx[i]^2 for i in 1:3); buffered = true)
+        @test length(ss[:]) == 3
+        @test sprint(show, MIME"text/plain"(), ss[2]) isa String
 
         # macro named form registers the handle in the core/model
         c = ExaCore(concrete = Val(true))

@@ -281,8 +281,7 @@ end
 # a merged block's row/nonzero offsets live in its MergedRow elements, not in
 # the SIMDFunction's affine fields (f.o1 == 0 there): the generic kerjs would
 # write its nonzeros into the first n * o1step slots of cons_ext, on top of
-# whatever block owns them. Same pattern as kerj_m in the KernelAbstractions
-# extension.
+# whatever block owns them. Same pattern as `kerj_m` above.
 function _lamjac1!(backend, y, con::ExaModels.Constraint{F, I}, x, θ, yv) where
     {F, I <: AbstractVector{<:ExaModels.MergedRow}}
     isempty(con.itr) && return nothing
@@ -367,6 +366,7 @@ function ExaModels.build_subexpr_ka(
         sjac,
         shess,
         nvar,
+        localrows,
     ) where {T, VT <: AbstractVector{T}, B <: KernelAbstractions.Backend, C <: ExaModels.ExaCore{T, VT, B}}
     sjac === nothing && return nothing
     x0 = c.x0
@@ -438,11 +438,8 @@ function ExaModels.build_subexpr_ka(
         mu_stage[l] = _seg_copy(x0, v[1:2:end], v[2:2:end])
     end
 
-    # localrow chain programs per SOURCE level: full (gradient) and slot-only (λ)
-    localrows = Dict{Int, Vector{Tuple{Int, Int}}}()
-    let res_probe = ExaModels._build_subexpr_jac(T, c.subexprs, c.cons, c.nnzj)
-        localrows = res_probe[3]
-    end
+    # localrow chain programs per SOURCE level: full (gradient) and slot-only (λ);
+    # `localrows` is the table `_build_subexpr_jac` produced for this model
     gc_dst = [Int[] for _ in 1:nlv]; gc_a = [Int[] for _ in 1:nlv]; gc_b = [Int[] for _ in 1:nlv]
     lch_dst = [Int[] for _ in 1:nlv]; lch_a = [Int[] for _ in 1:nlv]; lch_b = [Int[] for _ in 1:nlv]
     for (row, lst) in localrows
@@ -706,6 +703,31 @@ function _hprod_buffered!(m, x, yv, v, Hv, obj_weight)
     _run!(backend, ska.hprod, Hv, ska.hess_vals, v)
     KernelAbstractions.synchronize(backend)
     return Hv
+end
+
+# hprod! for a device model with buffered subexpressions. The model is built
+# without a prodhelper (`prod = true` is refused for buffered models), and the
+# methods are restricted to an `ExaModel` whose `ska` type parameter is a
+# `SubexprKA`, so a model without a buffered stage never reaches them and keeps
+# the generic host method in nlp.jl.
+function ExaModels.hprod!(
+        m::ExaModels.ExaModel{T, VT, E, V, P, O, C, S, R, SE, SJ, SH, SK},
+        x::AbstractVector,
+        v::AbstractVector,
+        Hv::AbstractVector;
+        obj_weight = one(eltype(x)),
+    ) where {T, VT, E <: KAExtension{T, VT, Nothing}, V, P, O, C, S, R, SE, SJ, SH, SK <: SubexprKA}
+    return _hprod_buffered!(m, x, nothing, v, Hv, T(obj_weight))
+end
+function ExaModels.hprod!(
+        m::ExaModels.ExaModel{T, VT, E, V, P, O, C, S, R, SE, SJ, SH, SK},
+        x::AbstractVector,
+        y::AbstractVector,
+        v::AbstractVector,
+        Hv::AbstractVector;
+        obj_weight = one(eltype(x)),
+    ) where {T, VT, E <: KAExtension{T, VT, Nothing}, V, P, O, C, S, R, SE, SJ, SH, SK <: SubexprKA}
+    return _hprod_buffered!(m, x, y, v, Hv, T(obj_weight))
 end
 
 function _hess_buffered!(m, x, yv, hess, obj_weight)

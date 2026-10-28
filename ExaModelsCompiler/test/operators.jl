@@ -111,10 +111,11 @@ import ExaModels: instantiate, ArgSource
         # The recipe path stores blocks plain while the direct build
         # family-merges them; equal-valued Integer leaves share one slot in
         # the merged tree, so both have the same sparsity down to the
-        # coordinate order (the only check that catches a plausible but
-        # wrong pattern)
+        # coordinate order
         @test m.meta.nnzj == ref.meta.nnzj
         @test m.meta.nnzh == ref.meta.nnzh
+        # the structure equalities are the only check that catches a
+        # plausible but wrong pattern
         @test NLPModels.jac_structure(m) == NLPModels.jac_structure(ref)
         @test NLPModels.jac_coord(m, pt) ≈ NLPModels.jac_coord(ref, pt)
         @test NLPModels.hess_structure(m) == NLPModels.hess_structure(ref)

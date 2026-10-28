@@ -231,7 +231,6 @@ function Base.show(io::IO, node::VarSource)
     return print(io, "VarSource()")
 end
 
-
 function Base.show(io::IO, node::Var{I}) where {I}
     return print(io, _expr_string(node))
 end

@@ -44,8 +44,9 @@ Base.show(io::IO, v::AbstractVariable) = print(
 A subexpression created by [`add_expr`](@ref) / [`@add_expr`](@ref).
 When indexed (e.g. `s[i]`), the expression is substituted directly into the
 enclosing objective or constraint — no auxiliary variables or equality constraints
-are introduced.  Use `Expression` to share common sub-expressions across multiple
-objectives or constraints without duplicating the expression tree. An optional
+are introduced, and the tree is spliced at every use site.  Use `Expression` to
+share common sub-expressions across multiple objectives or constraints; for
+deeply nested or widely shared ones see [`BufferedExpression`](@ref). An optional
 `tag` field carries user-defined metadata.
 """
 struct Expression{S, F, I, T, L}
@@ -83,9 +84,10 @@ evaluated once per model evaluation into a dedicated θ slot, and consumers
 reference the slot through a shallow [`SubexprNode`](@ref) leaf.  This keeps
 compilation cost additive in the nesting depth of expression trees.
 
-Supports the full NLPModels evaluation API through second order, on the host
-and on KernelAbstractions backends.  Not compatible with oracles or
-`ExaModel(c; prod = true)`.
+Supports the NLPModels evaluation API through second order, including
+`hprod!`, on the host and on KernelAbstractions backends; `jprod_nln!` and
+`jtprod_nln!` are host-only for models with buffered subexpressions.  Not
+compatible with oracles or `ExaModel(c; prod = true)`.
 """
 struct BufferedExpression{S, F, T}
     size::S
@@ -402,7 +404,7 @@ struct ExaCore{
     par::P
     obj::O
     cons::C
-    subexprs::SE               # Tuple of SubexprStage (buffered subexpressions), newest first
+    subexprs::SE               # Tuple of stages (SubexprStage / SubexprSumStage), newest first
     nvar::NV
     npar::NP
     ncon::NC
@@ -622,14 +624,12 @@ is known statically and destructuring stays inferable.
 @inline _storage(::Val{true}) = ()
 @inline _storage(::Val{false}) = Any[]
 
-# refs out of the type: in non-concrete mode, named blocks
-# accumulate in a Vector{Pair} instead of a NamedTuple.  A NamedTuple ref
-# carries the named block's ENTIRE type in the core's type, so every later
-# add_* is inferred against a core type that grows with each name — the same
-# superlinear builder cost `concrete = Val(false)` removed for block storage,
-# reintroduced through names.  The NamedTuple is recovered once, in
-# `_concretize`, so `model.name`, `get_vars`/`get_cons`, recipes, and the
-# juliac path (`Val(true)`, unchanged NamedTuple) all behave as before.
+# refs storage: in non-concrete mode named blocks accumulate in a Vector{Pair}
+# rather than a NamedTuple, because a NamedTuple ref carries the named block's
+# entire type in the core's type and every later add_* would be inferred
+# against a core type that grows with each name.  `_concretize` builds the
+# NamedTuple once, which is what `model.name`, `get_vars`/`get_cons` and
+# recipes read; concrete mode (`Val(true)`) keeps the NamedTuple throughout.
 @inline _refs_storage(::Nothing) = Pair{Symbol, Any}[]
 @inline _refs_storage(::Val{true}) = (;)
 @inline _refs_storage(::Val{false}) = Pair{Symbol, Any}[]
@@ -819,7 +819,7 @@ struct ExaModel{T, VT, E, V, P, O, C, S, R, SE, SJ, SH, SK} <: AbstractExaModel{
     pars::P
     objs::O
     cons::C
-    subexprs::SE               # Tuple of SubexprStage (buffered subexpressions), newest first
+    subexprs::SE               # Tuple of stages (SubexprStage / SubexprSumStage), newest first
     abuf::VT                   # adjoint buffer for buffered subexpressions (θ-length)
     sjac::SJ                   # SubexprJac (Jacobian elimination maps) or nothing
     shess::SH                  # SubexprHess (Hessian elimination maps) or nothing
@@ -901,7 +901,7 @@ function _model_from_core(c::ExaCore{T}, prod) where {T}
     )
     sjac, resolved, localrows = _build_subexpr_jac(T, c.subexprs, c.cons, c.nnzj)
     shess = _build_subexpr_hess(T, c.subexprs, c.obj, c.cons, c.nnzh, localrows, resolved, length(c.θ))
-    ska = build_subexpr_ka(c, sjac, shess, c.nvar)
+    ska = build_subexpr_ka(c, sjac, shess, c.nvar, localrows)
     return ExaModel(
         c.name,
         c.var,
@@ -1160,10 +1160,11 @@ end
 end
 
 # `x[:, i]` expands each colon axis to its entries, column-major as in Base.
-const _Indexable = Union{AbstractVariable, Expression, Parameter}
+const _Indexable = Union{AbstractVariable, Expression, BufferedExpression, Parameter}
 @inline Base.getindex(x::_Indexable, is...) = _getindex(x, is, _hascolon(is))
 @inline Base.getindex(v::V, ::Colon) where {V <: AbstractVariable} = _allentries(v)
 @inline Base.getindex(s::Expression, ::Colon) = _allentries(s)
+@inline Base.getindex(s::BufferedExpression, ::Colon) = _allentries(s)
 @inline Base.getindex(p::P, ::Colon) where {P <: Parameter} = _allentries(p)
 @inline _allentries(x) = _getindex(x, map(_ -> :, x.size), Val(true))
 
@@ -2271,9 +2272,10 @@ c, v = add_sum(c, ngroups, (d.g => d.w * e[d.k] for d in terms))
 c, _ = add_obj(c, (v[g])^2 for g in 1:ngroups)
 ```
 
-Supports the full NLPModels evaluation API through second order, on the host
-and on KernelAbstractions backends, with the same restrictions as other
-buffered subexpressions (no oracles, no `prod = true`).
+Supports the NLPModels evaluation API through second order on the host and
+on KernelAbstractions backends, with the same restrictions as other buffered
+subexpressions (no oracles, no `prod = true`, `jprod_nln!`/`jtprod_nln!`
+host-only).  There is no macro form: the terms are data, not a generator body.
 """
 function add_sum(
         c::C,
@@ -2359,8 +2361,8 @@ end
 # count. The `_LongTuple` methods below take over from 33 blocks on: they
 # materialize the blocks once per walk with `Any[t...]` (the splat is linear
 # and boxes each block once, where indexing the tuple itself re-boxes per
-# access and stays quadratic, measured either way at 64-256 blocks) and then
-# pay one dynamic call per block, in the same (last-to-first) order. Short
+# access and stays quadratic) and then pay one dynamic call per block, in the
+# same (last-to-first) order. Short
 # tuples keep the fully static recursive methods, which `juliac --trim=safe`
 # compilation relies on.
 const _LongTuple = Tuple{

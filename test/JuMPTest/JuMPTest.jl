@@ -117,8 +117,8 @@ function test_fixed_variable_e2etest()
     em = ExaModels.ExaModel(jm)
     @test only(em.meta.lcon) == only(em.meta.ucon) == 1.0
     @test em.cons[1] isa ExaModels.ConstraintAugmentation
-    # family merging folds the Pair row target into per-row data, so the
-    # lowering is checked by value: at x = (1, 2, ..., N) the single row
+    # the row is an augmentation (stored plain), checked by value: at
+    # x = (1, 2, ..., N) the single row
     # accumulates sum(x), with x[1] fixed contributing its bound value
     xt = collect(1.0:N)
     cv = NLPModels.cons(em, xt)
@@ -206,8 +206,8 @@ function test_generic_e2etest()
     JuMP.@objective(jm, Min, sum(x[i]^2 for i in 1:N))
     em = ExaModels.ExaModel(jm)
     @test typeof(em) <: ExaModels.ExaModel{Float32}
-    # the MOI lowering assembles its blocks directly (not through add_con),
-    # so they are stored plain regardless of the merge default
+    # the MOI lowering's rows are augmentations (`add_con!`), which are
+    # stored plain on every backend
     @test eltype(em.cons[1].itr) <: Tuple{Int, Float32, Int}
     return
 end

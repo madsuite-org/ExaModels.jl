@@ -1,18 +1,19 @@
 # merge.jl: static family merging at construction time
 #
-# Every constraint block whose expression tree is mergeable (a type-level
-# property) is stored in MERGED form from its first add: a one-segment
-# merged block whose scalar leaves are hoisted into the iterator's own data
-# (`Integer` leaves per row, since they feed variable indices that
+# Every constraint or objective block whose expression tree is mergeable (a
+# type-level property) is stored in MERGED form from its first add: a
+# one-segment merged block whose scalar leaves are hoisted into the iterator's
+# own data (`Integer` leaves per row, since they feed variable indices that
 # sparsity-structure evaluation reads with θ = NaNSource; `AbstractFloat`
 # leaves once per segment, as loop-invariant struct loads that cannot alias
-# the output vectors the way θ reads would).  A later `add_con` /
-# `add_con!` whose tree type matches an existing family appends one segment;
-# the core's type does not change.  All decisions are static: same tree type
-# means merge, always; there is no runtime merge heuristic and no refusal
-# path.  Trees containing node kinds outside the hoisting walk (`SumNode`,
-# `ProdNode`, recipe placeholders, registered-function internals) are
-# statically non-mergeable and are stored plain, as before this feature.
+# the output vectors the way θ reads would).  A later `add_con` / `add_obj`
+# whose tree type and slot-sharing pattern match an existing family appends
+# one segment; the core's type does not change.  All decisions are static:
+# there is no runtime merge heuristic.  Stored plain instead: trees containing
+# node kinds outside the hoisting walk (`SumNode`, `ProdNode`, recipe
+# placeholders, registered-function internals), augmentation (`add_con!`)
+# blocks, recipe cores (`nargs > 0`), and pair-headed blocks on device
+# backends (`_merge_allowed`).
 #
 # The slot layout is a function of the tree type (one slot per scalar leaf
 # position), so the merged block's type and all compiled code are identical at
@@ -35,11 +36,12 @@
 # same (statically decided) path and the whole suite exercises merged form.
 
 """
-    MergedRow{K, D}
+    MergedRow{K, S, T, D}
 
 One row of a merged family: global row offset `o0`, Jacobian/Hessian nonzero
-bases `o1`/`o2`, the `K` hoisted Integer leaves, the base of this row's
-block's Float slots in `θ`, and the original iterator element `d`.
+bases `o1`/`o2`, the `K` hoisted Integer leaves `iv`, the `S` hoisted Float
+leaves `fv` (of type `T`, shared by every row of the segment), and the
+original iterator element `d`.
 """
 struct MergedRow{K, S, T, D}
     o0::Int
@@ -57,11 +59,7 @@ const _MROW_D = 6  # field position of `d` in MergedRow
 # Float64 -> Float32 rewrite for backends without Float64 (Metal). The generic
 # struct rebuild in templates.jl cannot reconstruct a MergedRow: with no Float
 # slots (S = 0) the empty `fv` tuple leaves `T` undetermined for the default
-# constructor, so the rebuild fell back to returning the row unchanged and the
-# Float64 inside `d` reached the device upload (metal lts leg of #329); and on
-# Julia 1.13.2 the generic rebuild segfaults in `getfield` during the
-# broadcast over these rows (reproduced on x86 Linux, no Metal involved). The
-# parameters are written out, so neither path is taken.
+# constructor. The parameters are written out instead.
 function replace_float_64_by_32(r::MergedRow{K, S, T, D}) where {K, S, T, D}
     fv = map(replace_float_64_by_32, getfield(r, :fv))
     d = replace_float_64_by_32(getfield(r, :d))
@@ -84,7 +82,7 @@ struct MergedSeg{K, S, T, I}
 end
 
 """
-    SegmentedItr{K, D, I, RF}
+    SegmentedItr{K, S, T, D, I, RF}
 
 Lazy merged iterator for affine-offset families: one `MergedSeg` per source
 block (holding the iterator `_adapt_gen` produced for it), rows materialized
@@ -120,12 +118,13 @@ Base.IndexStyle(::Type{<:SegmentedItr}) = IndexLinear()
 end
 
 """
-    MergedRows{K, D, RF}
+    MergedRows{K, S, T, D, RF}
 
-Materialized merged iterator, used for augmentation families (their row
-targets are data-driven, not affine) and for device finalization.  Growing a
-family copies the row vector (`_merged_append_itr`), so earlier cores and
-models keep the rows they had.
+Materialized merged iterator, used on the host for pair-headed families
+(their row targets are data-driven, not affine) and, on device backends, as
+the element array every merged block is finalized into.  Growing a family
+copies the row vector (`_merged_append_itr`), so earlier cores and models keep
+the rows they had.
 """
 struct MergedRows{K, S, T, D, RF} <: AbstractVector{MergedRow{K, S, T, D}}
     rep::RF
@@ -140,7 +139,6 @@ const _MergedItr = Union{SegmentedItr, MergedRows}
 
 _mrep(s::SegmentedItr) = s.rep
 _mrep(m::MergedRows) = m.rep
-_mrow_k(::Type{MergedRow{K, S, T, D}}) where {K, S, T, D} = K
 _mrow_dtype(::Type{MergedRow{K, S, T, D}}) where {K, S, T, D} = D
 
 # ── per-row offsets for merged blocks ────────────────────────────────────────
@@ -218,6 +216,8 @@ end
 # `ExaModels.IvRef(1)` at every hoisted leaf)
 Base.show(io::IO, v::IvRef) = print(io, "⟨i", v.k, "⟩")
 Base.show(io::IO, v::FvRef) = print(io, "⟨f", v.k, "⟩")
+_short_type(::IvRef) = "IvRef"
+_short_type(::FvRef) = "FvRef"
 @inline (v::FvRef)(i, x, θ) = @inbounds getfield(i, _MROW_FV)[v.k]
 @inline (v::FvRef)(i::Identity, x, θ) = eltype(θ)(NaN)
 
@@ -272,7 +272,7 @@ end
 @inline _stree(a::T, io::Int, fo::Int, cls) where {T <: Real} = FvRef(fo + 1), 0, 1
 
 # the slots.  Concatenating a tuple per node would mint one tuple TYPE per
-# slot (81 of them on a deep capture tree), and inference pays for each, so
+# slot, and inference pays for each, so
 # collection is mutating instead: the recursions return only the running
 # slot count, and one flat `ntuple` materializes the tuple at the end.
 Base.@assume_effects :foldable _niv(::Type{Node1{F, I}}) where {F, I} = _niv(I)
@@ -492,8 +492,8 @@ end
 
 # ── the merge entry point used by _add_con / _add_con! ───────────────────────
 #
-# Returns `nothing` when the block is statically non-mergeable (stored plain,
-# as before this feature), or `(cons′, o1step, o2step)`: the updated block
+# Returns `nothing` when the block is statically non-mergeable (stored plain),
+# or `(cons′, o1step, o2step)`: the updated block
 # list and the per-row nnz steps to account nnzj/nnzh with.
 
 @inline function _merge_block(c::ExaCore{T}, f, pars, dims, tag) where {T}

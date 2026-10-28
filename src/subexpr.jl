@@ -23,6 +23,7 @@ subexpression's own reverse pass is later seeded.
 struct SubexprNode{I} <: AbstractNode
     i::I
 end
+_short_type(::SubexprNode) = "SubexprNode"
 Base.show(io::IO, node::SubexprNode{I}) where {I} = print(io, "subexpr(θ[", node.i, "])")
 
 """
@@ -226,11 +227,9 @@ constant-coefficient linear combination
 
 where `source(m)` is `x[src[m]]` when `src[m] > 0` and `θ[-src[m]]` (an older
 buffered slot) when `src[m] < 0`.  Terms are stored CSR-style by destination
-slot, so evaluation is one loop over data — no expression tree is ever traced
-and the stage is ONE concrete type regardless of the number of terms.  This is
-what makes summing thousands of elements into a slot O(1) in kernel types
-(the flat fan-in and chained-accumulation alternatives both put the term count
-into consumer tree types; see issue #331).
+slot, so evaluation is one loop over data: no expression tree is traced and
+the stage is one concrete type regardless of the number of terms, which is
+what keeps a slot that sums thousands of elements out of every kernel type.
 
 Derivatives need no kernels either: the stage's one-level Jacobian is the
 constant `w`, so the build-time elimination consumes it like any other stage,
@@ -806,10 +805,9 @@ end
     return nothing
 end
 
-# Refresh the resolved stage-Jacobian values at the current point (shared by
-# Jacobian and Hessian evaluation).  Assumes θ is synced.
-# Fill only the local (one-level) stage Jacobian values — all the Hessian
-# needs; the Jacobian additionally resolves them to x-columns below.
+# Fill the local (one-level) stage-Jacobian values at the current point
+# (assumes θ is synced). The Jacobian resolves them to x-columns afterwards
+# (`_resolve_stage_jac!`), and so does the Hessian when sum stages exist.
 function _fill_stage_jac!(sj::SubexprJac, stages::Tuple, x, θ)
     fill!(sj.stage_ext, zero(eltype(sj.stage_ext)))
     _stage_jac_fill!(stages, sj.stage_o1, 1, sj, x, θ)
@@ -1289,4 +1287,4 @@ end
 
 # Device (KernelAbstractions) support artifact: the extension provides a method
 # for KA backends; the base fallback means CPU models carry nothing extra.
-build_subexpr_ka(c, sjac, shess, nvar) = nothing
+build_subexpr_ka(c, sjac, shess, nvar, localrows) = nothing
