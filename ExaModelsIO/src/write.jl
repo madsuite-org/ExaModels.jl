@@ -103,7 +103,7 @@ function describe(m::ExaModel{T}) where {T}
         _check_tag(b)
         group = "data/$(kind)_$k"
         d = Dict{String,Any}("group" => group)
-        if b isa ExaModels.Constraint && length(b.size) > 1 && !(b.f.f isa ExaModels.Null) &&
+        if b isa ExaModels.Constraint && length(b.size) > 1 && !(b.f.f isa ExaModels.Null{Nothing}) &&
                 isequal(vec(collect(b.itr)), vec(collect(Iterators.product(b.size...))))
             d["iterator"] = Dict("product" => [store("$group/axis_$i", a) for (i, a) in enumerate(b.size)])
         else
@@ -135,7 +135,7 @@ function describe(m::ExaModel{T}) where {T}
             d["name"] = _ref_name(refs, c)
             d["offset"] = c.offset
             d["shape"] = collect(size(c.itr))
-            if c.f.f isa ExaModels.Null  # built as add_con(core, dims...), filled by add_con!
+            if c.f.f isa ExaModels.Null{Nothing}  # built as add_con(core, dims...), filled by add_con!
                 all(a -> a isa Integer || a isa AbstractUnitRange, c.size) || throw(ArgumentError(
                     "ExaModelsIO cannot store constraint dimensions $(c.size)"))
                 d["size"] = _dims(c.size)

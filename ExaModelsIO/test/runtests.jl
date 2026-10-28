@@ -23,6 +23,8 @@ ExaModels.@register_univariate(myf, x -> 2x + 1, x -> 2.0)
         @add_con(c, sin(x[i]) * x[i + 1] for i in 1:3; lcon = -1.0, ucon = 1.0)
         g = @add_con(c, g, sin(x[i]) * x[i + 1] for i in 4:7; lcon = -1.0, ucon = 1.0)
         @add_obj(c, x[i]^2 for i in 1:8)
+        # a constant body is a valued Null, not the dims form's Null{Nothing}
+        @add_con(c, 2.5 for i in 1:3; lcon = 0.0, ucon = 10.0)
         m2 = roundtrip_check(ExaModel(c))
         @test m2.g isa ExaModels.Constraint
     end
