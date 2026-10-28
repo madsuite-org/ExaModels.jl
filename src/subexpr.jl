@@ -217,9 +217,9 @@ struct SubexprStage{F, I}
 end
 
 """
-    SubexprReduceStage{VT, VI}
+    SubexprSumStage{VT, VI}
 
-A buffered reduction stage created by [`add_reduce`](@ref): slot `j` holds a
+A buffered sum stage created by [`add_sum`](@ref): slot `j` holds a
 constant-coefficient linear combination
 
     θ[offset + j] = init[j] + Σₘ w[m] · source(m)    for m in ptr[j]:ptr[j+1]-1
@@ -246,7 +246,7 @@ slot's resolved gradient, with one Hessian-index table per distinct x-support
 - `src::VI`: signed sources (`> 0` variable index, `< 0` negated θ slot)
 - `w::VT`: constant term weights
 """
-struct SubexprReduceStage{VT <: AbstractVector, VI <: AbstractVector{Int}}
+struct SubexprSumStage{VT <: AbstractVector, VI <: AbstractVector{Int}}
     offset::Int
     n::Int
     init::VT
@@ -256,10 +256,10 @@ struct SubexprReduceStage{VT <: AbstractVector, VI <: AbstractVector{Int}}
 end
 
 @inline _stage_len(s::SubexprStage) = length(s.itr)
-@inline _stage_len(s::SubexprReduceStage) = s.n
+@inline _stage_len(s::SubexprSumStage) = s.n
 # per-element slot counts in the hess_ext program buffer
 @inline _stage_o2len(s::SubexprStage) = length(s.itr) * s.f.o2step
-@inline _stage_o2len(s::SubexprReduceStage) = 0
+@inline _stage_o2len(s::SubexprSumStage) = 0
 
 # Stage tuples are built newest-first (prepended, like `cons`/`objs`), and a
 # stage can only reference stages added before it.  Forward sync therefore
@@ -276,7 +276,7 @@ end
     end
     return nothing
 end
-@inline function _sync_stage!(s::SubexprReduceStage, x, θ)
+@inline function _sync_stage!(s::SubexprSumStage, x, θ)
     @inbounds for j in 1:s.n
         acc = s.init[j]
         for m in s.ptr[j]:(s.ptr[j + 1] - 1)
@@ -615,7 +615,7 @@ end
 _host_array(x::Array) = x
 _host_array(x) = Array(x)
 _host_block(s::SubexprStage) = SubexprStage(s.f, _host_array(s.itr), s.offset)
-_host_block(s::SubexprReduceStage) = SubexprReduceStage(
+_host_block(s::SubexprSumStage) = SubexprSumStage(
     s.offset,
     s.n,
     _host_array(s.init),
@@ -650,9 +650,9 @@ function _stage_jac_structure(::Type{T}, s::SubexprStage) where {T}
     end
     return erows, ecols
 end
-# A reduce stage's structure is its term table: slot rows expanded from the CSR
+# A sum stage's structure is its term table: slot rows expanded from the CSR
 # pointers, signed sources used as columns directly (same sign convention).
-function _stage_jac_structure(::Type{T}, s::SubexprReduceStage) where {T}
+function _stage_jac_structure(::Type{T}, s::SubexprSumStage) where {T}
     erows = zeros(Int, length(s.src))
     for j in 1:s.n
         for m in s.ptr[j]:(s.ptr[j + 1] - 1)
@@ -798,8 +798,8 @@ end
     end
     return nothing
 end
-# A reduce stage's one-level Jacobian values are its constant weights.
-@inline function _stage_jac_fill1!(s::SubexprReduceStage, off, sj, x, θ)
+# A sum stage's one-level Jacobian values are its constant weights.
+@inline function _stage_jac_fill1!(s::SubexprSumStage, off, sj, x, θ)
     @inbounds for m in eachindex(s.w)
         sj.stage_ext[off + m] = s.w[m]
     end
@@ -887,7 +887,7 @@ struct SubexprHess{T}
     hmul_src::Vector{Int}
     hmul_a::Vector{Int}
     hmul_c::Vector{T}
-    # Reduce-slot curvature μ·∇v∇vᵀ, with ∇v resolved to x-columns (the
+    # Sum-slot curvature μ·∇v∇vᵀ, with ∇v resolved to x-columns (the
     # SubexprJac `res` entries of the slot).  Each slot lists its resolved
     # entries in ascending x-column order; slots with the same x-support share
     # one table of Hessian destinations over the lower-triangle pairs of that
@@ -912,7 +912,7 @@ _build_subexpr_hess(::Type{T}, stages::Tuple{}, objs, cons, nnzh_ext, localrows,
     nothing
 
 # Extended-space structure of one stage's replay Hessian (host blocks), written
-# into the stage's hess_ext segment starting at `base`.  A reduce stage has no
+# into the stage's hess_ext segment starting at `base`.  A sum stage has no
 # replay (its ∇² is zero in the extended coordinates) and contributes nothing.
 function _stage_hess_structure!(::Type{T}, erows, ecols, s::SubexprStage, base) where {T}
     step = s.f.o2step
@@ -932,7 +932,7 @@ function _stage_hess_structure!(::Type{T}, erows, ecols, s::SubexprStage, base) 
     end
     return nothing
 end
-_stage_hess_structure!(::Type{T}, erows, ecols, s::SubexprReduceStage, base) where {T} = nothing
+_stage_hess_structure!(::Type{T}, erows, ecols, s::SubexprSumStage, base) where {T} = nothing
 
 function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, localrows, resolved, nθ) where {T}
     objs = _host_blocks(objs)
@@ -1008,15 +1008,15 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, loc
 
     nores = Tuple{Int, Int}[]
     cmul_phL = Int[]
-    # μ·∇v∇vᵀ of one reduce stage's slots, written straight into x-space from
+    # μ·∇v∇vᵀ of one sum stage's slots, written straight into x-space from
     # each slot's resolved gradient.  It must not be lowered through C by
     # pairing the slot's sources: slots with disjoint sources never share those
     # pairs, so every slot summing k element slots would cost O(k²) build
     # entries of its own, whereas slots with one x-support share one table.
     # The pair value is the MATRIX entry counted once (a diagonal pair is the
     # plain square, no doubling), matching `emit`.
-    _emit_reduce_rank1!(s::SubexprStage, muactive) = nothing
-    function _emit_reduce_rank1!(s::SubexprReduceStage, muactive)
+    _emit_sum_rank1!(s::SubexprStage, muactive) = nothing
+    function _emit_sum_rank1!(s::SubexprSumStage, muactive)
         for j in 1:s.n
             slot = s.offset + j
             muactive[slot] || continue
@@ -1046,11 +1046,11 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, loc
     # coordinates at this level) first — they produce rank-1 pairs at the same
     # level — then rank-1 pairs, which only produce strictly older pairs.
     for l in nlv:-1:1
-        # μ·∇v∇vᵀ of this level's reduce slots (if any): by the time level l is
+        # μ·∇v∇vᵀ of this level's sum slots (if any): by the time level l is
         # reached, every writer of abuf2[slot] for a level-l slot has been
         # emitted (consumer/stage seeds at classification, amul targets from
         # newer levels), so `muactive` is final for this level's slots.
-        _emit_reduce_rank1!(ordered[l], muactive)
+        _emit_sum_rank1!(ordered[l], muactive)
         d = entries[l]
         expand(p, cp) = begin
             ξexp, oth = lvlof(p[1]) == l ? (p[1], p[2]) : (p[2], p[1])
@@ -1173,7 +1173,7 @@ _hess_seq!(stages::Tuple{}, i, sh, sj, t::HessTarget, hess, x, θ) = nothing
     return nothing
 end
 
-# Reduce-slot curvature μ·∇v∇vᵀ in x-space.  Runs after the sweep: a slot's μ
+# Sum-slot curvature μ·∇v∇vᵀ in x-space.  Runs after the sweep: a slot's μ
 # seed is final once its level is reached, and the targets are x-space
 # entries no later program reads.  A zero μ skips the slot, so a switched-off
 # slot contributes nothing even where its resolved gradient is not finite.
@@ -1191,7 +1191,7 @@ function _hess_rank1!(sh::SubexprHess, res, abuf2, hess)
     return nothing
 end
 
-# Stage replay with the accumulated (λ, μ) seeds.  A reduce stage replays
+# Stage replay with the accumulated (λ, μ) seeds.  A sum stage replays
 # nothing (zero extended-space curvature); it only chains its λ seeds one level
 # down with its constant weights — the μ side is the x-space rank-1 term.
 @inline function _stage_replay!(s::SubexprStage, off, t::HessTarget, x, θ)
@@ -1212,7 +1212,7 @@ end
     end
     return nothing
 end
-@inline function _stage_replay!(s::SubexprReduceStage, off, t::HessTarget, x, θ)
+@inline function _stage_replay!(s::SubexprSumStage, off, t::HessTarget, x, θ)
     @inbounds for j in 1:s.n
         adj = t.abuf[s.offset + j]
         for m in s.ptr[j]:(s.ptr[j + 1] - 1)
@@ -1272,7 +1272,7 @@ end
     end
     return nothing
 end
-@inline function _reverse_stage!(s::SubexprReduceStage, x, θ, t::GradTarget)
+@inline function _reverse_stage!(s::SubexprSumStage, x, θ, t::GradTarget)
     @inbounds for j in 1:s.n
         adj = t.abuf[s.offset + j]
         for m in s.ptr[j]:(s.ptr[j + 1] - 1)

@@ -35,7 +35,7 @@ struct SegProdC{VI, VT}
     c::VT
 end
 
-# Reduce-slot curvature μ·∇v∇vᵀ (see `SubexprHess`): one workitem per Hessian
+# Sum-slot curvature μ·∇v∇vᵀ (see `SubexprHess`): one workitem per Hessian
 # destination walks the support-table entries that target it and, for each,
 # every slot sharing that support.  Per-slot data stays shared with the host
 # layout, so device storage scales with the distinct supports, not with the
@@ -176,10 +176,10 @@ _run!(backend, s::SegProdC, y, A, B) =
     @inbounds θ[off + I] = f(itr[I], x, θ)
 end
 
-# Reduce-stage sync: one workitem per destination slot walks its CSR segment
+# Sum-stage sync: one workitem per destination slot walks its CSR segment
 # (slots are exclusive per workitem, sources are strictly older θ slots or
 # variables — no atomics needed).
-@kernel function kreduce_sync(θ, @Const(init), @Const(ptr), @Const(src), @Const(w), @Const(x), @Const(off))
+@kernel function ksum_sync(θ, @Const(init), @Const(ptr), @Const(src), @Const(w), @Const(x), @Const(off))
     J = @index(Global)
     acc = init[J]
     @inbounds for m in ptr[J]:(ptr[J + 1] - 1)
@@ -356,7 +356,7 @@ struct SubexprKA{T, VT <: AbstractVector{T}, VI}
     cmul2::Vector{SegProd{VI}}             # rank-1 phase
     amul::Vector{SegProdC{VI, VT}}
     hmul::Vector{SegProdC{VI, VT}}
-    rank1::SegRank1{VI}                    # hess += μ·∇v∇vᵀ of reduce slots (after the sweep)
+    rank1::SegRank1{VI}                    # hess += μ·∇v∇vᵀ of sum slots (after the sweep)
     hess_copy::SegCopy{VI}
     hess_vals::VT                          # composed Hessian values (hprod scratch)
     hprod::SegProd{VI}                     # Hv += hess_vals·v over the symmetric COO
@@ -551,9 +551,9 @@ function _sync_ka_stage!(backend, s::ExaModels.SubexprStage, off, x, θ)
     end
     return nothing
 end
-function _sync_ka_stage!(backend, s::ExaModels.SubexprReduceStage, off, x, θ)
+function _sync_ka_stage!(backend, s::ExaModels.SubexprSumStage, off, x, θ)
     if s.n > 0
-        kreduce_sync(backend)(θ, s.init, s.ptr, s.src, s.w, x, off; ndrange = s.n)
+        ksum_sync(backend)(θ, s.init, s.ptr, s.src, s.w, x, off; ndrange = s.n)
     end
     return nothing
 end
@@ -570,8 +570,8 @@ function _stagej_ka_stage!(backend, s::ExaModels.SubexprStage, ska, o1base, x, �
     end
     return nothing
 end
-# A reduce stage's one-level Jacobian values are its constant weights.
-function _stagej_ka_stage!(backend, s::ExaModels.SubexprReduceStage, ska, o1base, x, θ)
+# A sum stage's one-level Jacobian values are its constant weights.
+function _stagej_ka_stage!(backend, s::ExaModels.SubexprSumStage, ska, o1base, x, θ)
     if !isempty(s.w)
         copyto!(view(ska.stage_ext, (o1base + 1):(o1base + length(s.w))), s.w)
     end
@@ -684,9 +684,9 @@ function _stageh_ka_stage!(backend, s::ExaModels.SubexprStage, ska, i, x, θ)
     end
     return nothing
 end
-# A reduce stage replays nothing: its λ chain is the (localrows-driven)
+# A sum stage replays nothing: its λ chain is the (localrows-driven)
 # lam_chain program of this level, and its μ side is the rank-1 program.
-_stageh_ka_stage!(backend, s::ExaModels.SubexprReduceStage, ska, i, x, θ) = nothing
+_stageh_ka_stage!(backend, s::ExaModels.SubexprSumStage, ska, i, x, θ) = nothing
 
 function _stageh_hmul!(backend, ska, hess)
     for seg in ska.hmul

@@ -94,12 +94,12 @@ struct BufferedExpression{S, F, T}
     f::F           # the generator function (kept for display)
     tag::T
 end
-# A reduction handle (see `add_reduce`) carries no generator body.
+# A sum handle (see `add_sum`) carries no generator body.
 function Base.show(io::IO, s::BufferedExpression{S, Nothing}) where {S}
     return print(
         io,
         """
-        Subexpression (buffered reduction)
+        Subexpression (buffered sum)
 
           s ∈ R^{$(join(size(s.size), " × "))}
         """,
@@ -2129,7 +2129,7 @@ end
     )
 end
 
-# ── add_reduce: term extraction ───────────────────────────────────────────────
+# ── add_sum: term extraction ───────────────────────────────────────────────
 #
 # Terms are traced per CONCRETE data element (unlike add_expr, which traces one
 # symbolic tree against a DataSource), so index leaves carry plain Ints and the
@@ -2137,16 +2137,16 @@ end
 # reaches a kernel: it is consumed here, at build time, into flat (slot, source,
 # weight) tables.
 
-_reduce_scalar(x::Real) = x
-_reduce_scalar(::Constant{V}) where {V} = V
-_reduce_scalar(x::Null) = x.value === nothing ? false : x.value
-_reduce_scalar(x) = nothing
+_sum_scalar(x::Real) = x
+_sum_scalar(::Constant{V}) where {V} = V
+_sum_scalar(x::Null) = x.value === nothing ? false : x.value
+_sum_scalar(x) = nothing
 
-function _reduce_term!(tj, ts, tw, initv, j, ex, coef)
-    v = _reduce_scalar(ex)
+function _sum_term!(tj, ts, tw, initv, j, ex, coef)
+    v = _sum_scalar(ex)
     v === nothing && throw(
         ArgumentError(
-            "add_reduce terms must be affine combinations of buffered " *
+            "add_sum terms must be affine combinations of buffered " *
                 "subexpression slots and variables with constant coefficients; " *
                 "got a $(typeof(ex)) leaf",
         ),
@@ -2154,83 +2154,83 @@ function _reduce_term!(tj, ts, tw, initv, j, ex, coef)
     initv[j] += coef * v
     return nothing
 end
-function _reduce_term!(tj, ts, tw, initv, j, ex::SubexprNode{<:Integer}, coef)
+function _sum_term!(tj, ts, tw, initv, j, ex::SubexprNode{<:Integer}, coef)
     push!(tj, j); push!(ts, -Int(ex.i)); push!(tw, coef)
     return nothing
 end
-function _reduce_term!(tj, ts, tw, initv, j, ex::Var{<:Integer}, coef)
+function _sum_term!(tj, ts, tw, initv, j, ex::Var{<:Integer}, coef)
     push!(tj, j); push!(ts, Int(ex.i)); push!(tw, coef)
     return nothing
 end
-_reduce_term!(tj, ts, tw, initv, j, ex::ParameterNode, coef) = throw(
+_sum_term!(tj, ts, tw, initv, j, ex::ParameterNode, coef) = throw(
     ArgumentError(
-        "add_reduce does not support parameter sources or parameter-dependent " *
+        "add_sum does not support parameter sources or parameter-dependent " *
             "weights; evaluate the parameter-dependent part in a buffered add_expr " *
-            "stage and reduce over its slots instead",
+            "stage and sum over its slots instead",
     ),
 )
-_reduce_term!(tj, ts, tw, initv, j, ex::SubexprNode, coef) = throw(
+_sum_term!(tj, ts, tw, initv, j, ex::SubexprNode, coef) = throw(
     ArgumentError(
-        "add_reduce indices must be data values, not symbolic expressions " *
+        "add_sum indices must be data values, not symbolic expressions " *
             "(the slot index of every term must be known at build time)",
     ),
 )
-_reduce_term!(tj, ts, tw, initv, j, ex::Var, coef) = throw(
+_sum_term!(tj, ts, tw, initv, j, ex::Var, coef) = throw(
     ArgumentError(
-        "add_reduce indices must be data values, not symbolic expressions " *
+        "add_sum indices must be data values, not symbolic expressions " *
             "(the variable index of every term must be known at build time)",
     ),
 )
-function _reduce_term!(tj, ts, tw, initv, j, ex::SumNode, coef)
+function _sum_term!(tj, ts, tw, initv, j, ex::SumNode, coef)
     for inner in ex.inners
-        _reduce_term!(tj, ts, tw, initv, j, inner, coef)
+        _sum_term!(tj, ts, tw, initv, j, inner, coef)
     end
     return nothing
 end
-function _reduce_term!(tj, ts, tw, initv, j, ex::Node1{F}, coef) where {F}
-    F === typeof(-) && return _reduce_term!(tj, ts, tw, initv, j, ex.inner, -coef)
-    F === typeof(+) && return _reduce_term!(tj, ts, tw, initv, j, ex.inner, coef)
+function _sum_term!(tj, ts, tw, initv, j, ex::Node1{F}, coef) where {F}
+    F === typeof(-) && return _sum_term!(tj, ts, tw, initv, j, ex.inner, -coef)
+    F === typeof(+) && return _sum_term!(tj, ts, tw, initv, j, ex.inner, coef)
     throw(
         ArgumentError(
-            "add_reduce terms must be affine; the unary function $(F.instance) is not",
+            "add_sum terms must be affine; the unary function $(F.instance) is not",
         ),
     )
 end
-function _reduce_term!(tj, ts, tw, initv, j, ex::Node2{F}, coef) where {F}
+function _sum_term!(tj, ts, tw, initv, j, ex::Node2{F}, coef) where {F}
     if F === typeof(+)
-        _reduce_term!(tj, ts, tw, initv, j, ex.inner1, coef)
-        _reduce_term!(tj, ts, tw, initv, j, ex.inner2, coef)
+        _sum_term!(tj, ts, tw, initv, j, ex.inner1, coef)
+        _sum_term!(tj, ts, tw, initv, j, ex.inner2, coef)
     elseif F === typeof(-)
-        _reduce_term!(tj, ts, tw, initv, j, ex.inner1, coef)
-        _reduce_term!(tj, ts, tw, initv, j, ex.inner2, -coef)
+        _sum_term!(tj, ts, tw, initv, j, ex.inner1, coef)
+        _sum_term!(tj, ts, tw, initv, j, ex.inner2, -coef)
     elseif F === typeof(*)
-        a = _reduce_scalar(ex.inner1)
-        b = _reduce_scalar(ex.inner2)
+        a = _sum_scalar(ex.inner1)
+        b = _sum_scalar(ex.inner2)
         if a !== nothing
-            _reduce_term!(tj, ts, tw, initv, j, ex.inner2, coef * a)
+            _sum_term!(tj, ts, tw, initv, j, ex.inner2, coef * a)
         elseif b !== nothing
-            _reduce_term!(tj, ts, tw, initv, j, ex.inner1, coef * b)
+            _sum_term!(tj, ts, tw, initv, j, ex.inner1, coef * b)
         else
             throw(
                 ArgumentError(
-                    "add_reduce terms must be affine; a product of two " *
+                    "add_sum terms must be affine; a product of two " *
                         "non-constant expressions is not",
                 ),
             )
         end
     elseif F === typeof(/)
-        b = _reduce_scalar(ex.inner2)
+        b = _sum_scalar(ex.inner2)
         b === nothing && throw(
             ArgumentError(
-                "add_reduce terms must be affine; division by a non-constant " *
+                "add_sum terms must be affine; division by a non-constant " *
                     "expression is not",
             ),
         )
-        _reduce_term!(tj, ts, tw, initv, j, ex.inner1, coef / b)
+        _sum_term!(tj, ts, tw, initv, j, ex.inner1, coef / b)
     else
         throw(
             ArgumentError(
-                "add_reduce terms must be affine; the binary function $(F.instance) is not",
+                "add_sum terms must be affine; the binary function $(F.instance) is not",
             ),
         )
     end
@@ -2238,9 +2238,9 @@ function _reduce_term!(tj, ts, tw, initv, j, ex::Node2{F}, coef) where {F}
 end
 
 """
-    add_reduce(core, n, pairs; init = zero(T), name = nothing, tag = nothing)
+    add_sum(core, n, pairs; init = zero(T), name = nothing, tag = nothing)
 
-Add a buffered reduction over existing buffered-subexpression slots and
+Add a buffered sum over existing buffered-subexpression slots and
 variables: a [`BufferedExpression`](@ref) `r` of length `n` with
 
     r[j] = init[j] + Σ terms assigned to j
@@ -2253,18 +2253,18 @@ with constant coefficients of already-created buffered subexpression elements
 values (every term's structure is resolved at build time).
 
 Unlike referencing many slots inside one expression tree — whose compile time
-grows with the number of referenced slots — a reduction stores its terms as
+grows with the number of referenced slots — a sum stage stores its terms as
 data (one index-table stage regardless of the term count), so summing
 thousands of elements into a slot costs no kernel compilation.  Any number of
 terms may target the same slot, slices may be ragged, and sources may span
 several stages.  Typical use is the group-partially-separable pattern: buffer
 all element functions with `add_expr(...; buffered = true)`, then form each
-group's argument `init + Σ w·element + Σ a·x` with one `add_reduce`.
+group's argument `init + Σ w·element + Σ a·x` with one `add_sum`.
 
 ```julia
 c, x = add_var(c, nv)
 c, e = add_expr(c, (x[d.i] * x[d.j] for d in elems); buffered = true)
-c, v = add_reduce(c, ngroups, (d.g => d.w * e[d.k] for d in terms))
+c, v = add_sum(c, ngroups, (d.g => d.w * e[d.k] for d in terms))
 c, _ = add_obj(c, (v[g])^2 for g in 1:ngroups)
 ```
 
@@ -2272,7 +2272,7 @@ Supports the full NLPModels evaluation API through second order, on the host
 and on KernelAbstractions backends, with the same restrictions as other
 buffered subexpressions (no oracles, no `prod = true`).
 """
-function add_reduce(
+function add_sum(
         c::C,
         n,
         pairs;
@@ -2285,7 +2285,7 @@ function add_reduce(
     initv = zeros(T, nn)
     if init isa AbstractVector
         length(init) == nn ||
-            throw(DimensionMismatch("add_reduce init has length $(length(init)), expected $nn"))
+            throw(DimensionMismatch("add_sum init has length $(length(init)), expected $nn"))
         copyto!(initv, init)
     else
         fill!(initv, T(init))
@@ -2295,26 +2295,26 @@ function add_reduce(
     tw = T[]
     for p in pairs
         p isa Pair || throw(
-            ArgumentError("add_reduce expects `index => term` pairs; got $(typeof(p))"),
+            ArgumentError("add_sum expects `index => term` pairs; got $(typeof(p))"),
         )
         first(p) isa Integer || throw(
             ArgumentError(
-                "add_reduce destination indices must be data values, not " *
+                "add_sum destination indices must be data values, not " *
                     "symbolic expressions; got $(typeof(first(p)))",
             ),
         )
         j = Int(first(p))
         1 <= j <= nn ||
-            throw(ArgumentError("add_reduce destination index $j is outside 1:$nn"))
-        _reduce_term!(tj, ts, tw, initv, j, last(p), one(T))
+            throw(ArgumentError("add_sum destination index $j is outside 1:$nn"))
+        _sum_term!(tj, ts, tw, initv, j, last(p), one(T))
     end
     for s in ts
         s < 0 &&
             -s > o &&
-            throw(ArgumentError("add_reduce source slot θ[$(-s)] does not exist yet"))
+            throw(ArgumentError("add_sum source slot θ[$(-s)] does not exist yet"))
         s > 0 &&
             s > c.nvar &&
-            throw(ArgumentError("add_reduce source variable x[$s] does not exist"))
+            throw(ArgumentError("add_sum source variable x[$s] does not exist"))
     end
     # CSR by destination slot
     counts = zeros(Int, nn)
@@ -2327,7 +2327,7 @@ function add_reduce(
         ptr[j + 1] = ptr[j] + counts[j]
     end
     perm = sortperm(tj)
-    stage = SubexprReduceStage(
+    stage = SubexprSumStage(
         o,
         nn,
         convert_array(initv, c.backend),
