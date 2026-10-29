@@ -56,23 +56,23 @@ julia> @register_univariate(relu3, drelu3, ddrelu3)
 macro register_univariate(f, df, ddf)
     return esc(
         quote
-            if ExaModels._needs_overload($f, Tuple{ExaModels.AbstractNode})
-                @inline $f(n::N) where {N<:ExaModels.AbstractNode} = ExaModels.Node1($f, n)
+            if $ExaModels._needs_overload($f, Tuple{$ExaModels.AbstractNode})
+                @inline $f(n::N) where {N<:$ExaModels.AbstractNode} = $ExaModels.Node1($f, n)
             end
             # Constant folding: f(Constant{T}()) → Constant(f(T))
-            @inline $f(n::ExaModels.Constant{I}) where {I} = ExaModels.Constant($f(I))
+            @inline $f(n::$ExaModels.Constant{I}) where {I} = $ExaModels.Constant($f(I))
 
-            @inline $f(d::D) where {D<:ExaModels.AbstractAdjointNode} =
-                ExaModels.AdjointNode1($f, $f(d.x), $df(d.x), d)
-            @inline $f(t::T) where {T<:ExaModels.AbstractSecondAdjointNode} =
-                ExaModels.SecondAdjointNode1($f, $f(t.x), $df(t.x), $ddf(t.x), t)
+            @inline $f(d::D) where {D<:$ExaModels.AbstractAdjointNode} =
+                $ExaModels.AdjointNode1($f, $f(d.x), $df(d.x), d)
+            @inline $f(t::T) where {T<:$ExaModels.AbstractSecondAdjointNode} =
+                $ExaModels.SecondAdjointNode1($f, $f(t.x), $df(t.x), $ddf(t.x), t)
 
-            @inline (n::ExaModels.Node1{typeof($f),I})(i, x, θ) where {I} =
+            @inline (n::$ExaModels.Node1{typeof($f),I})(i, x, θ) where {I} =
                 $f(n.inner(i, x, θ))
             # structure-pass twin (θ is a NaNSource only in structure passes: the add-time
             # sparsity probe and the device structure kernels, which run once): not
             # inlined, so the probe each add_con compiles stays small; evaluation inlines the tree
-            (n::ExaModels.Node1{typeof($f),I})(i, x, θ::ExaModels.NaNSource) where {I} =
+            (n::$ExaModels.Node1{typeof($f),I})(i, x, θ::$ExaModels.NaNSource) where {I} =
                 $f(n.inner(i, x, θ))
         end,
     )
@@ -128,32 +128,32 @@ julia> @register_bivariate(relu23, drelu231, drelu232, ddrelu2311, ddrelu2312, d
 macro register_bivariate(f, df1, df2, ddf11, ddf12, ddf22)
     return esc(
         quote
-            if ExaModels._needs_overload($f, Tuple{ExaModels.AbstractNode,ExaModels.AbstractNode})
+            if $ExaModels._needs_overload($f, Tuple{$ExaModels.AbstractNode,$ExaModels.AbstractNode})
                 @inline function $f(
                     d1::D1,
                     d2::D2,
-                ) where {D1<:ExaModels.AbstractNode,D2<:ExaModels.AbstractNode}
-                    ExaModels.Node2($f, d1, d2)
+                ) where {D1<:$ExaModels.AbstractNode,D2<:$ExaModels.AbstractNode}
+                    $ExaModels.Node2($f, d1, d2)
                 end
             end
             # Constant folding: f(Constant{I1}(), Constant{I2}()) → Constant(f(I1,I2))
-            @inline $f(d1::ExaModels.Constant{I1}, d2::ExaModels.Constant{I2}) where {I1, I2} = ExaModels.Constant($f(I1, I2))
+            @inline $f(d1::$ExaModels.Constant{I1}, d2::$ExaModels.Constant{I2}) where {I1, I2} = $ExaModels.Constant($f(I1, I2))
 
-            if ExaModels._needs_overload($f, Tuple{ExaModels.AbstractNode,Real})
+            if $ExaModels._needs_overload($f, Tuple{$ExaModels.AbstractNode,Real})
                 @inline function $f(
                     d1::D1,
                     d2::D2,
-                ) where {D1<:ExaModels.AbstractNode,D2<:Real}
-                    ExaModels.Node2($f, d1, d2)
+                ) where {D1<:$ExaModels.AbstractNode,D2<:Real}
+                    $ExaModels.Node2($f, d1, d2)
                 end
             end
 
-            if ExaModels._needs_overload($f, Tuple{Real,ExaModels.AbstractNode})
+            if $ExaModels._needs_overload($f, Tuple{Real,$ExaModels.AbstractNode})
                 @inline function $f(
                     d1::D1,
                     d2::D2,
-                ) where {D1<:Real,D2<:ExaModels.AbstractNode}
-                    ExaModels.Node2($f, d1, d2)
+                ) where {D1<:Real,D2<:$ExaModels.AbstractNode}
+                    $ExaModels.Node2($f, d1, d2)
                 end
             end
 
@@ -165,63 +165,63 @@ macro register_bivariate(f, df1, df2, ddf11, ddf12, ddf22)
             @inline function $f(
                 d1::D1,
                 d2::D2,
-            ) where {D1<:ExaModels.AbstractNode,D2<:ExaModels.AbstractArgNode}
-                ExaModels.Node2($f, d1, ExaModels.ArgLeaf(d2))
+            ) where {D1<:$ExaModels.AbstractNode,D2<:$ExaModels.AbstractArgNode}
+                $ExaModels.Node2($f, d1, $ExaModels.ArgLeaf(d2))
             end
 
             @inline function $f(
                 d1::D1,
                 d2::D2,
-            ) where {D1<:ExaModels.AbstractArgNode,D2<:ExaModels.AbstractNode}
-                ExaModels.Node2($f, ExaModels.ArgLeaf(d1), d2)
+            ) where {D1<:$ExaModels.AbstractArgNode,D2<:$ExaModels.AbstractNode}
+                $ExaModels.Node2($f, $ExaModels.ArgLeaf(d1), d2)
             end
 
             @inline function $f(
                 d1::D1,
                 d2::D2,
-            ) where {D1<:ExaModels.AbstractAdjointNode,D2<:ExaModels.AbstractAdjointNode}
+            ) where {D1<:$ExaModels.AbstractAdjointNode,D2<:$ExaModels.AbstractAdjointNode}
 
                 x1 = d1.x
                 x2 = d2.x
-                ExaModels.AdjointNode2($f, $f(x1, x2), $df1(x1, x2), $df2(x1, x2), d1, d2)
+                $ExaModels.AdjointNode2($f, $f(x1, x2), $df1(x1, x2), $df2(x1, x2), d1, d2)
             end
             @inline function $f(
                 d1::D1,
                 d2::D2,
             ) where {
-                D1<:ExaModels.AbstractAdjointNode,
-                D2<:Union{Real,ExaModels.ParameterNode},
+                D1<:$ExaModels.AbstractAdjointNode,
+                D2<:Union{Real,$ExaModels.ParameterNode},
             }
 
                 x1 = d1.x
                 x2 = d2
 
-                ExaModels.AdjointNode1($f, $f(x1, x2), $df1(x1, x2), d1)
+                $ExaModels.AdjointNode1($f, $f(x1, x2), $df1(x1, x2), d1)
             end
             @inline function $f(
                 d1::D1,
                 d2::D2,
             ) where {
-                D1<:Union{Real,ExaModels.ParameterNode},
-                D2<:ExaModels.AbstractAdjointNode,
+                D1<:Union{Real,$ExaModels.ParameterNode},
+                D2<:$ExaModels.AbstractAdjointNode,
             }
 
                 x1 = d1
                 x2 = d2.x
-                ExaModels.AdjointNode1($f, $f(x1, x2), $df2(x1, x2), d2)
+                $ExaModels.AdjointNode1($f, $f(x1, x2), $df2(x1, x2), d2)
             end
 
             @inline function $f(
                 t1::T1,
                 t2::T2,
             ) where {
-                T1<:ExaModels.AbstractSecondAdjointNode,
-                T2<:ExaModels.AbstractSecondAdjointNode,
+                T1<:$ExaModels.AbstractSecondAdjointNode,
+                T2<:$ExaModels.AbstractSecondAdjointNode,
             }
 
                 x1 = t1.x
                 x2 = t2.x
-                ExaModels.SecondAdjointNode2(
+                $ExaModels.SecondAdjointNode2(
                     $f,
                     $f(x1, x2),
                     $df1(x1, x2),
@@ -237,14 +237,14 @@ macro register_bivariate(f, df1, df2, ddf11, ddf12, ddf22)
                 t1::T1,
                 t2::T2,
             ) where {
-                T1<:ExaModels.AbstractSecondAdjointNode,
-                T2<:Union{Real,ExaModels.ParameterNode},
+                T1<:$ExaModels.AbstractSecondAdjointNode,
+                T2<:Union{Real,$ExaModels.ParameterNode},
             }
 
                 x1 = t1.x
                 x2 = t2
-                ExaModels.SecondAdjointNode1(
-                    ExaModels.SecondFixed($f),
+                $ExaModels.SecondAdjointNode1(
+                    $ExaModels.SecondFixed($f),
                     $f(x1, x2),
                     $df1(x1, x2),
                     $ddf11(x1, x2),
@@ -255,14 +255,14 @@ macro register_bivariate(f, df1, df2, ddf11, ddf12, ddf22)
                 t1::T1,
                 t2::T2,
             ) where {
-                T1<:Union{Real,ExaModels.ParameterNode},
-                T2<:ExaModels.AbstractSecondAdjointNode,
+                T1<:Union{Real,$ExaModels.ParameterNode},
+                T2<:$ExaModels.AbstractSecondAdjointNode,
             }
 
                 x1 = t1
                 x2 = t2.x
-                ExaModels.SecondAdjointNode1(
-                    ExaModels.FirstFixed($f),
+                $ExaModels.SecondAdjointNode1(
+                    $ExaModels.FirstFixed($f),
                     $f(x1, x2),
                     $df2(x1, x2),
                     $ddf22(x1, x2),
@@ -270,18 +270,18 @@ macro register_bivariate(f, df1, df2, ddf11, ddf12, ddf22)
                 )
             end
 
-            @inline (n::ExaModels.Node2{typeof($f),I1,I2})(i, x, θ) where {I1,I2} =
+            @inline (n::$ExaModels.Node2{typeof($f),I1,I2})(i, x, θ) where {I1,I2} =
                 $f(n.inner1(i, x, θ), n.inner2(i, x, θ))
-            @inline (n::ExaModels.Node2{typeof($f),I1,I2})(i, x, θ) where {I1<:Real,I2} =
+            @inline (n::$ExaModels.Node2{typeof($f),I1,I2})(i, x, θ) where {I1<:Real,I2} =
                 $f(n.inner1, n.inner2(i, x, θ))
-            @inline (n::ExaModels.Node2{typeof($f),I1,I2})(i, x, θ) where {I1,I2<:Real} =
+            @inline (n::$ExaModels.Node2{typeof($f),I1,I2})(i, x, θ) where {I1,I2<:Real} =
                 $f(n.inner1(i, x, θ), n.inner2)
             # sparsity-probe twins, as for Node1 above
-            (n::ExaModels.Node2{typeof($f),I1,I2})(i, x, θ::ExaModels.NaNSource) where {I1,I2} =
+            (n::$ExaModels.Node2{typeof($f),I1,I2})(i, x, θ::$ExaModels.NaNSource) where {I1,I2} =
                 $f(n.inner1(i, x, θ), n.inner2(i, x, θ))
-            (n::ExaModels.Node2{typeof($f),I1,I2})(i, x, θ::ExaModels.NaNSource) where {I1<:Real,I2} =
+            (n::$ExaModels.Node2{typeof($f),I1,I2})(i, x, θ::$ExaModels.NaNSource) where {I1<:Real,I2} =
                 $f(n.inner1, n.inner2(i, x, θ))
-            (n::ExaModels.Node2{typeof($f),I1,I2})(i, x, θ::ExaModels.NaNSource) where {I1,I2<:Real} =
+            (n::$ExaModels.Node2{typeof($f),I1,I2})(i, x, θ::$ExaModels.NaNSource) where {I1,I2<:Real} =
                 $f(n.inner1(i, x, θ), n.inner2)
         end,
     )
