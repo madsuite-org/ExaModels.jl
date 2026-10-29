@@ -45,6 +45,7 @@ const HOST_ONLY_TESTS = (
     :test_nonlinear_prameter_only,
     :test_nonlinear_shapes,
     :test_parameter_e2etest,
+    :test_parameter_update_reuses_model,
     :test_sum_constraint_decomposition,
     :test_sum_constraint_decomposition_multiple_rhs_terms,
     :test_sum_objective_decomposition,
@@ -149,6 +150,42 @@ function test_parameter_e2etest()
     jm = JuMP.Model()
     JuMP.@variable(jm, x)
     @test ExaModels.ExaModel(jm) isa ExaModels.ExaModel
+    return
+end
+
+# issue #281: `set_parameter_value` updates the cached ExaModel in place; a
+# structural change rebuilds it.
+function test_parameter_update_reuses_model()
+    for jm in (
+        JuMP.Model(() -> ExaModels.Optimizer(NLPModelsIpopt.ipopt)),
+        JuMP.direct_model(ExaModels.Optimizer(NLPModelsIpopt.ipopt)),
+    )
+        JuMP.set_attribute(jm, "print_level", 0)
+        JuMP.@variable(jm, x)
+        JuMP.@variable(jm, p in JuMP.Parameter(1.0))
+        JuMP.@constraint(jm, x >= p)
+        JuMP.@objective(jm, Min, x^2)
+        JuMP.optimize!(jm)
+        opt = JuMP.unsafe_backend(jm)
+        em = opt.exa_model
+        @test em isa ExaModels.ExaModel
+        @test JuMP.value(x) ≈ 1.0 atol = 1.0e-6
+        @test JuMP.value(p) == 1.0
+
+        JuMP.set_parameter_value(p, 2.0)
+        @test JuMP.parameter_value(p) == 2.0
+        JuMP.optimize!(jm)
+        @test JuMP.unsafe_backend(jm) === opt
+        @test opt.exa_model === em
+        @test JuMP.value(x) ≈ 2.0 atol = 1.0e-6
+        @test JuMP.value(p) == 2.0
+
+        JuMP.@constraint(jm, x >= 3.0)
+        @test opt.exa_model === nothing
+        JuMP.optimize!(jm)
+        @test opt.exa_model !== em
+        @test JuMP.value(x) ≈ 3.0 atol = 1.0e-6
+    end
     return
 end
 
