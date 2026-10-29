@@ -710,6 +710,11 @@ end
 # exist after instantiation, so they are moved here. A merged family keeps its
 # lazy iterator (see merge.jl): device finalization builds its layout.
 @inline _iters_to_backend(blocks, ::Nothing) = blocks
+# at add time a deferred iterator (`for d in arg.data`) has nothing to move
+# yet: it is moved here, once instantiated (a backend's `convert_array` may
+# broadcast over it, which a placeholder refuses, as Metal's does)
+@inline _add_time_iter(pars, backend) = convert_array(pars, backend)
+@inline _add_time_iter(pars::AbstractArgNode, backend) = pars
 @inline _iters_to_backend(blocks, backend) = map(b -> _iter_to_backend(b, backend), blocks)
 @inline _iter_to_backend(b, backend) = b
 @inline _iter_to_backend(b::Objective, backend) = Objective(b.f, convert_array(b.itr, backend))
@@ -1714,7 +1719,7 @@ end
 @inline function _add_obj(c, f, pars, name = nothing)
     nitr = length(pars)
     nobj = c.nobj + nitr
-    obj = Objective(f, convert_array(pars, c.backend))
+    obj = Objective(f, _add_time_iter(pars, c.backend))
     return _add_obj_store(_merge_obj(c, f, pars), c, obj, f, name, nitr, nobj)
 end
 
@@ -1864,7 +1869,7 @@ function _add_con(c, f, pars, dims, start, lcon, ucon, name, tag)
     lcon = _append_slot(c.backend, c.lcon, lcon, nitr)
     ucon = _append_slot(c.backend, c.ucon, ucon, nitr)
 
-    con = Constraint(f, convert_array(pars, c.backend), o, dims, tag)
+    con = Constraint(f, _add_time_iter(pars, c.backend), o, dims, tag)
 
     return _add_con_store(m, c, con, f, name, nitr, ncon, y0, lcon, ucon)
 end
@@ -2008,7 +2013,7 @@ function _add_con!(c, f, pars, dims, tag)
     oa = c.nconaug
     nitr = length(pars)
     nconaug = c.nconaug + nitr
-    con = ConstraintAugmentation(f, convert_array(pars, c.backend), oa, dims, tag)
+    con = ConstraintAugmentation(f, _add_time_iter(pars, c.backend), oa, dims, tag)
 
     # augmentations stay plain on every backend: on device their accumulation
     # goes through the extension's collision-handling pipeline, and merging
