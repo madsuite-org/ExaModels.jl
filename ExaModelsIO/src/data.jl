@@ -17,12 +17,12 @@
 # position, and the struct's type may not exist when the file is read.
 
 function data_schema(itr::AbstractUnitRange{<:Integer})
-    return Dict("range" => [first(itr), last(itr)]), Pair{String,Vector}[]
+    return Dict("range" => [first(itr), last(itr)]), Pair{String, Vector}[]
 end
 
 function data_schema(itr)
     a = collect(itr)  # also copies GPU arrays to the CPU
-    cols = Pair{String,Vector}[]
+    cols = Pair{String, Vector}[]
     elem = _elem_schema!(cols, "", vec(a))
     return Dict("array" => collect(size(a)), "elem" => elem), cols
 end
@@ -35,21 +35,30 @@ function _elem_schema!(cols, path, v::AbstractVector{T}) where {T}
         return Dict("scalar" => _number_type_name(T))
     elseif T <: NamedTuple || (isconcretetype(T) && isstructtype(T) && !(T <: Tuple))
         names = fieldnames(T)
-        return Dict("namedtuple" => Any[
-            [string(n), _elem_schema!(cols, _join(path, n), [getfield(e, n) for e in v])]
-            for n in names])
+        return Dict(
+            "namedtuple" => Any[
+                [string(n), _elem_schema!(cols, _join(path, n), [getfield(e, n) for e in v])]
+                    for n in names
+            ]
+        )
     elseif T <: Tuple
-        return Dict("tuple" => Any[
-            _elem_schema!(cols, _join(path, i), [e[i] for e in v]) for i in 1:fieldcount(T)])
+        return Dict(
+            "tuple" => Any[
+                _elem_schema!(cols, _join(path, i), [e[i] for e in v]) for i in 1:fieldcount(T)
+            ]
+        )
     end
-    throw(ArgumentError(
-        "ExaModelsIO can store generator data made of numbers, tuples, named tuples and structs of these; got $T"))
+    throw(
+        ArgumentError(
+            "ExaModelsIO can store generator data made of numbers, tuples, named tuples and structs of these; got $T"
+        )
+    )
 end
 
 # Zip typed columns into rows. A function barrier: `parts` is a concretely typed
 # tuple of vectors here, so the loop compiles to plain loads.
-function _rows(wrap, parts::Tuple)
-    n = length(parts[1])
+# `n` is the number of rows, so an element with no columns (an empty tuple) reads back.
+function _rows(wrap, parts::Tuple, n::Int)
     all(p -> length(p) == n, parts) || error("columns of one data block have different lengths")
     return [wrap(map(p -> @inbounds(p[k]), parts)) for k in 1:n]
 end
@@ -57,21 +66,21 @@ end
 # Inverse of `data_schema`.  `col(path)` returns the stored column.
 function data_value(schema, col)
     haskey(schema, "range") && return schema["range"][1]:schema["range"][2]
-    v = _elem_value(schema["elem"], "", col)
     dims = Tuple(Int.(schema["array"]))
+    v = _elem_value(schema["elem"], "", col, prod(dims))
     return length(dims) == 1 ? v : reshape(v, dims)
 end
 
-function _elem_value(s, path, col)
+function _elem_value(s, path, col, n)
     if haskey(s, "scalar")
         return col(isempty(path) ? "value" : path)
     elseif haskey(s, "namedtuple")
         names = Tuple(Symbol(n) for (n, _) in s["namedtuple"])
-        parts = Tuple(_elem_value(e, _join(path, n), col) for (n, e) in s["namedtuple"])
-        return _rows(NamedTuple{names}, parts)
+        parts = Tuple(_elem_value(e, _join(path, k), col, n) for (k, e) in s["namedtuple"])
+        return _rows(NamedTuple{names}, parts, n)
     elseif haskey(s, "tuple")
-        parts = Tuple(_elem_value(e, _join(path, i), col) for (i, e) in enumerate(s["tuple"]))
-        return _rows(identity, parts)
+        parts = Tuple(_elem_value(e, _join(path, i), col, n) for (i, e) in enumerate(s["tuple"]))
+        return _rows(identity, parts, n)
     end
     throw(ArgumentError("unknown data schema $(keys(s))"))
 end

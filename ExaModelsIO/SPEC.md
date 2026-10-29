@@ -1,4 +1,6 @@
-# ExaModelsIO file format, version 1.0
+# ExaModelsIO file format, version 1.1
+
+Version 1.1 adds buffered subexpressions (Section 4.2) to 1.0. Every 1.0 file is a 1.1 file.
 
 This document defines the file format written by `write_model` and read by
 `read_model`. A file describes a nonlinear program
@@ -22,12 +24,12 @@ A file is an HDF5 file with these members.
 | Path | Kind | Contents |
 |:--|:--|:--|
 | `/` attribute `format` | string | `"ExaModelsIO"` |
-| `/` attribute `format_version` | string | `"<major>.<minor>"`, here `"1.0"` |
+| `/` attribute `format_version` | string | `"<major>.<minor>"`, here `"1.1"` |
 | `/` attribute `examodels_version` | string | ExaModels version of the writer (informational) |
 | `/structure` | string dataset | the structure document, UTF-8 JSON (Section 2) |
 | `/arrays/x0`, `lvar`, `uvar` | 1-D datasets, length `nvar` | starting point and variable bounds |
 | `/arrays/y0`, `lcon`, `ucon` | 1-D datasets, length `ncon` | starting multipliers and constraint bounds |
-| `/arrays/theta` | 1-D dataset, length `npar` | parameter values |
+| `/arrays/theta` | 1-D dataset, length `npar` | the θ vector: parameter values, and the last computed values of buffered subexpressions (Section 4.2) |
 | `/data/<block>/...` | datasets | data of each block (Section 4) |
 | `/solution/...` | datasets, optional | solver output (Section 7) |
 
@@ -43,10 +45,11 @@ A JSON object with these keys.
 | `eltype` | number type name of the model (Section 5.1) |
 | `name` | model name (string) |
 | `minimize` | `true` to minimize, `false` to maximize |
-| `nvar`, `ncon`, `npar` | counts of variables, constraints, parameters |
+| `nvar`, `ncon`, `npar` | counts of variables, constraints, and θ entries (parameters plus buffered subexpression values) |
 | `extensions` | names of the user functions the expressions use (Section 6.2), sorted |
 | `variables` | variable blocks (Section 3) |
 | `parameters` | parameter blocks (Section 3) |
+| `subexpressions` | buffered subexpression blocks (Section 4.2); added in 1.1, absent means none |
 | `objectives` | objective blocks (Section 4) |
 | `constraints` | constraint and augmentation blocks, in the order they are applied (Section 4) |
 
@@ -61,7 +64,7 @@ Readers must ignore keys they do not know (Section 8).
 A `dim` is an integer `n` (axis `1:n`) or a pair `[a, b]` (axis `a:b`). The block
 holds `prod(lengths)` entries starting after `offset` entries of the vector, in
 column-major order over its axes. Blocks are listed in increasing `offset`, they
-do not overlap, and they cover the vector. `name` is the name the model gives the
+do not overlap. Variable blocks cover `x`; parameter blocks and buffered subexpression blocks (Section 4.2) together cover `θ`. `name` is the name the model gives the
 block, if any.
 
 Expressions refer to variables and parameters by **global 1-based index**
@@ -108,6 +111,22 @@ it adds `expr(p)` to one row of the base:
   Axis `i` is stored under `<group>/axis_<i>`. Used for constraint blocks written as
   `for a_1 in A_1, …, a_d in A_d`; the block's `shape` is the axis lengths.
 
+### 4.2 Buffered subexpressions (1.1)
+
+A buffered subexpression block holds values that other expressions read, so a
+shared term is evaluated once instead of being repeated at every use. It has
+`group`, `iterator` and `expr` as above, plus `offset` (integer), `name`
+(string or null), and `size` (list of `dim` as in Section 3, or null), the axes
+of the named block; a reader rebuilds the block with these axes. Element `k` of its iterator defines
+
+    θ[offset + k] = expr(p_k),
+
+and expressions read it with a `sub` node (Section 6). Parameter blocks and
+buffered subexpression blocks share θ: they occupy consecutive, non-overlapping
+ranges, and a reader recreates them in increasing `offset`. A buffered block may
+read parameters and buffered values at lower offsets only. The stored values of
+these θ entries are informational: a reader recomputes them from `x`.
+
 ## 5. Numbers and data
 
 ### 5.1 Numbers
@@ -153,6 +172,7 @@ An expression node is a JSON object with exactly one key:
 | `{"prod": [a_1, …]}` | `a_1 * … * a_n` |
 | `{"var": i}` | `x[i]`; `i` is an expression evaluating to an integer |
 | `{"par": i}` | `θ[i]`; as above |
+| `{"sub": i}` | the buffered subexpression value `θ[i]` (1.1); as above |
 | `{"data": [s_1, …]}` | the element `p`, then field `s_j` (a string) or position `s_j` (an integer, 1-based) of the previous result, for each `s_j` in turn; `[]` is `p` itself |
 | `{"const": <number>}` | a number |
 | `{"null": <number or null>}` | a constant term; null means 0 |
@@ -212,6 +232,8 @@ JuliaSmoothOptimizers `GenericExecutionStats` fields of the same names.
 ## 9. Reader obligations
 
 A reader must fail, rather than return a model, when
+
+* the file has buffered subexpressions and the reader cannot build them;
 
 * `format` is not `"ExaModelsIO"` or the major version differs;
 * an extension listed in `extensions` is not supplied;

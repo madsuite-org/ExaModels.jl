@@ -3,11 +3,12 @@ using ExaModels, NLPModels, SparseArrays, LinearAlgebra, Random
 _dense(rows, cols, vals, m, n) = Matrix(sparse(rows, cols, vals, m, n))
 
 function _jac(m, x)
-    r, c = jac_structure(m); _dense(r, c, jac_coord(m, x), m.meta.ncon, m.meta.nvar)
+    r, c = jac_structure(m)
+    return _dense(r, c, jac_coord(m, x), m.meta.ncon, m.meta.nvar)
 end
 function _hess(m, x, y)
     r, c = hess_structure(m); H = _dense(r, c, hess_coord(m, x, y), m.meta.nvar, m.meta.nvar)
-    Symmetric(H + H' - Diagonal(diag(H)))  # lower triangle stored; diagonal counted once
+    return Symmetric(H + H' - Diagonal(diag(H)))  # lower triangle stored; diagonal counted once
 end
 
 "Write `m`, read it back, and compare everything NLPModels can see at a few random points."
@@ -20,7 +21,7 @@ function roundtrip_check(m; seed = 1, path = tempname() * ".h5", kwargs...)
         @test getproperty(a, k) == getproperty(b, k)
     end
     @test m.θ == m2.θ
-    sizes(mm) = [c.size for c in mm.cons if c isa ExaModels.Constraint]
+    sizes(mm) = [b.size for b in ExaModelsIO.constraint_blocks(mm)[1]]  # source blocks: merged families report only a row count
     @test isequal(sizes(m), sizes(m2))
     rng = MersenneTwister(seed)
     for _ in 1:3

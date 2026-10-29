@@ -1,6 +1,6 @@
 name = "ExaModelsIO"
 uuid = "5de388b7-cc24-42d7-844b-21625f2005ef"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Sungho Shin <sushin@mit.edu>"]
 
 [deps]
