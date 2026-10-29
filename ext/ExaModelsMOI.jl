@@ -361,7 +361,7 @@ function ExaModels.ExaModel(
 )
     dest = Optimizer{T}(nothing; backend)
     MOI.copy_to(dest, src)
-    c = to_exacore(dest, backend)
+    c, _ = to_exacore(dest, backend)
     return ExaModels.ExaModel(c; prod)
 end
 
@@ -398,6 +398,11 @@ mutable struct Optimizer{T} <: MOI.AbstractOptimizer
     ucon::Vector{T}
     objs::Vector{Bin}
     cons::Vector{Bin}
+    # The model built by the last `optimize!` and its parameter block. Kept so
+    # that a re-solve after only parameter values changed (issue #281) skips
+    # rebuilding; any structural change sets `exa_model = nothing`.
+    exa_model::Any
+    exa_param::Any
 
     function Optimizer{T}(solver, backend = nothing; kwargs...) where {T}
         return new(
@@ -416,6 +421,8 @@ mutable struct Optimizer{T} <: MOI.AbstractOptimizer
             T[],
             Bin[],
             Bin[],
+            nothing,
+            nothing,
         )
     end
 end
@@ -437,6 +444,13 @@ function MOI.empty!(model::ExaModelsMOI.Optimizer)
     empty!(model.ucon)
     empty!(model.cons)
     empty!(model.objs)
+    _invalidate!(model)
+    return
+end
+
+function _invalidate!(model::Optimizer)
+    model.exa_model = nothing
+    model.exa_param = nothing
     return
 end
 
@@ -459,6 +473,7 @@ function MOI.set(
     sense::MOI.OptimizationSense,
 )
     model.sense = sense
+    _invalidate!(model)
     if sense == MOI.FEASIBILITY_SENSE
         empty!(model.objs)
     end
@@ -497,6 +512,7 @@ function MOI.set(
 }
     empty!(model.objs)
     update_bin!(model.objs, ObjectiveBin(), f)
+    _invalidate!(model)
     return
 end
 
@@ -506,6 +522,7 @@ function MOI.add_variable(model::Optimizer{T}) where {T}
     push!(model.lvar, typemin(T))
     push!(model.uvar, typemax(T))
     push!(model.startvar, zero(T))
+    _invalidate!(model)
     return MOI.VariableIndex(length(model.lvar))
 end
 
@@ -523,9 +540,46 @@ function MOI.add_constrained_variable(
     set::MOI.Parameter{T},
 ) where {T}
     push!(model.pstart, set.value)
+    _invalidate!(model)
     index = PARAMETER_INDEX_THRESHOLD + length(model.pstart)
     ci = MOI.ConstraintIndex{MOI.VariableIndex,typeof(set)}(index)
     return MOI.VariableIndex(index), ci
+end
+
+# Updating a parameter value (`JuMP.set_parameter_value`) only changes `pstart`;
+# the next `optimize!` writes it into the cached model instead of rebuilding.
+
+function MOI.is_valid(
+    model::Optimizer{T},
+    ci::MOI.ConstraintIndex{MOI.VariableIndex,MOI.Parameter{T}},
+) where {T}
+    return 1 <= ci.value - PARAMETER_INDEX_THRESHOLD <= length(model.pstart)
+end
+
+function MOI.supports(
+    ::Optimizer{T},
+    ::MOI.ConstraintSet,
+    ::Type{MOI.ConstraintIndex{MOI.VariableIndex,MOI.Parameter{T}}},
+) where {T}
+    return true
+end
+
+function MOI.get(
+    model::Optimizer{T},
+    ::MOI.ConstraintSet,
+    ci::MOI.ConstraintIndex{MOI.VariableIndex,MOI.Parameter{T}},
+) where {T}
+    return MOI.Parameter(model.pstart[ci.value - PARAMETER_INDEX_THRESHOLD])
+end
+
+function MOI.set(
+    model::Optimizer{T},
+    ::MOI.ConstraintSet,
+    ci::MOI.ConstraintIndex{MOI.VariableIndex,MOI.Parameter{T}},
+    set::MOI.Parameter{T},
+) where {T}
+    model.pstart[ci.value - PARAMETER_INDEX_THRESHOLD] = set.value
+    return
 end
 
 # VariableIndex-in-Set constraints
@@ -578,6 +632,7 @@ function MOI.add_constraint(
 ) where {T}
     @assert f.value < PARAMETER_INDEX_THRESHOLD
     _update_bound(model, f.value, s)
+    _invalidate!(model)
     return MOI.ConstraintIndex{typeof(f),typeof(s)}(f.value)
 end
 
@@ -599,6 +654,7 @@ function MOI.set(
 ) where {T}
     @assert x.value < PARAMETER_INDEX_THRESHOLD
     model.startvar[x.value] = something(value, zero(T))
+    _invalidate!(model)
     return
 end
 
@@ -652,6 +708,7 @@ function MOI.add_constraint(
     l, u = _bounds(s)
     push!(model.lcon, l)
     push!(model.ucon, u)
+    _invalidate!(model)
     return MOI.ConstraintIndex{typeof(f),typeof(s)}(row)
 end
 
@@ -662,8 +719,9 @@ function to_exacore(model::Optimizer{T}, backend) where {T}
         minimize = model.sense != MOI.MAX_SENSE,
         concrete = Val(true),
     )
+    param = nothing
     if !isempty(model.pstart)
-        c, _ = ExaModels.add_par(c, model.pstart)
+        c, param = ExaModels.add_par(c, model.pstart)
     end
     c, _ = ExaModels.add_var(
         c,
@@ -681,7 +739,7 @@ function to_exacore(model::Optimizer{T}, backend) where {T}
     for bin in model.objs
         c, _ = ExaModels.add_obj(c, bin.head, bin.data)
     end
-    return c
+    return c, param
 end
 
 # MOI.copy_to
@@ -695,8 +753,13 @@ end
 # MOI.optimize!
 
 function MOI.optimize!(model::Optimizer)
-    core = to_exacore(model, model.backend)
-    exa_model = ExaModels.ExaModel(core; prod = true)
+    if model.exa_model === nothing
+        core, model.exa_param = to_exacore(model, model.backend)
+        model.exa_model = ExaModels.ExaModel(core; prod = true)
+    elseif model.exa_param !== nothing
+        ExaModels.set_value!(model.exa_model, model.exa_param, model.pstart)
+    end
+    exa_model = model.exa_model
     start_time = time()
     result = model.solver(exa_model; model.options...)
     model.result = (
@@ -794,7 +857,7 @@ function MOI.get(
 )
     MOI.check_result_index_bounds(model, attr)
     if vi.value > PARAMETER_INDEX_THRESHOLD
-        return model.pstart[vi.value]
+        return model.pstart[vi.value-PARAMETER_INDEX_THRESHOLD]
     end
     return model.result.solution[vi.value]
 end
