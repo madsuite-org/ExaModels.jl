@@ -29,9 +29,9 @@ function write_model(path::AbstractString, m::ExaModel; solution = nothing)
         f["structure"] = JSON3.write(structure)
         arrays = HDF5.create_group(f, "arrays")
         for (k, v) in (
-            "x0" => meta.x0, "lvar" => meta.lvar, "uvar" => meta.uvar,
-            "y0" => meta.y0, "lcon" => meta.lcon, "ucon" => meta.ucon, "theta" => m.θ,
-        )
+                "x0" => meta.x0, "lvar" => meta.lvar, "uvar" => meta.uvar,
+                "y0" => meta.y0, "lcon" => meta.lcon, "ucon" => meta.ucon, "theta" => m.θ,
+            )
             arrays[k] = Array(v)
         end
         for (k, v) in columns
@@ -48,54 +48,39 @@ function _write_solution(f, s)
         hasproperty(s, k) && (g[string(k)] = Array(getproperty(s, k)))
     end
     hasproperty(s, :objective) && (g["objective"] = getproperty(s, :objective))
-    hasproperty(s, :status) && (g["status"] = string(getproperty(s, :status)))
+    return hasproperty(s, :status) && (g["status"] = string(getproperty(s, :status)))
 end
-
-# ExaModels keeps blocks in reverse order of addition.
-_in_order(t::Tuple) = reverse(t)
 
 _dims(size) = Any[d isa Integer ? d : [first(d), last(d)] for d in size]
 
-# The name under which `block` is registered in `refs`, or nothing. Matched by
-# kind and offset: a handle and the stored block can differ in type (a device
-# model's handle holds a device iterator, a merged block is expanded into
-# source blocks by `ExaModels.expand_family`).
-_kind(::ExaModels.AbstractVariable) = :var
-_kind(::ExaModels.AbstractParameter) = :par
-_kind(::ExaModels.Constraint) = :con
-_kind(::ExaModels.ConstraintAugmentation) = :aug
-_kind(x) = typeof(x)
-function _ref_name(refs, block)
+# The name under which a block is registered in `refs`, or nothing.
+function _ref_name(refs, T::Type, offset)
     for (k, v) in pairs(refs)
-        _kind(v) === _kind(block) && hasproperty(v, :offset) && v.offset == block.offset && return string(k)
+        v isa T && v.offset == offset && return string(k)
     end
     return nothing
 end
-# Merged blocks (same-structure blocks that ExaModels merges into one family)
-# are written as their source blocks, one per segment.
-_blocks(t) = reduce(vcat, [ExaModels.expand_family(b) for b in _in_order(t)]; init = Any[])
-# A family sits at its first block's position, so `add_con A1; add_con B;
-# add_con A2` stores (B, [A1, A2]) and expands to A1, A2, B, while the reader
-# rebuilds blocks in file order and checks each offset. Constraints are
-# written by row offset instead; an augmentation goes after its base (a
-# stable sort keeps augmentations of one base in add order).
-_con_key(b::ExaModels.Constraint) = (b.offset, 0)
-_con_key(b::ExaModels.ConstraintAugmentation) = (b.f.o0, 1)
-_con_blocks(t) = sort!(_blocks(t); by = _con_key, alg = Base.Sort.DEFAULT_STABLE)
+
+_warn_tag(tag) = tag === nothing ||
+    @warn "ExaModelsIO does not store block tags; dropping tag $(tag)" maxlog = 1
 
 function describe(m::ExaModel{T}) where {T}
     refs = m.refs === nothing ? (;) : m.refs
-    columns = Pair{String,Vector}[]
-    _check_tag(b) = hasproperty(b, :tag) && b.tag !== nothing &&
-        @warn "ExaModelsIO does not store block tags; dropping tag $(b.tag)" maxlog = 1
+    columns = Pair{String, Vector}[]
 
     variables = map(collect(_in_order(m.vars))) do v
-        _check_tag(v)
-        Dict("name" => _ref_name(refs, v), "size" => _dims(v.size), "offset" => v.offset)
+        _warn_tag(v.tag)
+        Dict(
+            "name" => _ref_name(refs, ExaModels.Variable, v.offset), "size" => _dims(v.size),
+            "offset" => v.offset
+        )
     end
     parameters = map(collect(_in_order(m.pars))) do p
-        _check_tag(p)
-        Dict("name" => _ref_name(refs, p), "size" => _dims(p.size), "offset" => p.offset)
+        _warn_tag(p.tag)
+        Dict(
+            "name" => _ref_name(refs, ExaModels.Parameter, p.offset), "size" => _dims(p.size),
+            "offset" => p.offset
+        )
     end
 
     function store(group, itr)
@@ -107,56 +92,78 @@ function describe(m::ExaModel{T}) where {T}
     # A generator `for i in A, j in B` iterates the product of its axes, which
     # ExaModels keeps as the constraint's `size`.  Storing the axes instead of
     # the product rebuilds the same generator, and with it the same `size`.
-    function block(kind, b, k)
-        _check_tag(b)
+    function block(kind, b::PlainBlock, k)
+        _warn_tag(b.tag)
         group = "data/$(kind)_$k"
-        d = Dict{String,Any}("group" => group)
-        if b isa ExaModels.Constraint && length(b.size) > 1 && !(b.f.f isa ExaModels.Null{Nothing}) &&
+        d = Dict{String, Any}("group" => group)
+        dims_form = b.tree isa ExaModels.Null && b.tree.value === nothing
+        if b.size !== nothing && length(b.size) > 1 && !dims_form &&
                 isequal(vec(collect(b.itr)), vec(collect(Iterators.product(b.size...))))
             d["iterator"] = Dict("product" => [store("$group/axis_$i", a) for (i, a) in enumerate(b.size)])
+        elseif b.size !== nothing && length(b.size) == 1 && b.size[1] isa AbstractUnitRange &&
+                !dims_form && isequal(collect(b.itr), collect(b.size[1]))
+            # a collected range, e.g. a buffered block over `3:4`: store the range so
+            # the rebuilt block has the same axis
+            d["iterator"] = Dict("collection" => store(group, b.size[1]))
         else
             d["iterator"] = Dict("collection" => store(group, b.itr))
         end
         return d
     end
 
-    objectives = map(enumerate(_blocks(m.objs))) do (k, o)
-        d = block("obj", o, k)
-        d["expr"] = encode(o.f.f)
+    objectives = map(enumerate(objective_blocks(m))) do (k, b)
+        d = block("obj", b, k)
+        d["expr"] = encode(b.tree)
         d
     end
 
-    constraints = map(enumerate(_con_blocks(m.cons))) do (k, c)
-        d = block("con", c, k)
-        if c isa ExaModels.ConstraintAugmentation
-            d["kind"] = "augmentation"
-            d["base_offset"] = c.f.o0  # offset of the constraint it adds to
-            if c.f.f isa Pair
-                d["index"] = encode(c.f.f.first)
-                d["expr"] = encode(c.f.f.second)
-            else  # element k adds to row k of the base constraint (as built by ExaModelsMOI)
-                d["index"] = nothing
-                d["expr"] = encode(c.f.f)
-            end
+    cons, augs = constraint_blocks(m)
+    constraints = map(enumerate(cons)) do (k, b)
+        d = block("con", b, k)
+        d["kind"] = "constraint"
+        d["name"] = _ref_name(refs, ExaModels.Constraint, b.offset)
+        d["offset"] = b.offset
+        d["shape"] = collect(size(b.itr))
+        if b.tree isa ExaModels.Null && b.tree.value === nothing  # add_con(core, dims...), filled by add_con!
+            all(a -> a isa Integer || a isa AbstractUnitRange, b.size) || throw(
+                ArgumentError(
+                    "ExaModelsIO cannot store constraint dimensions $(b.size)"
+                )
+            )
+            d["size"] = _dims(b.size)
+            d["expr"] = nothing
         else
-            d["kind"] = "constraint"
-            d["name"] = _ref_name(refs, c)
-            d["offset"] = c.offset
-            d["shape"] = collect(size(c.itr))
-            if c.f.f isa ExaModels.Null{Nothing}  # built as add_con(core, dims...), filled by add_con!
-                all(a -> a isa Integer || a isa AbstractUnitRange, c.size) || throw(ArgumentError(
-                    "ExaModelsIO cannot store constraint dimensions $(c.size)"))
-                d["size"] = _dims(c.size)
-                d["expr"] = nothing
-            else
-                d["expr"] = encode(c.f.f)
-            end
+            d["expr"] = encode(b.tree)
         end
+        d
+    end
+    for (k, b) in enumerate(augs)
+        d = block("aug", b, k)
+        d["kind"] = "augmentation"
+        d["base_offset"] = b.offset  # offset of the constraint it adds to
+        if b.tree isa Pair
+            d["index"] = encode(b.tree.first)
+            d["expr"] = encode(b.tree.second)
+        else  # element k adds to row k of the base constraint (as built by ExaModelsMOI)
+            d["index"] = nothing
+            d["expr"] = encode(b.tree)
+        end
+        push!(constraints, d)
+    end
+
+    subexpressions = map(enumerate(stage_blocks(m))) do (k, b)
+        d = block("sub", b, k)
+        d["offset"] = b.offset
+        d["name"] = _has(:BufferedExpression) ?
+            _ref_name(refs, ExaModels.BufferedExpression, b.offset) : nothing
+        d["size"] = b.size !== nothing && all(a -> a isa Integer || a isa AbstractUnitRange, b.size) ?
+            _dims(b.size) : nothing
+        d["expr"] = encode(b.tree)
         d
     end
 
     exts = Set{String}()
-    for b in Iterators.flatten((objectives, constraints)), k in ("expr", "index")
+    for b in Iterators.flatten((objectives, constraints, subexpressions)), k in ("expr", "index")
         _collect_extensions!(exts, get(b, k, nothing))
     end
 
@@ -167,6 +174,7 @@ function describe(m::ExaModel{T}) where {T}
         "minimize" => m.meta.minimize,
         "nvar" => m.meta.nvar, "ncon" => m.meta.ncon, "npar" => length(m.θ),
         "variables" => variables, "parameters" => parameters,
+        "subexpressions" => subexpressions,
         "objectives" => objectives, "constraints" => constraints,
     )
     return structure, columns
@@ -177,7 +185,7 @@ function _collect_extensions!(exts, d)
     d isa AbstractDict || return exts
     for (k, v) in d
         if k == "op"
-            startswith(v[1], EXT_PREFIX) && push!(exts, v[1][length(EXT_PREFIX)+1:end])
+            startswith(v[1], EXT_PREFIX) && push!(exts, v[1][(length(EXT_PREFIX) + 1):end])
             foreach(a -> _collect_extensions!(exts, a), v[2:end])
         elseif v isa AbstractVector
             foreach(a -> _collect_extensions!(exts, a), v)

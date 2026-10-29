@@ -26,9 +26,10 @@ export write_model, read_model, read_solution
 
 const FORMAT = "ExaModelsIO"
 # major.minor: a reader accepts files of its major version; a minor version only adds.
-const FORMAT_VERSION = v"1.0"
+const FORMAT_VERSION = v"1.1"
 
 include("vocabulary.jl")
+include("blocks.jl")
 include("tree.jl")
 include("data.jl")
 include("write.jl")

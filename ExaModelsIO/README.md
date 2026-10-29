@@ -62,6 +62,9 @@ the same fields, so reading does not need the package that defined it.
   `read_model(path; functions = Dict("MyModule.f" => f))`; the file lists the
   names it needs, and reading fails if one is missing.
 - Functions from SpecialFunctions.jl need that package loaded when reading.
+- Buffered subexpressions (`add_expr(...; buffered = true)`) are stored as their
+  own blocks (format 1.1); reading them needs an ExaModels that has them.
+  Buffered sums (`add_sum`) are not supported yet.
 - Block tags are not stored (a warning is printed).
 - Models with oracles (`ExaModelWithOracle`) and two-stage models are not
   supported.
