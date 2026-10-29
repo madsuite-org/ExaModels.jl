@@ -25,7 +25,7 @@ end
 Base.:(==)(x::_Mutable, y::_Mutable) = x.a == y.a
 
 function runtests()
-    @testset "Argument tests" begin
+    return @testset "Argument tests" begin
 
         @testset "instantiate is the identity without an arg dependency" begin
             v = [1.0, 2.0]
@@ -230,6 +230,34 @@ function runtests()
             @test repr(length(arg.v)) == "length(arg.v)"
         end
 
+        @testset "a deferred iterator keeps an undeclared recipe's block plain" begin
+            # a mergeable tree (concrete-size variable) over `arg.data`: the family
+            # merge must leave the iterator alone, since its length and eltype
+            # are deferred nodes until instantiation
+            c = ExaModels.ExaCore()
+            c, p = ExaModels.add_var(c, 3)
+            c, _ = ExaModels.add_obj(c, (p[1] * exp(p[2] * d.t) - d.y)^2 for d in arg.data)
+            c, _ = ExaModels.add_con(c, p[1] * d.t + p[3] for d in arg.data; lcon = -1.0, ucon = 1.0)
+            data = [(t = 0.1k, y = 1.0 + k) for k in 1:4]
+            m = ExaModels.ExaModel(c, (data = data,))
+            xv = [1.0, 0.5, -0.25]
+            @test NLPModels.obj(m, xv) ≈ sum((xv[1] * exp(xv[2] * d.t) - d.y)^2 for d in data)
+            @test NLPModels.cons(m, xv) ≈ [xv[1] * d.t + xv[3] for d in data]
+
+            # after a deferred-length block the core's counters are deferred, so
+            # a later block with a concrete iterator has deferred row/nonzero
+            # bases: it stays plain too and instantiates with them
+            c = ExaModels.ExaCore(concrete = Val(true))
+            c, p = ExaModels.add_var(c, 3)
+            c, _ = ExaModels.add_obj(c, (p[1] * d.t - d.y)^2 for d in arg.data)
+            c, _ = ExaModels.add_obj(c, p[2]^2 for _ in 1:1)
+            c, _ = ExaModels.add_con(c, p[1] * d.t + p[3] for d in arg.data; lcon = -1.0, ucon = 1.0)
+            c, _ = ExaModels.add_con(c, p[1] - 1.0 for _ in 1:1)
+            m = ExaModels.ExaModel(c, (data = data,))
+            @test NLPModels.obj(m, xv) ≈ sum((xv[1] * d.t - d.y)^2 for d in data) + xv[2]^2
+            @test NLPModels.cons(m, xv) ≈ [[xv[1] * d.t + xv[3] for d in data]; xv[1] - 1.0]
+        end
+
         @testset "a converted iterable stays on its backend" begin
             # The deferred collect in _adapt_gen must not migrate an argument
             # back to the host: collect(::CuArray) is a Vector, so a recipe
@@ -242,7 +270,7 @@ function runtests()
                 c, d = ExaModels.ExaCore(nargs = Val(1))
                 ExaModels.@add_var(c, x, length(d.rows))
                 ExaModels.@add_obj(c, (x[r.i] - r.w)^2 for r in d.rows)
-                rows = [(i = i, w = Float64(i)) for i = 1:5]
+                rows = [(i = i, w = Float64(i)) for i in 1:5]
                 dev = ExaModels.convert_array(rows, backend)
                 m = ExaModels.ExaModel(c, (; rows = dev); backend = backend)
                 @testset "$backend" begin

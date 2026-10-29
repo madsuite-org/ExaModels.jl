@@ -80,6 +80,7 @@ makedocs(
         prettyurls = true,
         sidebar_sitename = true,
         collapselevel = 1,
+        size_threshold_ignore = ["core.md"],   # the whole-module API page
     ),
     pages = _PAGES,
     clean = false,

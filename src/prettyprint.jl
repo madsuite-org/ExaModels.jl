@@ -38,62 +38,62 @@ _opname(::Type{typeof(^)}) = "^"
 
 # Helper to print expression tree
 function _print_tree(io::IO, node::Constant{T}, indent::Int) where {T}
-    print(io, " "^indent, T)
+    return print(io, " "^indent, T)
 end
 function _print_tree(io::IO, node::Val{T}, indent::Int) where {T}
-    print(io, " "^indent, T)
+    return print(io, " "^indent, T)
 end
 function _print_tree(io::IO, node::Null{Nothing}, indent::Int)
-    print(io, " "^indent, "0")
+    return print(io, " "^indent, "0")
 end
 function _print_tree(io::IO, node::Null{T}, indent::Int) where {T}
-    print(io, " "^indent, node.value)
+    return print(io, " "^indent, node.value)
 end
-function _print_tree(io::IO, node::Var{I}, indent::Int) where {I<:AbstractNode}
+function _print_tree(io::IO, node::Var{I}, indent::Int) where {I <: AbstractNode}
     print(io, " "^indent, "x[")
     _print_tree(io, node.i, 0)
-    print(io, "]")
+    return print(io, "]")
 end
 function _print_tree(io::IO, node::Var{I}, indent::Int) where {I}
-    print(io, " "^indent, "x[", node.i, "]")
+    return print(io, " "^indent, "x[", node.i, "]")
 end
-function _print_tree(io::IO, node::ParameterNode{I}, indent::Int) where {I<:AbstractNode}
+function _print_tree(io::IO, node::ParameterNode{I}, indent::Int) where {I <: AbstractNode}
     print(io, " "^indent, "θ[")
     _print_tree(io, node.i, 0)
-    print(io, "]")
+    return print(io, "]")
 end
 function _print_tree(io::IO, node::ParameterNode{I}, indent::Int) where {I}
-    print(io, " "^indent, "θ[", node.i, "]")
+    return print(io, " "^indent, "θ[", node.i, "]")
 end
 function _print_tree(io::IO, node::DataSource, indent::Int)
-    print(io, " "^indent, "i")
+    return print(io, " "^indent, "i")
 end
 function _print_tree(io::IO, node::ArgLeaf, indent::Int)
-    print(io, " "^indent, _arg_string(getfield(node, :a)))
+    return print(io, " "^indent, _arg_string(getfield(node, :a)))
 end
-function _print_tree(io::IO, node::DataIndexed{I,n}, indent::Int) where {I,n}
+function _print_tree(io::IO, node::DataIndexed{I, n}, indent::Int) where {I, n}
     _print_tree(io, getfield(node, :inner), 0)  # getfield bypasses getproperty override
-    if n isa Integer
+    return if n isa Integer
         print(io, "[", n, "]")
     else
         print(io, ".", n)
     end
 end
 function _print_tree(io::IO, node::VarSource, indent::Int)
-    print(io, " "^indent, "x")
+    return print(io, " "^indent, "x")
 end
 function _print_tree(io::IO, node::ParameterSource, indent::Int)
-    print(io, " "^indent, "θ")
+    return print(io, " "^indent, "θ")
 end
 function _print_tree(io::IO, node::Node1{typeof(abs2)}, indent::Int)
     print(io, " "^indent)
     _print_tree(io, node.inner, 0)
-    print(io, "^2")
+    return print(io, "^2")
 end
 function _print_tree(io::IO, node::Node1{F}, indent::Int) where {F}
     print(io, " "^indent, _opname(F), "(")
     _print_tree(io, node.inner, 0)
-    print(io, ")")
+    return print(io, ")")
 end
 # Check if a node is a zero constant
 _is_zero(::Null{Nothing}) = true
@@ -127,7 +127,7 @@ _node_prec(_) = 10  # leaves / function calls never need parens
 
 # Print child, wrapping in parens if its precedence is lower than the parent's.
 function _print_child(io::IO, child, parent_prec::Int)
-    if _node_prec(child) < parent_prec
+    return if _node_prec(child) < parent_prec
         print(io, "(")
         _print_tree(io, child, 0)
         print(io, ")")
@@ -158,7 +158,7 @@ function _print_tree(io::IO, node::Node2{F}, indent::Int) where {F}
     elseif op == "/" && _is_one(b)
         return _print_tree(io, a, indent)
     end
-    if op == "^"
+    return if op == "^"
         print(io, " "^indent)
         _print_child(io, a, prec)
         print(io, "^")
@@ -178,8 +178,8 @@ function _print_tree(io::IO, node::Node2{F}, indent::Int) where {F}
 end
 
 # Handle Pair nodes (used in constraint augmentation: index => expr)
-function _print_tree(io::IO, node::Pair{P,S}, indent::Int) where {P,S<:AbstractNode}
-    _print_tree(io, node.second, indent)
+function _print_tree(io::IO, node::Pair{P, S}, indent::Int) where {P, S <: AbstractNode}
+    return _print_tree(io, node.second, indent)
 end
 
 # Compact expression string for a node
@@ -199,110 +199,112 @@ function _expr_string(node)
                 break
             end
         end
-        matched && return s[2:end-1]
+        matched && return s[2:(end - 1)]
     end
     return s
 end
 
 # Fallback for non-node types (e.g., Real constants in SIMDFunction.f)
 function _print_tree(io::IO, node::Real, indent::Int)
-    print(io, " "^indent, node)
+    return print(io, " "^indent, node)
 end
 
 # Generic fallback for unknown types
 function _print_tree(io::IO, node, indent::Int)
-    print(io, " "^indent, node)
+    return print(io, " "^indent, node)
 end
 
 # --- Symbolic expression nodes ---
 
 function Base.show(io::IO, node::Constant{T}) where {T}
-    print(io, T)
+    return print(io, T)
 end
 
 function Base.show(io::IO, node::Null{Nothing})
-    print(io, "Null(0)")
+    return print(io, "Null(0)")
 end
 function Base.show(io::IO, node::Null{T}) where {T}
-    print(io, "Null(", node.value, ")")
+    return print(io, "Null(", node.value, ")")
 end
 
 function Base.show(io::IO, node::VarSource)
-    print(io, "VarSource()")
+    return print(io, "VarSource()")
 end
 
 function Base.show(io::IO, node::Var{I}) where {I}
-    print(io, _expr_string(node))
+    return print(io, _expr_string(node))
 end
 
 function Base.show(io::IO, node::ParameterSource)
-    print(io, "ParameterSource()")
+    return print(io, "ParameterSource()")
 end
 
 function Base.show(io::IO, node::ParameterNode{I}) where {I}
-    print(io, _expr_string(node))
+    return print(io, _expr_string(node))
 end
 
 function Base.show(io::IO, node::DataSource)
-    print(io, "i")
+    return print(io, "i")
 end
 
-function Base.show(io::IO, node::DataIndexed{I,n}) where {I,n}
-    print(io, _expr_string(node))
+function Base.show(io::IO, node::DataIndexed{I, n}) where {I, n}
+    return print(io, _expr_string(node))
 end
 
-function Base.show(io::IO, node::Node1{F,I}) where {F,I}
-    print(io, _expr_string(node))
+function Base.show(io::IO, node::Node1{F, I}) where {F, I}
+    return print(io, _expr_string(node))
 end
 
-function Base.show(io::IO, node::Node2{F,I1,I2}) where {F,I1,I2}
-    print(io, _expr_string(node))
+function Base.show(io::IO, node::Node2{F, I1, I2}) where {F, I1, I2}
+    return print(io, _expr_string(node))
 end
 
 # --- First-order adjoint nodes ---
 
 function Base.show(io::IO, node::AdjointNull{V}) where {V}
-    print(io, "AdjointNull(x = ", node.x, ")")
+    return print(io, "AdjointNull(x = ", node.x, ")")
 end
 
-function Base.show(io::IO, node::AdjointNodeVar{I,T}) where {I,T}
-    print(io, "AdjointNodeVar(i = ", node.i, ", x = ", node.x, ")")
+function Base.show(io::IO, node::AdjointNodeVar{I, T}) where {I, T}
+    return print(io, "AdjointNodeVar(i = ", node.i, ", x = ", node.x, ")")
 end
 
-function Base.show(io::IO, node::AdjointNode1{F,T,I}) where {F,T,I}
-    print(io, "AdjointNode1{", _opname(F), "}(x = ", node.x, ", y = ", node.y, ")")
+function Base.show(io::IO, node::AdjointNode1{F, T, I}) where {F, T, I}
+    return print(io, "AdjointNode1{", _opname(F), "}(x = ", node.x, ", y = ", node.y, ")")
 end
 
-function Base.show(io::IO, node::AdjointNode2{F,T,I1,I2}) where {F,T,I1,I2}
-    print(io, "AdjointNode2{", _opname(F), "}(x = ", node.x, ", y1 = ", node.y1, ", y2 = ", node.y2, ")")
+function Base.show(io::IO, node::AdjointNode2{F, T, I1, I2}) where {F, T, I1, I2}
+    return print(io, "AdjointNode2{", _opname(F), "}(x = ", node.x, ", y1 = ", node.y1, ", y2 = ", node.y2, ")")
 end
 
 function Base.show(io::IO, node::AdjointNodeSource{VT}) where {VT}
-    print(io, "AdjointNodeSource{", VT, "}()")
+    return print(io, "AdjointNodeSource{", VT, "}()")
 end
 
 # --- Second-order adjoint nodes ---
 
 function Base.show(io::IO, node::SecondAdjointNull{V}) where {V}
-    print(io, "SecondAdjointNull(x = ", node.x, ")")
+    return print(io, "SecondAdjointNull(x = ", node.x, ")")
 end
 
-function Base.show(io::IO, node::SecondAdjointNodeVar{I,T}) where {I,T}
-    print(io, "SecondAdjointNodeVar(i = ", node.i, ", x = ", node.x, ")")
+function Base.show(io::IO, node::SecondAdjointNodeVar{I, T}) where {I, T}
+    return print(io, "SecondAdjointNodeVar(i = ", node.i, ", x = ", node.x, ")")
 end
 
-function Base.show(io::IO, node::SecondAdjointNode1{F,T,I}) where {F,T,I}
-    print(io, "SecondAdjointNode1{", _opname(F), "}(x = ", node.x, ", y = ", node.y, ", h = ", node.h, ")")
+function Base.show(io::IO, node::SecondAdjointNode1{F, T, I}) where {F, T, I}
+    return print(io, "SecondAdjointNode1{", _opname(F), "}(x = ", node.x, ", y = ", node.y, ", h = ", node.h, ")")
 end
 
-function Base.show(io::IO, node::SecondAdjointNode2{F,T,I1,I2}) where {F,T,I1,I2}
-    print(io, "SecondAdjointNode2{", _opname(F), "}(x = ", node.x,
+function Base.show(io::IO, node::SecondAdjointNode2{F, T, I1, I2}) where {F, T, I1, I2}
+    return print(
+        io, "SecondAdjointNode2{", _opname(F), "}(x = ", node.x,
         ", y1 = ", node.y1, ", y2 = ", node.y2,
-        ", h11 = ", node.h11, ", h12 = ", node.h12, ", h22 = ", node.h22, ")")
+        ", h11 = ", node.h11, ", h12 = ", node.h12, ", h22 = ", node.h22, ")"
+    )
 end
 
 function Base.show(io::IO, node::SecondAdjointNodeSource{VT}) where {VT}
-    print(io, "SecondAdjointNodeSource{", VT, "}()")
+    return print(io, "SecondAdjointNodeSource{", VT, "}()")
 end
 
 # --- Short type name (use typeof(node) for full info) ---
@@ -345,7 +347,7 @@ show(io, typeof(node))
 fulltype(node) = fulltype(stdout, node)
 function fulltype(io::IO, node)
     show(IOContext(io, :fulltype => true), typeof(node))
-    println(io)
+    return println(io)
 end
 
 _short_type(::Null{Nothing}) = "Null"
@@ -375,55 +377,54 @@ _short_type(::SecondAdjointNodeSource) = "SecondAdjointNodeSource"
 # `short_type_printing.jl` and `enable_short_type_printing`.
 
 
-
 # --- MIME "text/plain" for detailed display ---
 
 function Base.show(io::IO, ::MIME"text/plain", node::AbstractNode)
     println(io, _short_type(node), "  (use fulltype(node) or IOContext(io, :fulltype => true) for full type)")
-    print(io, "  ", _expr_string(node))
+    return print(io, "  ", _expr_string(node))
 end
 
-function Base.show(io::IO, ::MIME"text/plain", node::AdjointNode1{F,T,I}) where {F,T,I}
+function Base.show(io::IO, ::MIME"text/plain", node::AdjointNode1{F, T, I}) where {F, T, I}
     println(io, _short_type(node))
     println(io, "  x = ", node.x, ", y = ", node.y)
-    print(io, "  inner: ", node.inner)
+    return print(io, "  inner: ", node.inner)
 end
 
-function Base.show(io::IO, ::MIME"text/plain", node::AdjointNode2{F,T,I1,I2}) where {F,T,I1,I2}
+function Base.show(io::IO, ::MIME"text/plain", node::AdjointNode2{F, T, I1, I2}) where {F, T, I1, I2}
     println(io, _short_type(node))
     println(io, "  x = ", node.x, ", y1 = ", node.y1, ", y2 = ", node.y2)
     println(io, "  inner1: ", node.inner1)
-    print(io, "  inner2: ", node.inner2)
+    return print(io, "  inner2: ", node.inner2)
 end
 
 function Base.show(io::IO, ::MIME"text/plain", node::AdjointNull{V}) where {V}
-    print(io, _short_type(node), "(x = ", node.x, ")")
+    return print(io, _short_type(node), "(x = ", node.x, ")")
 end
 
-function Base.show(io::IO, ::MIME"text/plain", node::AdjointNodeVar{I,T}) where {I,T}
-    print(io, _short_type(node), "(i = ", node.i, ", x = ", node.x, ")")
+function Base.show(io::IO, ::MIME"text/plain", node::AdjointNodeVar{I, T}) where {I, T}
+    return print(io, _short_type(node), "(i = ", node.i, ", x = ", node.x, ")")
 end
 
-function Base.show(io::IO, ::MIME"text/plain", node::SecondAdjointNode1{F,T,I}) where {F,T,I}
+function Base.show(io::IO, ::MIME"text/plain", node::SecondAdjointNode1{F, T, I}) where {F, T, I}
     println(io, _short_type(node))
     println(io, "  x = ", node.x, ", y = ", node.y, ", h = ", node.h)
-    print(io, "  inner: ", node.inner)
+    return print(io, "  inner: ", node.inner)
 end
 
-function Base.show(io::IO, ::MIME"text/plain", node::SecondAdjointNode2{F,T,I1,I2}) where {F,T,I1,I2}
+function Base.show(io::IO, ::MIME"text/plain", node::SecondAdjointNode2{F, T, I1, I2}) where {F, T, I1, I2}
     println(io, _short_type(node))
     println(io, "  x = ", node.x, ", y1 = ", node.y1, ", y2 = ", node.y2)
     println(io, "  h11 = ", node.h11, ", h12 = ", node.h12, ", h22 = ", node.h22)
     println(io, "  inner1: ", node.inner1)
-    print(io, "  inner2: ", node.inner2)
+    return print(io, "  inner2: ", node.inner2)
 end
 
 function Base.show(io::IO, ::MIME"text/plain", node::SecondAdjointNull{V}) where {V}
-    print(io, _short_type(node), "(x = ", node.x, ")")
+    return print(io, _short_type(node), "(x = ", node.x, ")")
 end
 
-function Base.show(io::IO, ::MIME"text/plain", node::SecondAdjointNodeVar{I,T}) where {I,T}
-    print(io, _short_type(node), "(i = ", node.i, ", x = ", node.x, ")")
+function Base.show(io::IO, ::MIME"text/plain", node::SecondAdjointNodeVar{I, T}) where {I, T}
+    return print(io, _short_type(node), "(i = ", node.i, ", x = ", node.x, ")")
 end
 
 _short_type(::SumNode) = "SumNode"
@@ -431,10 +432,10 @@ _short_type(::ProdNode) = "ProdNode"
 
 # Pretty printing and show for SumNode / ProdNode (must be after struct definitions)
 function Base.show(io::IO, node::SumNode)
-    print(io, _expr_string(node))
+    return print(io, _expr_string(node))
 end
 function Base.show(io::IO, node::ProdNode)
-    print(io, _expr_string(node))
+    return print(io, _expr_string(node))
 end
 function _print_tree(io::IO, node::SumNode, indent::Int)
     print(io, " "^indent)
@@ -442,6 +443,7 @@ function _print_tree(io::IO, node::SumNode, indent::Int)
         k > 1 && print(io, " + ")
         _print_tree(io, inner, 0)
     end
+    return
 end
 function _print_tree(io::IO, node::ProdNode, indent::Int)
     print(io, " "^indent)
@@ -449,6 +451,7 @@ function _print_tree(io::IO, node::ProdNode, indent::Int)
         k > 1 && print(io, " * ")
         _print_tree(io, inner, 0)
     end
+    return
 end
 
 const _SHORT_TYPE_PRINTING = Ref(false)

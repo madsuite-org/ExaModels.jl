@@ -56,13 +56,32 @@ _in_order(t::Tuple) = reverse(t)
 
 _dims(size) = Any[d isa Integer ? d : [first(d), last(d)] for d in size]
 
-# The name under which `block` is registered in `refs`, or nothing.
+# The name under which `block` is registered in `refs`, or nothing. Matched by
+# kind and offset: a handle and the stored block can differ in type (a device
+# model's handle holds a device iterator, a merged block is expanded into
+# source blocks by `ExaModels.expand_family`).
+_kind(::ExaModels.AbstractVariable) = :var
+_kind(::ExaModels.AbstractParameter) = :par
+_kind(::ExaModels.Constraint) = :con
+_kind(::ExaModels.ConstraintAugmentation) = :aug
+_kind(x) = typeof(x)
 function _ref_name(refs, block)
     for (k, v) in pairs(refs)
-        typeof(v) === typeof(block) && v.offset == block.offset && return string(k)
+        _kind(v) === _kind(block) && hasproperty(v, :offset) && v.offset == block.offset && return string(k)
     end
     return nothing
 end
+# Merged blocks (same-structure blocks that ExaModels merges into one family)
+# are written as their source blocks, one per segment.
+_blocks(t) = reduce(vcat, [ExaModels.expand_family(b) for b in _in_order(t)]; init = Any[])
+# A family sits at its first block's position, so `add_con A1; add_con B;
+# add_con A2` stores (B, [A1, A2]) and expands to A1, A2, B, while the reader
+# rebuilds blocks in file order and checks each offset. Constraints are
+# written by row offset instead; an augmentation goes after its base (a
+# stable sort keeps augmentations of one base in add order).
+_con_key(b::ExaModels.Constraint) = (b.offset, 0)
+_con_key(b::ExaModels.ConstraintAugmentation) = (b.f.o0, 1)
+_con_blocks(t) = sort!(_blocks(t); by = _con_key, alg = Base.Sort.DEFAULT_STABLE)
 
 function describe(m::ExaModel{T}) where {T}
     refs = m.refs === nothing ? (;) : m.refs
@@ -92,7 +111,7 @@ function describe(m::ExaModel{T}) where {T}
         _check_tag(b)
         group = "data/$(kind)_$k"
         d = Dict{String,Any}("group" => group)
-        if b isa ExaModels.Constraint && length(b.size) > 1 && !(b.f.f isa ExaModels.Null) &&
+        if b isa ExaModels.Constraint && length(b.size) > 1 && !(b.f.f isa ExaModels.Null{Nothing}) &&
                 isequal(vec(collect(b.itr)), vec(collect(Iterators.product(b.size...))))
             d["iterator"] = Dict("product" => [store("$group/axis_$i", a) for (i, a) in enumerate(b.size)])
         else
@@ -101,13 +120,13 @@ function describe(m::ExaModel{T}) where {T}
         return d
     end
 
-    objectives = map(enumerate(_in_order(m.objs))) do (k, o)
+    objectives = map(enumerate(_blocks(m.objs))) do (k, o)
         d = block("obj", o, k)
         d["expr"] = encode(o.f.f)
         d
     end
 
-    constraints = map(enumerate(_in_order(m.cons))) do (k, c)
+    constraints = map(enumerate(_con_blocks(m.cons))) do (k, c)
         d = block("con", c, k)
         if c isa ExaModels.ConstraintAugmentation
             d["kind"] = "augmentation"
@@ -124,7 +143,7 @@ function describe(m::ExaModel{T}) where {T}
             d["name"] = _ref_name(refs, c)
             d["offset"] = c.offset
             d["shape"] = collect(size(c.itr))
-            if c.f.f isa ExaModels.Null  # built as add_con(core, dims...), filled by add_con!
+            if c.f.f isa ExaModels.Null{Nothing}  # built as add_con(core, dims...), filled by add_con!
                 all(a -> a isa Integer || a isa AbstractUnitRange, c.size) || throw(ArgumentError(
                     "ExaModelsIO cannot store constraint dimensions $(c.size)"))
                 d["size"] = _dims(c.size)

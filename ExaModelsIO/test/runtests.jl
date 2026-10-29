@@ -17,6 +17,38 @@ ExaModels.@register_univariate(myf, x -> 2x + 1, x -> 2.0)
         @test m2.x isa ExaModels.Variable && m2.g isa ExaModels.Constraint
     end
 
+    @testset "merged families: two same-tree blocks, the second named" begin
+        c = ExaCore()
+        x = @add_var(c, x, 8)
+        @add_con(c, sin(x[i]) * x[i + 1] for i in 1:3; lcon = -1.0, ucon = 1.0)
+        g = @add_con(c, g, sin(x[i]) * x[i + 1] for i in 4:7; lcon = -1.0, ucon = 1.0)
+        @add_obj(c, x[i]^2 for i in 1:8)
+        # a constant body is a valued Null, not the dims form's Null{Nothing}
+        @add_con(c, 2.5 for i in 1:3; lcon = 0.0, ucon = 10.0)
+        m2 = roundtrip_check(ExaModel(c))
+        @test m2.g isa ExaModels.Constraint
+    end
+
+    @testset "merged family split by another block (A1, B, A2)" begin
+        c = ExaCore()
+        x = @add_var(c, x, 8; start = 0.3)
+        @add_con(c, sin(x[i]) * x[i + 1] for i in 1:3; lcon = -1.0, ucon = 1.0)
+        @add_con(c, x[i]^2 for i in 1:2; lcon = 0.0, ucon = 4.0)
+        @add_con(c, sin(x[i]) * x[i + 1] for i in 4:7; lcon = -2.0, ucon = 3.0)
+        @add_obj(c, x[i]^2 for i in 1:8)
+        m = ExaModel(c)
+        @test length(m.cons) == 2                  # the two sin blocks are one family
+        m2 = roundtrip_check(m)
+        @test m2.meta.lcon == m.meta.lcon && m2.meta.ucon == m.meta.ucon
+    end
+
+    @testset "pair-headed constraints are refused" begin
+        c = ExaCore()
+        x = @add_var(c, x, 4)
+        @add_con(c, i => sin(x[i]) for i in 1:4)
+        @test_throws ArgumentError ExaModelsIO.write_model(tempname() * ".h5", ExaModel(c))
+    end
+
     @testset "2-D variables, named-tuple data, augmentation" begin
         c = ExaCore()
         x = @add_var(c, x, 10)

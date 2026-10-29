@@ -26,6 +26,7 @@ For more information, please visit https://github.com/madsuite-org/ExaModels.jl
 """
 module ExaModels
 
+import Adapt
 import Adapt: adapt
 import NLPModels:
     NLPModels,
@@ -56,8 +57,10 @@ include("prettyprint.jl")
 include("short_type_printing.jl")
 include("gradient.jl")
 include("jacobian.jl")
+include("subexpr.jl")
 include("hessian.jl")
 include("nlp.jl")
+include("merge.jl")
 include("oracle.jl")
 include("utils.jl")
 include("tags.jl")
@@ -66,18 +69,21 @@ include("two_stage.jl")
 export ExaModel,
     ExaCore,
     Expression,
+    BufferedExpression,
     add_var,
     add_par,
     add_con,
     add_con!,
     add_obj,
     add_expr,
+    add_expr!,
     @add_var,
     @add_expr,
     @add_par,
     @add_obj,
     @add_con,
     @add_con!,
+    @add_expr!,
     get_vars,
     get_cons,
     get_pars,
