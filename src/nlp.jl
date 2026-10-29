@@ -3,10 +3,6 @@ abstract type AbstractParameter end
 abstract type AbstractConstraint end
 abstract type AbstractObjective end
 
-struct NaNSource{T} end
-Base.getindex(::NaNSource{T}, i) where {T} = T(NaN)
-Base.eltype(::NaNSource{T}) where {T} = T
-Base.eltype(::Type{NaNSource{T}}) where {T} = T
 
 """
     Variable
@@ -331,8 +327,12 @@ By default (`concrete = Val(false)`) the core accumulates model blocks in
 type-erased storage, so its type does not change as blocks are added and the
 model can be built — and rebuilt — without recompiling at every step. Pass
 `concrete = Val(true)` to keep every block in the core's type instead, which
-is what AOT compilation (`juliac --trim=safe`) requires. Both modes produce
-the same `ExaModel`.
+is what AOT compilation (`juliac --trim=safe`) requires. `concrete =
+Val(:erased)` stores blocks as the default does and also erases the expression
+type from the handles `add_obj`, `add_con`, `add_con!` and (non-buffered,
+non-lifted) `add_expr` return, which keeps
+the caller's own code cheap to compile when it holds many handles; it is not
+compatible with `juliac --trim=safe`. All modes produce the same `ExaModel`.
 
 ## Example
 ```jldoctest
@@ -622,6 +622,37 @@ is known statically and destructuring stays inferable.
 @inline _refs_storage(::Nothing) = Pair{Symbol, Any}[]
 @inline _refs_storage(::Val{true}) = (;)
 @inline _refs_storage(::Val{false}) = Pair{Symbol, Any}[]
+
+# `concrete = Val(:erased)`: dynamic storage, and the block handles returned to
+# the caller (`Expression`, `Objective`, `Constraint`, `ConstraintAugmentation`) carry `Any`
+# in place of their expression type. The core itself keeps every block fully
+# typed, so the model and its kernels are unchanged; only the caller's code
+# stops being inferred against expression trees. A model builder that bundles
+# many handles (a NamedTuple of units, say) otherwise carries every tree in
+# its type, and inference cost grows with that type. Each `add_*` then reaches
+# the concrete tree once, through a runtime dispatch. Not for
+# `juliac --trim=safe`, which needs the caller's code fully inferred.
+struct ErasedRefs
+    v::Vector{Pair{Symbol, Any}}
+end
+@inline _storage(::Val{:erased}) = Any[]
+@inline _refs_storage(::Val{:erased}) = ErasedRefs(Pair{Symbol, Any}[])
+@inline _materialize_refs(r::ErasedRefs) = (; r.v...)
+
+@inline _user_handle(refs, x) = x
+_user_handle(::ErasedRefs, x::Expression) =
+    Expression{typeof(x.size), Any, typeof(x.iter), typeof(x.tag), typeof(x.length)}(
+    x.size, x.length, x.f, x.iter, x.tag
+)
+_user_handle(::ErasedRefs, x::Objective) = Objective{Any, typeof(x.itr)}(x.f, x.itr)
+_user_handle(::ErasedRefs, x::Constraint) =
+    Constraint{Any, typeof(x.itr), typeof(x.offset), typeof(x.size), typeof(x.tag)}(
+    x.f, x.itr, x.offset, x.size, x.tag
+)
+_user_handle(::ErasedRefs, x::ConstraintAugmentation) =
+    ConstraintAugmentation{Any, typeof(x.itr), typeof(x.dims), typeof(x.tag), typeof(x.oa)}(
+    x.f, x.itr, x.oa, x.dims, x.tag
+)
 
 @inline _materialize_refs(nt::NamedTuple) = nt
 @inline _materialize_refs(v::Vector{Pair{Symbol, Any}}) = (; v...)
@@ -1103,7 +1134,7 @@ end
 @inline function _getindex(v::V, is, ::Val{false}) where {V <: AbstractVariable}
     @assert(length(is) == length(v.size), "Variable index dimension error")
     _bound_check(v.size, is)
-    return Var(v.offset + idxx(is .- (_start.(v.size) .- 1), _length.(v.size)))
+    return Var(_lin_index(v.offset, is, _start.(v.size), _length.(v.size)))
 end
 
 # Expression indexing - evaluates the expression directly
@@ -1166,7 +1197,7 @@ end
 @inline function _getindex(p::P, is, ::Val{false}) where {P <: Parameter}
     @assert(length(is) == length(p.size), "Parameter index dimension error")
     _bound_check(p.size, is)
-    return ParameterNode(p.offset + idxx(is .- (_start.(p.size) .- 1), _length.(p.size)))
+    return ParameterNode(_lin_index(p.offset, is, _start.(p.size), _length.(p.size)))
 end
 
 # `x[:, i]` expands each colon axis to its entries, column-major as in Base.
@@ -1374,6 +1405,7 @@ end
 @inline add_refs(refs, ::Val{N}, var) where {N} = (; refs..., N => var)
 # Vector storage: copy (the previous core must stay valid, like `_prep`),
 # replace-or-append so a repeated name overwrites, matching NamedTuple splat.
+add_refs(refs::ErasedRefs, ::Val{N}, var) where {N} = ErasedRefs(add_refs(refs.v, Val(N), var))
 function add_refs(refs::Vector{Pair{Symbol, Any}}, ::Val{N}, var) where {N}
     out = copy(refs)
     i = findfirst(p -> p.first === N, out)
@@ -1688,12 +1720,12 @@ Objective
   where |I| = 10
 ```
 """
-@inline function add_obj(c::C, gen; name = nothing) where {T, C <: ExaCore{T}}
+function add_obj(c::C, gen; name = nothing) where {T, C <: ExaCore{T}}
     gen = _adapt_gen(gen)
-    f = SIMDFunction(T, gen, c.nobj, c.nnzg, c.nnzh)
+    f = _block_simdfunction(c.obj, T, gen.f(DataSource()), c.nobj, c.nnzg, c.nnzh)
     pars = gen.iter
 
-    return _add_obj(c, f, pars, name)
+    return _add_obj_route(c.obj, c, f, pars, name)
 end
 
 """
@@ -1708,38 +1740,32 @@ When `name` is given as `Val(:name)`, the objective is also accessible as
 Prefer the generator form (`add_obj(core, gen)`) for typical use; this form
 is intended for code that builds expression trees programmatically.
 """
-@inline function add_obj(c::C, expr::N, pars = 1:1; name = nothing) where {T, C <: ExaCore{T}, N <: AbstractNode}
-    f = _simdfunction(T, expr, c.nobj, c.nnzg, c.nnzh)
+function add_obj(c::C, expr::N, pars = 1:1; name = nothing) where {T, C <: ExaCore{T}, N <: AbstractNode}
+    f = _block_simdfunction(c.obj, T, expr, c.nobj, c.nnzg, c.nnzh)
 
-    return _add_obj(c, f, pars, name)
+    return _add_obj_route(c.obj, c, f, pars, name)
 end
 
-@inline function _add_obj(c, f, pars, name = nothing)
+# as for constraints (see `_add_con_route`): specialized in concrete storage,
+# compiled once in dynamic storage, one body
+@inline _add_obj_route(::Tuple, c, f, pars, name) = _add_obj(c, f, pars, name)
+Base.@nospecializeinfer _add_obj_route(::Vector{Any}, c, @nospecialize(f), pars, name) =
+    @inline _add_obj_body(c, f, pars, name)
+_add_obj(c, f, pars, name = nothing) = _add_obj_body(c, f, pars, name)
+@inline function _add_obj_body(c, f, pars, name)
     nitr = length(pars)
     nobj = c.nobj + nitr
     obj = Objective(f, _add_time_iter(pars, c.backend))
-    return _add_obj_store(_merge_obj(c, f, pars), c, obj, f, name, nitr, nobj)
-end
-
-# merged into a family: the per-row gradient/Hessian nnz steps come back
-# from the merge, since the merged tree's footprint is its own
-@inline function _add_obj_store(m::Tuple, c, obj, f, name, nitr, nobj)
-    objs2, s1, s2 = m
-    return (
-        ExaCore(
-            c; nobj = nobj, nnzg = c.nnzg + nitr * s1, nnzh = c.nnzh + nitr * s2,
-            obj = objs2, refs = add_refs(c.refs, name, obj)
-        ), obj,
+    # merged into a family, the per-row gradient/Hessian nnz steps come back from
+    # the merge (the merged tree's footprint is its own); otherwise stored plain
+    m = _merge_obj(c, f, pars)
+    objs, s1, s2 = m === nothing ? (_prep(c.obj, obj), f.o1step, f.o2step) : m
+    core = ExaCore(
+        c; nobj = nobj, nnzg = c.nnzg + nitr * s1, nnzh = c.nnzh + nitr * s2,
+        obj = objs, refs = add_refs(c.refs, name, obj)
     )
+    return core, _user_handle(c.refs, obj)
 end
-# statically non-mergeable: stored plain
-@inline _add_obj_store(::Nothing, c, obj, f, name, nitr, nobj) =
-    (
-    ExaCore(
-        c; nobj = nobj, nnzg = c.nnzg + nitr * f.o1step, nnzh = c.nnzh + nitr * f.o2step,
-        obj = _prep(c.obj, obj), refs = add_refs(c.refs, name, obj)
-    ), obj,
-)
 
 
 """
@@ -1808,7 +1834,7 @@ Constraint
   where |I| = 9
 ```
 """
-@inline function add_con(
+function add_con(
         c::C,
         ns...;
         tag = nothing,
@@ -1824,7 +1850,7 @@ Constraint
     gen = _adapt_gen(gen)
     f, pars = _get_function_and_iter(T, gen, c)
 
-    return _add_con(c, f, pars, dims, start, lcon, ucon, name, tag)
+    return _add_con_route(c.cons, c, f, pars, dims, start, lcon, ucon, name, tag)
 end
 
 @inline _get_generator(ns) = (Null(nothing) for _ in _empty_con_itr(ns))
@@ -1843,18 +1869,35 @@ _empty_con_itr(ns::Tuple{Any}) = 1:_length(ns[1])
 _empty_con_itr(ns::Tuple) = collect(Iterators.product(map(n -> 1:_length(n), ns)...))
 
 # Extract simd function and iterator from a generator
-@inline function _get_function_and_iter(T, gen::Base.Generator, c)
-    f = _simdfunction(T, gen.f(DataSource()), c.ncon, c.nnzj, c.nnzh)
+function _get_function_and_iter(::Type{T}, gen::Base.Generator, c) where {T}
+    f = _block_simdfunction(c.cons, T, gen.f(DataSource()), c.ncon, c.nnzj, c.nnzh)
     pars = gen.iter
     return f, pars
 end
-@inline function _get_function_and_iter(T, gen::Tuple{E, I}, c) where {E <: AbstractNode, I}
-    f = _simdfunction(T, gen[1], c.ncon, c.nnzj, c.nnzh)
+function _get_function_and_iter(::Type{T}, gen::Tuple{E, I}, c) where {T, E <: AbstractNode, I}
+    f = _block_simdfunction(c.cons, T, gen[1], c.ncon, c.nnzj, c.nnzh)
     pars = gen[2]
     return f, pars
 end
 
-function _add_con(c, f, pars, dims, start, lcon, ucon, name, tag)
+# Concrete storage adds a block through code specialized on it. Dynamic storage
+# adds it through code compiled once and not specialized on the block's function,
+# whose type is the whole expression tree (see `_simdfunction_dyn`); both run the
+# same body.
+@inline _add_con_route(::Tuple, c, f, pars, dims, start, lcon, ucon, name, tag) =
+    _add_con(c, f, pars, dims, start, lcon, ucon, name, tag)
+Base.@nospecializeinfer _add_con_route(
+    ::Vector{Any}, c, @nospecialize(f), pars, dims, @nospecialize(start), @nospecialize(lcon),
+    @nospecialize(ucon), name, tag,
+) =
+    @inline _add_con_body(c, f, pars, dims, start, lcon, ucon, name, tag)
+@inline _add_aug_route(::Tuple, c, f, pars, dims, tag) = _add_con!(c, f, pars, dims, tag)
+Base.@nospecializeinfer _add_aug_route(::Vector{Any}, c, @nospecialize(f), pars, dims, tag) =
+    @inline _add_aug_body(c, f, pars, dims, tag)
+
+_add_con(c, f, pars, dims, start, lcon, ucon, name, tag) =
+    _add_con_body(c, f, pars, dims, start, lcon, ucon, name, tag)
+@inline function _add_con_body(c, f, pars, dims, start, lcon, ucon, name, tag)
     nitr = length(pars)
     o = c.ncon
     ncon = c.ncon + nitr
@@ -1869,28 +1912,15 @@ function _add_con(c, f, pars, dims, start, lcon, ucon, name, tag)
 
     con = Constraint(f, _add_time_iter(pars, c.backend), o, dims, tag)
 
-    return _add_con_store(m, c, con, f, name, nitr, ncon, y0, lcon, ucon)
-end
-
-# merged into a family: the per-row nnz steps come back from the merge
-@inline function _add_con_store(m::Tuple, c, con, f, name, nitr, ncon, y0, lcon, ucon)
-    cons2, s1, s2 = m
-    return (
-        ExaCore(
-            c; ncon = ncon, nnzj = c.nnzj + nitr * s1, nnzh = c.nnzh + nitr * s2, y0 = y0,
-            lcon = lcon, ucon = ucon, cons = cons2, refs = add_refs(c.refs, name, con)
-        ), con,
+    # merged into a family, the per-row nnz steps come back from the merge;
+    # statically non-mergeable (`m === nothing`), the block is stored plain
+    cons, s1, s2 = m === nothing ? (_prep(c.cons, con), f.o1step, f.o2step) : m
+    core = ExaCore(
+        c; ncon = ncon, nnzj = c.nnzj + nitr * s1, nnzh = c.nnzh + nitr * s2, y0 = y0,
+        lcon = lcon, ucon = ucon, cons = cons, refs = add_refs(c.refs, name, con)
     )
+    return core, _user_handle(c.refs, con)
 end
-# statically non-mergeable: stored plain
-@inline _add_con_store(::Nothing, c, con, f, name, nitr, ncon, y0, lcon, ucon) =
-    (
-    ExaCore(
-        c; ncon = ncon, nnzj = c.nnzj + nitr * f.o1step, nnzh = c.nnzh + nitr * f.o2step, y0 = y0,
-        lcon = lcon, ucon = ucon, cons = _prep(c.cons, con),
-        refs = add_refs(c.refs, name, con)
-    ), con,
-)
 
 
 """
@@ -1957,13 +1987,13 @@ add_con!(c, bus, arc.bus => p[arc.i] for arc in data.arc)              # add arc
 add_con!(c, bus, gen.bus => -pg[gen.i] for gen in data.gen)            # subtract generation
 ```
 """
-@inline function add_con!(c::C, c1, gen::Base.Generator; tag = nothing) where {T, C <: ExaCore{T}}
+function add_con!(c::C, c1, gen::Base.Generator; tag = nothing) where {T, C <: ExaCore{T}}
 
     gen = _adapt_gen(gen)
-    f = SIMDFunction(T, gen, offset0(c1, 0), c.nnzj, c.nnzh)
+    f = _block_simdfunction(c.cons, T, gen.f(DataSource()), offset0(c1, 0), c.nnzj, c.nnzh)
     pars = gen.iter
 
-    return _add_con!(c, f, pars, _constraint_dims(c1), tag)
+    return _add_aug_route(c.cons, c, f, pars, _constraint_dims(c1), tag)
 end
 
 """
@@ -1983,7 +2013,7 @@ c, g = add_con(c, 9; lcon = -1.0, ucon = 1.0)
 c, _ = add_con!(c, g[i] += x[i] + x[i+1] for i = 1:9)
 ```
 """
-@inline function add_con!(c::ExaCore{T}, gen::Base.Generator; tag = nothing) where {T}
+function add_con!(c::ExaCore{T}, gen::Base.Generator; tag = nothing) where {T}
     gen = _adapt_gen(gen)
 
     # Probe the generator: the result is a ConAugPair which carries the target
@@ -2007,7 +2037,8 @@ end
 _constraint_dims(c::Constraint) = Base.size(c.itr)
 _constraint_dims(c::ConstraintAugmentation) = c.dims
 
-function _add_con!(c, f, pars, dims, tag)
+_add_con!(c, f, pars, dims, tag) = _add_aug_body(c, f, pars, dims, tag)
+@inline function _add_aug_body(c, f, pars, dims, tag)
     oa = c.nconaug
     nitr = length(pars)
     nconaug = c.nconaug + nitr
@@ -2018,7 +2049,7 @@ function _add_con!(c, f, pars, dims, tag)
     # them on host only would make a model's nnz counts backend-dependent
     nnzj = c.nnzj + nitr * f.o1step
     nnzh = c.nnzh + nitr * f.o2step
-    return (ExaCore(c; nconaug = nconaug, nnzj = nnzj, nnzh = nnzh, cons = _prep(c.cons, con)), con)
+    return (ExaCore(c; nconaug = nconaug, nnzj = nnzj, nnzh = nnzh, cons = _prep(c.cons, con)), _user_handle(c.refs, con))
 end
 
 # Helper to infer dimensions from iterator
@@ -2079,7 +2110,7 @@ c, s = add_expr(c, x[i, k]^2 for (i, k) in itr)
 # s[i, k] substitutes x[i,k]^2 directly
 ```
 """
-@inline function add_expr(
+function add_expr(
         c::C, gen::Base.Generator; name = nothing, tag = nothing,
         lift = false, buffered = Val(false), start = zero(T)
     ) where {T, C <: ExaCore{T}}
@@ -2105,7 +2136,7 @@ end
     # Store the body as a node, built once against a `DataSource`, rather than
     # as the generator's closure — see `_reindex` in graph.jl.
     ex = Expression(ns, n, gen.f(DataSource()), collect(gen.iter), tag)
-    return (ExaCore(c; refs = add_refs(c.refs, name, ex)), ex)
+    return (ExaCore(c; refs = add_refs(c.refs, name, ex)), _user_handle(c.refs, ex))
 end
 
 function _add_expr_lifted(c::ExaCore{T}, gen::Base.Generator, name, tag, start) where {T}
@@ -2846,6 +2877,38 @@ end
 end
 @inline _idx(n, (vec,), ::Tuple{Int}) = @inbounds vec[n + 1]
 
+# Column-major linear index of `is` into a block at `offset`:
+# `offset + 1 + Σₖ aₖ (isₖ - startₖ)` with strides `a = (1, l₁, l₁l₂, …)`, folded
+# as `(is₁ + a₂is₂ + …) + base` with `base = offset + 1 - Σₖ aₖ startₖ`. Every
+# constant is combined before it meets a symbolic index, so a symbolic `x[n, k, s]`
+# is a few nodes with one integer leaf per stride, not a node per subtraction.
+# On concrete indices it is the same integer `idxx` gives.
+@inline function _lin_index(offset, is, starts, lens)
+    a = _strides(lens, 1)
+    base = offset + 1 - _sdot(a, starts)
+    # integer axes (a fixed `k` in `x[n, k, s]`) fold into `base`; the symbolic
+    # ones are summed, the first (stride 1) without a product
+    acc, base = _lin_first(first(is), base)
+    acc, base = _lin_rest(acc, base, Base.tail(is), Base.tail(a))
+    return _lin_join(acc, base)
+end
+@inline _lin_index(offset, ::Tuple{}, ::Tuple{}, ::Tuple{}) = offset + 1   # `x[]`, as `idxx` gives
+@inline _strides(::Tuple{}, a) = ()
+@inline _strides(l::Tuple, a) = (a, _strides(Base.tail(l), a * first(l))...)
+@inline _sdot(::Tuple{}, ::Tuple{}) = 0
+@inline _sdot(a::Tuple, s::Tuple) = first(a) * first(s) + _sdot(Base.tail(a), Base.tail(s))
+@inline _lin_first(i::Integer, base) = (nothing, base + i)
+@inline _lin_first(i, base) = (i, base)
+@inline _lin_rest(acc, base, ::Tuple{}, ::Tuple{}) = (acc, base)
+@inline _lin_rest(acc, base, is::Tuple, a::Tuple) =
+    _lin_rest(_lin_term(acc, base, first(is), first(a))..., Base.tail(is), Base.tail(a))
+@inline _lin_term(acc, base, i::Integer, a) = (acc, base + a * i)
+@inline _lin_term(::Nothing, base, i::Integer, a) = (nothing, base + a * i)
+@inline _lin_term(::Nothing, base, i, a) = (a * i, base)
+@inline _lin_term(acc, base, i, a) = (acc + a * i, base)
+@inline _lin_join(::Nothing, base) = base
+@inline _lin_join(acc, base) = acc + base
+
 @inline idxx(coord, si) = _idxx(coord, si, 1) + 1
 @inline _idxx(coord, si, a) = a * (coord[1] - 1) + _idxx(coord[2:end], si[2:end], a * si[1])
 @inline _idxx(::Tuple{}, ::Tuple{}, a) = 0
@@ -3093,6 +3156,9 @@ get_pars(x::Union{ExaCore, ExaModel}, name::Symbol) =
 end
 @inline _refs_keys(refs::NamedTuple) = keys(refs)
 @inline _refs_keys(refs::Vector{Pair{Symbol, Any}}) = Tuple(first(p) for p in refs)
+@inline _refs_haskey(refs::ErasedRefs, name::Symbol) = _refs_haskey(refs.v, name)
+@inline _refs_get(refs::ErasedRefs, name::Symbol) = _refs_get(refs.v, name)
+@inline _refs_keys(refs::ErasedRefs) = _refs_keys(refs.v)
 
 function _named_block(x, ::Type{K}, name::Symbol, kind::String, f) where {K}
     nt = _named_blocks(x, K)

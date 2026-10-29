@@ -32,8 +32,38 @@ struct _RFTestI1
     i::_RFTestI2
 end
 
+# whether an index tree still holds a product of two integers
+_intprod(n::ExaModels.Node2{typeof(*), I1, I2}) where {I1 <: Integer, I2 <: Integer} = true
+_intprod(n::ExaModels.Node2) = _intprod(n.inner1) || _intprod(n.inner2)
+_intprod(n::ExaModels.Node1) = _intprod(n.inner)
+_intprod(::Any) = false
+
 function runtests()
     @testset "Utils tests" begin
+        @testset "multi-dimensional index" begin
+            for (sz, is) in [((3, 4, 5), (2, 3, 4)), ((2:4, 0:3), (3, 1)), ((5,), (4,)),
+                    ((1:2, 3:5, -1:1), (2, 4, 0))]
+                st = ExaModels._start.(sz)
+                ln = ExaModels._length.(sz)
+                @test ExaModels._lin_index(7, is, st, ln) == 7 + ExaModels.idxx(is .- (st .- 1), ln)
+            end
+            @test ExaModels._lin_index(7, (), (), ()) == 7 + ExaModels.idxx((), ())
+            # an integer axis among symbolic ones folds into the constant: no
+            # product of two integers is left in the index tree
+            d = ExaModels.DataSource()
+            ix = ExaModels._lin_index(5, (d[1], 2, d[2]), (2, 0, 1), (3, 3, 3))
+            @test !_intprod(ix)
+            c = ExaModels.ExaCore()
+            c, z = ExaModels.add_var(c, 3; start = 0.3)
+            c, x = ExaModels.add_var(c, 2:4, 0:2, 3; start = ((0.1 * (i + 2j + 5k)) for i in 2:4, j in 0:2, k in 1:3))
+            c, p = ExaModels.add_par(c, [Float64(i + 10j) for i in 1:2, j in 1:3])
+            c, _ = ExaModels.add_con(c, x[i, j, k]^2 * p[2, k] + z[k] + x[i, 1, k] for i in 2:4, j in 0:2, k in 1:3)
+            m = ExaModels.ExaModel(c)
+            x0 = m.meta.x0
+            X = reshape(x0[4:end], 3, 3, 3)
+            @test ExaModels.NLPModels.cons(m, x0) ≈
+                vec([X[i - 1, j + 1, k]^2 * (2.0 + 10k) + x0[k] + X[i - 1, 2, k] for i in 2:4, j in 0:2, k in 1:3])
+        end
         m, ~ = _exa_luksan_vlcek_model(nothing, 3)
 
         result = NLPModelsIpopt.ipopt(m; print_level = 0)

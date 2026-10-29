@@ -1,11 +1,14 @@
 """
     hdrpass(t1::T1, t2::T2, comp, y1, y2, o2, cnt, adj)
 
-Performs sparse hessian evaluation (`(df1/dx)(df2/dx)'` portion) via the reverse pass on the computation (sub)graph formed by second-order forward pass
+Adds one entry of a binary node's cross term (`(df1/dx)(df2/dx)'`) for a pair of
+leaves: `t1` and `t2` are variable (or buffered-subexpression) leaves of the two
+subtrees, and `adj` already carries both chain factors. The pairs themselves are
+enumerated by `_cross` (see "cross terms of a binary node" below).
 
 # Arguments:
-- `t1`: second-order computation (sub)graph regarding f1
-- `t2`: second-order computation (sub)graph regarding f2
+- `t1`: leaf of the first subtree
+- `t2`: leaf of the second subtree
 - `comp`: a `Compressor`, which helps map counter to sparse vector index
 - `y1`: result vector #1
 - `y2`: result vector #2 (only used when evaluating sparsity)
@@ -13,241 +16,6 @@ Performs sparse hessian evaluation (`(df1/dx)(df2/dx)'` portion) via the reverse
 - `cnt`: counter
 - `adj`: second adjoint propagated up to the current node
 """
-@inline function hdrpass(
-    t1::T1,
-    t2::T2,
-    comp,
-    y1,
-    y2,
-    o2,
-    cnt,
-    adj,
-) where {T1<:SecondAdjointNode1,T2<:SecondAdjointNode1}
-    cnt = hdrpass(t1.inner, t2.inner, comp, y1, y2, o2, cnt, _amul(adj, t1.y * t2.y))
-    cnt
-end
-@inline function hdrpass(
-    t1::SecondAdjointNode1,
-    t2::SecondAdjointNode1,
-    comp::Nothing,
-    y1,
-    y2,
-    o2,
-    cnt,
-    adj,
-)  # despecialized
-    cnt = hdrpass(t1.inner, t2.inner, comp, y1, y2, o2, cnt, _amul(adj, t1.y * t2.y))
-    cnt
-end
-
-
-@inline function hdrpass(
-    t1::T1,
-    t2::T2,
-    comp,
-    y1,
-    y2,
-    o2,
-    cnt,
-    adj,
-) where {T1<:SecondAdjointNodeVar,T2<:SecondAdjointNode1}
-    cnt = hdrpass(t1, t2.inner, comp, y1, y2, o2, cnt, _amul(adj, t2.y))
-    cnt
-end
-@inline function hdrpass(
-    t1::SecondAdjointNodeVar,
-    t2::SecondAdjointNode1,
-    comp::Nothing,
-    y1,
-    y2,
-    o2,
-    cnt,
-    adj,
-)  # despecialized
-    cnt = hdrpass(t1, t2.inner, comp, y1, y2, o2, cnt, _amul(adj, t2.y))
-    cnt
-end
-
-
-@inline function hdrpass(
-    t1::T1,
-    t2::T2,
-    comp,
-    y1,
-    y2,
-    o2,
-    cnt,
-    adj,
-) where {T1<:SecondAdjointNode1,T2<:SecondAdjointNodeVar}
-    cnt = hdrpass(t1.inner, t2, comp, y1, y2, o2, cnt, _amul(adj, t1.y))
-    cnt
-end
-@inline function hdrpass(
-    t1::SecondAdjointNode1,
-    t2::SecondAdjointNodeVar,
-    comp::Nothing,
-    y1,
-    y2,
-    o2,
-    cnt,
-    adj,
-)  # despecialized
-    cnt = hdrpass(t1.inner, t2, comp, y1, y2, o2, cnt, _amul(adj, t1.y))
-    cnt
-end
-
-
-@inline function hdrpass(
-    t1::T1,
-    t2::T2,
-    comp,
-    y1,
-    y2,
-    o2,
-    cnt,
-    adj,
-) where {T1<:SecondAdjointNode2,T2<:SecondAdjointNode2}
-    cnt = hdrpass(t1.inner1, t2.inner1, comp, y1, y2, o2, cnt, _amul(adj, t1.y1 * t2.y1))
-    cnt = hdrpass(t1.inner1, t2.inner2, comp, y1, y2, o2, cnt, _amul(adj, t1.y1 * t2.y2))
-    cnt = hdrpass(t1.inner2, t2.inner1, comp, y1, y2, o2, cnt, _amul(adj, t1.y2 * t2.y1))
-    cnt = hdrpass(t1.inner2, t2.inner2, comp, y1, y2, o2, cnt, _amul(adj, t1.y2 * t2.y2))
-    cnt
-end
-@inline function hdrpass(
-    t1::SecondAdjointNode2,
-    t2::SecondAdjointNode2,
-    comp::Nothing,
-    y1,
-    y2,
-    o2,
-    cnt,
-    adj,
-) # despecialized
-    cnt = hdrpass(t1.inner1, t2.inner1, comp, y1, y2, o2, cnt, _amul(adj, t1.y1 * t2.y1))
-    cnt = hdrpass(t1.inner1, t2.inner2, comp, y1, y2, o2, cnt, _amul(adj, t1.y1 * t2.y2))
-    cnt = hdrpass(t1.inner2, t2.inner1, comp, y1, y2, o2, cnt, _amul(adj, t1.y2 * t2.y1))
-    cnt = hdrpass(t1.inner2, t2.inner2, comp, y1, y2, o2, cnt, _amul(adj, t1.y2 * t2.y2))
-    cnt
-end
-
-
-@inline function hdrpass(
-    t1::T1,
-    t2::T2,
-    comp,
-    y1,
-    y2,
-    o2,
-    cnt,
-    adj,
-) where {T1<:SecondAdjointNode1,T2<:SecondAdjointNode2}
-    cnt = hdrpass(t1.inner, t2.inner1, comp, y1, y2, o2, cnt, _amul(adj, t1.y * t2.y1))
-    cnt = hdrpass(t1.inner, t2.inner2, comp, y1, y2, o2, cnt, _amul(adj, t1.y * t2.y2))
-    cnt
-end
-@inline function hdrpass(
-    t1::SecondAdjointNode1,
-    t2::SecondAdjointNode2,
-    comp::Nothing,
-    y1,
-    y2,
-    o2,
-    cnt,
-    adj,
-) # despecialized
-    cnt = hdrpass(t1.inner, t2.inner1, comp, y1, y2, o2, cnt, _amul(adj, t1.y * t2.y1))
-    cnt = hdrpass(t1.inner, t2.inner2, comp, y1, y2, o2, cnt, _amul(adj, t1.y * t2.y2))
-    cnt
-end
-
-@inline function hdrpass(
-    t1::T1,
-    t2::T2,
-    comp,
-    y1,
-    y2,
-    o2,
-    cnt,
-    adj,
-) where {T1<:SecondAdjointNode2,T2<:SecondAdjointNode1}
-    cnt = hdrpass(t1.inner1, t2.inner, comp, y1, y2, o2, cnt, _amul(adj, t1.y1 * t2.y))
-    cnt = hdrpass(t1.inner2, t2.inner, comp, y1, y2, o2, cnt, _amul(adj, t1.y2 * t2.y))
-    cnt
-end
-function hdrpass(
-    t1::SecondAdjointNode2,
-    t2::SecondAdjointNode1,
-    comp::Nothing,
-    y1,
-    y2,
-    o2,
-    cnt,
-    adj,
-) # despecialized
-    cnt = hdrpass(t1.inner1, t2.inner, comp, y1, y2, o2, cnt, _amul(adj, t1.y1 * t2.y))
-    cnt = hdrpass(t1.inner2, t2.inner, comp, y1, y2, o2, cnt, _amul(adj, t1.y2 * t2.y))
-    cnt
-end
-
-@inline function hdrpass(
-    t1::T1,
-    t2::T2,
-    comp,
-    y1,
-    y2,
-    o2,
-    cnt,
-    adj,
-) where {T1<:SecondAdjointNodeVar,T2<:SecondAdjointNode2}
-    cnt = hdrpass(t1, t2.inner1, comp, y1, y2, o2, cnt, _amul(adj, t2.y1))
-    cnt = hdrpass(t1, t2.inner2, comp, y1, y2, o2, cnt, _amul(adj, t2.y2))
-    cnt
-end
-@inline function hdrpass(
-    t1::SecondAdjointNodeVar,
-    t2::SecondAdjointNode2,
-    comp::Nothing,
-    y1,
-    y2,
-    o2,
-    cnt,
-    adj,
-) # despecialized
-    cnt = hdrpass(t1, t2.inner1, comp, y1, y2, o2, cnt, _amul(adj, t2.y1))
-    cnt = hdrpass(t1, t2.inner2, comp, y1, y2, o2, cnt, _amul(adj, t2.y2))
-    cnt
-end
-
-@inline function hdrpass(
-    t1::T1,
-    t2::T2,
-    comp,
-    y1,
-    y2,
-    o2,
-    cnt,
-    adj,
-) where {T1<:SecondAdjointNode2,T2<:SecondAdjointNodeVar}
-    cnt = hdrpass(t1.inner1, t2, comp, y1, y2, o2, cnt, _amul(adj, t1.y1))
-    cnt = hdrpass(t1.inner2, t2, comp, y1, y2, o2, cnt, _amul(adj, t1.y2))
-    cnt
-end
-@inline function hdrpass(
-    t1::SecondAdjointNode2,
-    t2::SecondAdjointNodeVar,
-    comp::Nothing,
-    y1,
-    y2,
-    o2,
-    cnt,
-    adj,
-) # despecialized
-    cnt = hdrpass(t1.inner1, t2, comp, y1, y2, o2, cnt, _amul(adj, t1.y1))
-    cnt = hdrpass(t1.inner2, t2, comp, y1, y2, o2, cnt, _amul(adj, t1.y2))
-    cnt
-end
-
-
 @inline function hdrpass(
     t1::T1,
     t2::T2,
@@ -267,7 +35,7 @@ end
     cnt
 end
 
-@inline function hdrpass(
+function hdrpass(
     t1::T1,
     t2::T2,
     comp::Nothing,
@@ -314,10 +82,6 @@ end
     return (cnt += 1)
 end
 
-# SecondAdjointNull: constant branch contributes zero cross-derivatives
-@inline hdrpass(::Any, ::SecondAdjointNull, comp, y1, y2, o2, cnt, adj) = cnt
-@inline hdrpass(::SecondAdjointNull, ::Any, comp, y1, y2, o2, cnt, adj) = cnt
-@inline hdrpass(::SecondAdjointNull, ::SecondAdjointNull, comp, y1, y2, o2, cnt, adj) = cnt
 
 """
     hrpass(t::D, comp, y1, y2, o2, cnt, adj, adj2)
@@ -346,7 +110,7 @@ Performs sparse hessian evaluation (`d²f/dx²` portion) via the reverse pass on
 ) where {D<:Union{SecondAdjointNull,Real}}
     cnt
 end
-@inline function hrpass(
+@probe_twin @inline function hrpass(
     t::D,
     comp,
     y1,
@@ -360,7 +124,7 @@ end
     cnt = hrpass(t.inner, comp, y1, y2, o2, cnt, _amul(adj, t.y), _amul(adj2, (t.y)^2) + _amul(adj, t.h))
     cnt
 end
-@inline function hrpass(
+@probe_twin @inline function hrpass(
     t::D,
     comp,
     y1,
@@ -375,14 +139,14 @@ end
     adjh12 = _amul(adj, t.h12)
     cnt = hrpass(t.inner1, comp, y1, y2, o2, cnt, _amul(adj, t.y1), _amul(adj2, (t.y1)^2) + _amul(adj, t.h11))
     cnt = hrpass(t.inner2, comp, y1, y2, o2, cnt, _amul(adj, t.y2), _amul(adj2, (t.y2)^2) + _amul(adj, t.h22))
-    cnt = hdrpass(t.inner1, t.inner2, comp, y1, y2, o2, cnt, adj2y1y2 + adjh12)
+    cnt = _cross(t.inner1, t.inner2, comp, y1, y2, o2, cnt, adj2y1y2 + adjh12)
     cnt
 end
 
 @inline hrpass0(args...) = hrpass(args...)
 
 
-@inline function hrpass0(
+@probe_twin @inline function hrpass0(
     t::D,
     comp,
     y1,
@@ -395,7 +159,7 @@ end
     cnt = hrpass0(t.inner, comp, y1, y2, o2, cnt, _amul(adj, t.y), _amul(adj2, (t.y)^2))
     cnt
 end
-@inline function hrpass0(
+@probe_twin @inline function hrpass0(
     t::D,
     comp,
     y1,
@@ -408,7 +172,7 @@ end
     cnt = hrpass0(t.inner, comp, y1, y2, o2, cnt, adj, adj2)
     cnt
 end
-@inline function hrpass0(
+@probe_twin @inline function hrpass0(
     t::D,
     comp,
     y1,
@@ -421,7 +185,7 @@ end
     cnt = hrpass0(t.inner, comp, y1, y2, o2, cnt, -adj, adj2)
     cnt
 end
-@inline function hrpass0(
+@probe_twin @inline function hrpass0(
     t::D,
     comp,
     y1,
@@ -435,7 +199,7 @@ end
     cnt
 end
 
-@inline function hrpass0(
+@probe_twin @inline function hrpass0(
     t::D,
     comp,
     y1,
@@ -448,7 +212,7 @@ end
     cnt = hrpass0(t.inner, comp, y1, y2, o2, cnt, adj, adj2)
     cnt
 end
-@inline function hrpass0(
+@probe_twin @inline function hrpass0(
     t::D,
     comp,
     y1,
@@ -462,7 +226,7 @@ end
     cnt
 end
 
-@inline function hrpass0(
+@probe_twin @inline function hrpass0(
     t::D,
     comp,
     y1,
@@ -477,7 +241,7 @@ end
     cnt
 end
 
-@inline function hrpass0(
+@probe_twin @inline function hrpass0(
     t::D,
     comp,
     y1,
@@ -503,7 +267,7 @@ end
 ) where {T<:SecondAdjointNodeVar}
     cnt
 end
-@inline function hrpass0(
+function hrpass0(
     t::T,
     comp::Nothing,
     y1,
@@ -517,7 +281,7 @@ end
 end
 
 
-@inline function hdrpass(
+function hdrpass(
     t1::SecondAdjointNodeVar,
     t2::SecondAdjointNodeVar,
     comp::Nothing,
@@ -543,7 +307,7 @@ end
     return _hpass_find_pair(x, Base.tail(t), i + 1)
 end
 
-@inline function hrpass(
+function hrpass(
     t::T,
     comp::Nothing,
     y1,
@@ -699,3 +463,80 @@ function shessian!(y1, y2, f, p, x, θ, comp, o2, adj1, adj2)
     graph = f(p, SecondAdjointNodeSource(x), θ)
     hrpass0(graph, comp, y1, y2, o2, 0, adj1, adj2)
 end
+
+
+# ── cross terms of a binary node ──────────────────────────────────────────────
+# The cross term of `f(a, b)` adds adj * (∂a/∂u)(∂b/∂v) for every leaf u of `a`
+# and v of `b`. Visiting the pairs by recursion inlines one call per pair, so a
+# kernel's code, and its compile, grows with the product of the two subtrees' leaf
+# counts. Instead each side's leaves are collected in tree order with their chain
+# factors (linear in the subtree) and the pairs are visited by a loop over the two
+# tuples, leaves of `a` outer and of `b` inner. Two cases visit the same pairs, in
+# the same order, unrolled instead (`_hdr_rows`): a side that mixes leaf types
+# (a buffered subexpression beside variables), whose tuple a device kernel cannot
+# index at run time, and the tuple-accumulating structure probe, whose counter
+# changes type at every pair. One order everywhere means a block's Compressor
+# serves host and device alike.
+
+@inline _leaves(t::Union{SecondAdjointNodeVar, SecondAdjointNodeSubexpr}, s) = ((t, s),)
+@inline _leaves(t::SecondAdjointNode1, s) = _leaves(t.inner, _amul(s, t.y))
+@inline _leaves(t::SecondAdjointNode2, s) =
+    _tcat(_leaves(t.inner1, _amul(s, t.y1)), _leaves(t.inner2, _amul(s, t.y2)))
+@inline _leaves(t::Union{SecondAdjointNull, Real}, s) = ()   # no leaves
+# Concatenation that stays static at any length: a splat `(a..., b...)` past the
+# inference limit becomes a runtime `_apply_iterate`, which allocates.
+@inline _tcat(a::Tuple, b::Tuple) = _tcat(a, b, Val(length(a) + length(b)))
+@inline _tcat(a::Tuple, b::Tuple, ::Val{N}) where {N} =
+    ntuple(i -> i <= length(a) ? a[i] : b[i - length(a)], Val(N))
+
+# whether a side's leaf tuple has one concrete type, by dispatch (static, so it
+# cannot leave a dynamic `Val` in a device kernel)
+@inline _homogeneous(::Tuple{}) = Val(false)
+@inline _homogeneous(::NTuple{N, E}) where {N, E} = Val(isconcretetype(E))
+@inline _homogeneous(::Tuple) = Val(false)
+@inline _both(::Val{true}, ::Val{true}) = Val(true)
+@inline _both(a, b) = Val(false)
+@inline function _cross(t1, t2, comp, y1, y2, o2, cnt, adj)
+    a = one(adj)
+    g1 = _leaves(t1, a)
+    g2 = _leaves(t2, a)
+    return _cross(_both(_homogeneous(g1), _homogeneous(g2)), g1, g2, t1, t2, comp, y1, y2, o2, cnt, adj)
+end
+# the probe runs once on the host, where a loop over mixed leaf types only dispatches
+# (its leaves differ in type anyway: each carries its own symbolic index)
+@inline function _cross(t1, t2, comp::Nothing, y1, y2, o2, cnt, adj)
+    a = one(adj)
+    return _cross(Val(true), _leaves(t1, a), _leaves(t2, a), t1, t2, comp, y1, y2, o2, cnt, adj)
+end
+@inline _cross(t1, t2, comp::Nothing, y1, y2, o2, cnt::Tuple{<:Tuple, <:Tuple}, adj) =
+    _hdr_rows(t1, t2, comp, y1, y2, o2, cnt, adj)
+@inline _cross(::Val{false}, g1, g2, t1, t2, comp, y1, y2, o2, cnt, adj) =
+    _hdr_rows(t1, t2, comp, y1, y2, o2, cnt, adj)
+@inline function _cross(::Val{true}, g1, g2, t1, t2, comp, y1, y2, o2, cnt, adj)
+    for (u, su) in g1
+        au = _amul(adj, su)
+        for (v, sv) in g2
+            cnt = hdrpass(u, v, comp, y1, y2, o2, cnt, _amul(au, sv))
+        end
+    end
+    return cnt
+end
+
+# the same pairs unrolled: descend `a`, and at each of its leaves descend `b`
+const _AdjLeaf = Union{SecondAdjointNodeVar, SecondAdjointNodeSubexpr}
+@inline _hdr_rows(t1::SecondAdjointNode1, t2, comp, y1, y2, o2, cnt, adj) =
+    _hdr_rows(t1.inner, t2, comp, y1, y2, o2, cnt, _amul(adj, t1.y))
+@inline function _hdr_rows(t1::SecondAdjointNode2, t2, comp, y1, y2, o2, cnt, adj)
+    cnt = _hdr_rows(t1.inner1, t2, comp, y1, y2, o2, cnt, _amul(adj, t1.y1))
+    return _hdr_rows(t1.inner2, t2, comp, y1, y2, o2, cnt, _amul(adj, t1.y2))
+end
+@inline _hdr_rows(t1::_AdjLeaf, t2, comp, y1, y2, o2, cnt, adj) = _hdr_cols(t1, t2, comp, y1, y2, o2, cnt, adj)
+@inline _hdr_rows(t1::Union{SecondAdjointNull, Real}, t2, comp, y1, y2, o2, cnt, adj) = cnt
+@inline _hdr_cols(u, t2::SecondAdjointNode1, comp, y1, y2, o2, cnt, adj) =
+    _hdr_cols(u, t2.inner, comp, y1, y2, o2, cnt, _amul(adj, t2.y))
+@inline function _hdr_cols(u, t2::SecondAdjointNode2, comp, y1, y2, o2, cnt, adj)
+    cnt = _hdr_cols(u, t2.inner1, comp, y1, y2, o2, cnt, _amul(adj, t2.y1))
+    return _hdr_cols(u, t2.inner2, comp, y1, y2, o2, cnt, _amul(adj, t2.y2))
+end
+@inline _hdr_cols(u, t2::_AdjLeaf, comp, y1, y2, o2, cnt, adj) = hdrpass(u, t2, comp, y1, y2, o2, cnt, adj)
+@inline _hdr_cols(u, t2::Union{SecondAdjointNull, Real}, comp, y1, y2, o2, cnt, adj) = cnt

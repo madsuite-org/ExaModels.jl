@@ -40,7 +40,11 @@ The `concrete` keyword selects how the core accumulates blocks.  The default,
 change as blocks are added, so model construction compiles once instead of
 once per block.  Pass `concrete = Val(true)` to keep every block in the
 core's type, which is required for AOT compilation with `juliac --trim=safe`.
-Both modes produce the same `ExaModel`:
+`concrete = Val(:erased)` stores blocks as the default does and also erases the
+expression type from the handles `add_obj`, `add_con`, `add_con!` and
+(non-buffered, non-lifted) `add_expr` return, so a model builder that holds many handles is not compiled
+against their expression trees; it is not compatible with `juliac --trim=safe`.
+All modes produce the same `ExaModel`:
 
 ```julia
 # v0.9

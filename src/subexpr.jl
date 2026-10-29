@@ -23,6 +23,10 @@ subexpression's own reverse pass is later seeded.
 struct SubexprNode{I} <: AbstractNode
     i::I
 end
+# A buffered reference inside a plain `Expression` body: its slot index is in terms
+# of the body's `DataSource`, so substituting the use-site index must reach it, or
+# `e2[k + 1]` with `e2 = 2 * e[k]`, `e` buffered, reads slot k rather than k + 1.
+@inline _reindex(n::SubexprNode, i) = SubexprNode(_reindex(getfield(n, :i), i))
 _short_type(::SubexprNode) = "SubexprNode"
 Base.show(io::IO, node::SubexprNode{I}) where {I} = print(io, "subexpr(θ[", node.i, "])")
 
@@ -299,39 +303,6 @@ _make_abuf(::Tuple, θ) = fill!(similar(θ), zero(eltype(θ)))
 # classify entries by sign alone.
 
 # Recursion combos: subexpr leaf against interior nodes.
-@inline function hdrpass(t1::T1, t2::T2, comp, y1, y2, o2, cnt, adj) where {T1 <: SecondAdjointNodeSubexpr, T2 <: SecondAdjointNode1}
-    return hdrpass(t1, t2.inner, comp, y1, y2, o2, cnt, adj * t2.y)
-end
-@inline function hdrpass(t1::SecondAdjointNodeSubexpr, t2::SecondAdjointNode1, comp::Nothing, y1, y2, o2, cnt, adj)  # despecialized
-    return hdrpass(t1, t2.inner, comp, y1, y2, o2, cnt, adj * t2.y)
-end
-@inline function hdrpass(t1::T1, t2::T2, comp, y1, y2, o2, cnt, adj) where {T1 <: SecondAdjointNode1, T2 <: SecondAdjointNodeSubexpr}
-    return hdrpass(t1.inner, t2, comp, y1, y2, o2, cnt, adj * t1.y)
-end
-@inline function hdrpass(t1::SecondAdjointNode1, t2::SecondAdjointNodeSubexpr, comp::Nothing, y1, y2, o2, cnt, adj)  # despecialized
-    return hdrpass(t1.inner, t2, comp, y1, y2, o2, cnt, adj * t1.y)
-end
-@inline function hdrpass(t1::T1, t2::T2, comp, y1, y2, o2, cnt, adj) where {T1 <: SecondAdjointNodeSubexpr, T2 <: SecondAdjointNode2}
-    cnt = hdrpass(t1, t2.inner1, comp, y1, y2, o2, cnt, adj * t2.y1)
-    cnt = hdrpass(t1, t2.inner2, comp, y1, y2, o2, cnt, adj * t2.y2)
-    return cnt
-end
-@inline function hdrpass(t1::SecondAdjointNodeSubexpr, t2::SecondAdjointNode2, comp::Nothing, y1, y2, o2, cnt, adj)  # despecialized
-    cnt = hdrpass(t1, t2.inner1, comp, y1, y2, o2, cnt, adj * t2.y1)
-    cnt = hdrpass(t1, t2.inner2, comp, y1, y2, o2, cnt, adj * t2.y2)
-    return cnt
-end
-@inline function hdrpass(t1::T1, t2::T2, comp, y1, y2, o2, cnt, adj) where {T1 <: SecondAdjointNode2, T2 <: SecondAdjointNodeSubexpr}
-    cnt = hdrpass(t1.inner1, t2, comp, y1, y2, o2, cnt, adj * t1.y1)
-    cnt = hdrpass(t1.inner2, t2, comp, y1, y2, o2, cnt, adj * t1.y2)
-    return cnt
-end
-@inline function hdrpass(t1::SecondAdjointNode2, t2::SecondAdjointNodeSubexpr, comp::Nothing, y1, y2, o2, cnt, adj)  # despecialized
-    cnt = hdrpass(t1.inner1, t2, comp, y1, y2, o2, cnt, adj * t1.y1)
-    cnt = hdrpass(t1.inner2, t2, comp, y1, y2, o2, cnt, adj * t1.y2)
-    return cnt
-end
-
 # Leaf pairs: value mode.
 @inline function hdrpass(t1::T1, t2::T2, comp, y1, y2, o2, cnt, adj) where {T1 <: SecondAdjointNodeSubexpr, T2 <: SecondAdjointNodeSubexpr}
     i, j = t1.i, t2.i
