@@ -69,6 +69,11 @@ macro register_univariate(f, df, ddf)
 
             @inline (n::ExaModels.Node1{typeof($f),I})(i, x, θ) where {I} =
                 $f(n.inner(i, x, θ))
+            # structure-pass twin (θ is a NaNSource only in structure passes: the add-time
+            # sparsity probe and the device structure kernels, which run once): not
+            # inlined, so the probe each add_con compiles stays small; evaluation inlines the tree
+            (n::ExaModels.Node1{typeof($f),I})(i, x, θ::ExaModels.NaNSource) where {I} =
+                $f(n.inner(i, x, θ))
         end,
     )
 end
@@ -270,6 +275,13 @@ macro register_bivariate(f, df1, df2, ddf11, ddf12, ddf22)
             @inline (n::ExaModels.Node2{typeof($f),I1,I2})(i, x, θ) where {I1<:Real,I2} =
                 $f(n.inner1, n.inner2(i, x, θ))
             @inline (n::ExaModels.Node2{typeof($f),I1,I2})(i, x, θ) where {I1,I2<:Real} =
+                $f(n.inner1(i, x, θ), n.inner2)
+            # sparsity-probe twins, as for Node1 above
+            (n::ExaModels.Node2{typeof($f),I1,I2})(i, x, θ::ExaModels.NaNSource) where {I1,I2} =
+                $f(n.inner1(i, x, θ), n.inner2(i, x, θ))
+            (n::ExaModels.Node2{typeof($f),I1,I2})(i, x, θ::ExaModels.NaNSource) where {I1<:Real,I2} =
+                $f(n.inner1, n.inner2(i, x, θ))
+            (n::ExaModels.Node2{typeof($f),I1,I2})(i, x, θ::ExaModels.NaNSource) where {I1,I2<:Real} =
                 $f(n.inner1(i, x, θ), n.inner2)
         end,
     )

@@ -71,11 +71,11 @@ Performs dsparse gradient evaluation via the reverse pass on the computation (su
     ) where {D <: Union{AdjointNull, DataIndexed, Real}}
     return cnt
 end
-@inline function grpass(d::D, comp, y, o1, cnt, adj) where {D<:AdjointNode1}
+@probe_twin @inline function grpass(d::D, comp, y, o1, cnt, adj) where {D<:AdjointNode1}
     cnt = grpass(d.inner, comp, y, o1, cnt, _amul(adj, d.y))
     return cnt
 end
-@inline function grpass(d::D, comp, y, o1, cnt, adj) where {D<:AdjointNode2}
+@probe_twin @inline function grpass(d::D, comp, y, o1, cnt, adj) where {D<:AdjointNode2}
     cnt = grpass(d.inner1, comp, y, o1, cnt, _amul(adj, d.y1))
     cnt = grpass(d.inner2, comp, y, o1, cnt, _amul(adj, d.y2))
     return cnt
@@ -84,7 +84,7 @@ end
     @inbounds y[o1+comp(cnt+=1)] += adj
     return cnt
 end
-@inline function grpass(d::AdjointNodeVar, comp::Nothing, y, o1, cnt::Vector, adj)
+function grpass(d::AdjointNodeVar, comp::Nothing, y, o1, cnt::Vector, adj)
     push!(cnt, d.i)
     return cnt
 end

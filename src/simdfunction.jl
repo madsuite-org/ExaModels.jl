@@ -48,14 +48,14 @@ Returns a `SIMDFunction` using the `gen`.
 - `o1`: offset for the derivative evaluation
 - `o2`: offset for the second-order derivative evaluation
 """
-@inline function SIMDFunction(T, gen::Base.Generator, o0 = 0, o1 = 0, o2 = 0)
+function SIMDFunction(::Type{T}, gen::Base.Generator, o0 = 0, o1 = 0, o2 = 0) where {T}
     return _simdfunction(T, gen.f(DataSource()), o0, o1, o2)
 end
 
 # a generator whose body is a plain number (`(0.0 for j in 1:n)`, the base of
 # a buffered expression that `add_expr!` layers onto): a `Null` node, so the
 # tree is callable like any other; a merged family hoists it as a Float leaf
-@inline function _simdfunction(T, f::F, o0, o1, o2) where {F <: Real}
+function _simdfunction(::Type{T}, f::F, o0, o1, o2) where {T, F <: Real}
     return SIMDFunction(
         Null(T(f)),
         Compressor{Tuple{}}(()),
@@ -82,9 +82,9 @@ function _ident_unique(v::Vector)
     return result
 end
 
-@inline function _simdfunction(T, f, o0, o1, o2)
-    f = replace_T(T, f)
-
+# The sparsity probe: walk the tree once for the gradient and once for the
+# Hessian, recording each derivative entry's identity, and compress repeats.
+@inline function _probe(::Type{T}, f) where {T}
     d = f(Identity(), AdjointNodeSource(NaNSource{T}()), NaNSource{T}())
     raw1 = Any[]
     ExaModels.grpass(d, nothing, nothing, nothing, raw1, T(NaN))
@@ -94,17 +94,43 @@ end
     ExaModels.hrpass0(t, nothing, nothing, nothing, nothing, raw2, T(NaN), T(NaN))
 
     unique1 = _ident_unique(raw1)
-    o1step = length(unique1)
     mapping1 = Int[findfirst(y -> y === x, unique1) for x in raw1]
-    c1 = Compressor(ntuple(i -> mapping1[i], _gr_val(typeof(d))))
-
     unique2 = _ident_unique(raw2)
-    o2step = length(unique2)
     mapping2 = Int[findfirst(y -> y === x, unique2) for x in raw2]
-    c2 = Compressor(ntuple(i -> mapping2[i], _hr0_val(typeof(t))))
+    return d, t, mapping1, length(unique1), mapping2, length(unique2)
+end
 
+function _simdfunction(::Type{T}, f, o0, o1, o2) where {T}
+    f = replace_T(T, f)
+    d, t, mapping1, o1step, mapping2, o2step = _probe(T, f)
+    # the Compressor lengths as types, so the result infers (juliac --trim=safe)
+    c1 = Compressor(ntuple(i -> mapping1[i], _gr_val(typeof(d))))
+    c2 = Compressor(ntuple(i -> mapping2[i], _hr0_val(typeof(t))))
     return SIMDFunction(f, c1, c2, o0, o1, o2, o1step, o2step)
 end
+
+# The probe for dynamic (`Vector{Any}`) storage. A block's function has the whole
+# expression tree in its type, so compiling the probe for it costs inference over
+# that type once per block, and the probe runs once. Here it is compiled once,
+# without specializing on the tree: every step is a runtime call into the
+# non-inlined probe twins, which are compiled per subtree type, one small instance
+# per level, instead of one inlined tree-sized body per block (an instance is
+# shared between blocks wherever their subtrees agree). The Compressor lengths
+# come from the probe's own counts rather than from `_gr_val` and `_hr0_val` over
+# the tree's type. The result is the same `SIMDFunction`. Concrete (tuple)
+# storage keeps `_simdfunction`, which `juliac --trim=safe` needs.
+Base.@nospecializeinfer function _simdfunction_dyn(::Type{T}, @nospecialize(f), o0, o1, o2) where {T}
+    f isa Real && return _simdfunction(T, f, o0, o1, o2)
+    f = replace_T(T, f)
+    d, t, mapping1, o1step, mapping2, o2step = @inline _probe(T, f)
+    return SIMDFunction(
+        f, Compressor(Tuple(mapping1)), Compressor(Tuple(mapping2)), o0, o1, o2, o1step, o2step,
+    )
+end
+
+# A core's block storage picks the probe.
+@inline _block_simdfunction(::Tuple, ::Type{T}, f, o0, o1, o2) where {T} = _simdfunction(T, f, o0, o1, o2)
+@inline _block_simdfunction(::Vector{Any}, ::Type{T}, f, o0, o1, o2) where {T} = _simdfunction_dyn(T, f, o0, o1, o2)
 
 # === Val-based compile-time NTuple size computation (juliac-compatible, no @generated) ===
 # Each function returns Val{N}() where N is encoded in the return type via dispatch.

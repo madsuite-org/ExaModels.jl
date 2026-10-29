@@ -1,3 +1,29 @@
+# The data/parameter source of structure passes (sparsity probes): every read is NaN.
+struct NaNSource{T} end
+Base.getindex(::NaNSource{T}, i) where {T} = T(NaN)
+Base.eltype(::NaNSource{T}) where {T} = T
+Base.eltype(::Type{NaNSource{T}}) where {T} = T
+
+# `@probe_twin @inline function pass(t, comp, ...) ... end` also defines the method
+# with `comp::Nothing` and without `@inline`. `_simdfunction` probes each new
+# block's sparsity by walking its tree once with `comp = nothing`; that probe is
+# compiled per block at add time, so it is kept out of line, while evaluation (a
+# Compressor `comp`) inlines the whole tree.
+macro probe_twin(def)
+    fn = def
+    while fn isa Expr && fn.head === :macrocall
+        fn = fn.args[end]
+    end
+    (fn isa Expr && fn.head === :function) || error("@probe_twin expects a function definition")
+    twin = deepcopy(fn)
+    sig = twin.args[1]
+    call = sig.head === :where ? sig.args[1] : sig
+    i = findfirst(==(:comp), call.args)
+    i === nothing && error("@probe_twin: the method has no `comp` argument")
+    call.args[i] = :(comp::Nothing)
+    return esc(Expr(:block, def, twin))
+end
+
 # ── Abstract node types ───────────────────────────────────────────────────────
 
 """
@@ -531,6 +557,12 @@ Constructed by [`exa_prod`](@ref).  See [`SumNode`](@ref) for design notes.
 struct ProdNode{I} <: AbstractNode
     inners::I
 end
+
+# Substitution into a stored subexpression body (see `_reindex` above) must reach
+# every child; without these a sum or product inside an `Expression` kept the
+# indices of the body's own `DataSource` at every use site.
+@inline _reindex(n::SumNode, i) = SumNode(map(x -> _reindex(x, i), getfield(n, :inners)))
+@inline _reindex(n::ProdNode, i) = ProdNode(map(x -> _reindex(x, i), getfield(n, :inners)))
 
 # ── Primal evaluation (x::AbstractVector → scalar) ───────────────────────────
 

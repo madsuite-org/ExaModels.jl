@@ -207,11 +207,11 @@ function add_con(
     gen = _get_generator(ns)
     dims = _get_con_dims(ns)
     gen = _adapt_gen(gen)
-    f = _simdfunction(T, gen.f(DataSource()), c.ncon, c.nnzj, c.nnzh)
+    f = _block_simdfunction(c.cons, T, gen.f(DataSource()), c.ncon, c.nnzj, c.nnzh)
     pars = gen.iter
 
     append!(c.backend, c.tag.con_scen, 0, length(pars))
-    return _add_con(c, f, pars, dims, start, lcon, ucon, name, FirstStageConstraintTag())
+    return _add_con_route(c.cons, c, f, pars, dims, start, lcon, ucon, name, FirstStageConstraintTag())
 end
 
 """
@@ -236,13 +236,13 @@ function add_con(
     gen = _get_generator(ns)
     dims = _get_con_dims(ns)
     gen = _adapt_gen(gen)
-    f = _simdfunction(T, gen.f(DataSource()), c.ncon, c.nnzj, c.nnzh)
+    f = _block_simdfunction(c.cons, T, gen.f(DataSource()), c.ncon, c.nnzj, c.nnzh)
     pars = gen.iter
 
     nscen = c.tag.nscen
     len = length(pars)
     append!(c.backend, c.tag.con_scen, _scen_each_tag(nscen, div(len, nscen)), len)
-    return _add_con(c, f, pars, dims, start, lcon, ucon, name, SecondStageConstraintTag())
+    return _add_con_route(c.cons, c, f, pars, dims, start, lcon, ucon, name, SecondStageConstraintTag())
 end
 
 # --- Accessors ---

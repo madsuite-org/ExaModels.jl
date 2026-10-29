@@ -310,6 +310,79 @@ function _device_tests(backend)
 end
 
 function runtests(; backends = Any[CPU()])
+    @testset "Hessian: host and device backends agree entry by entry" begin
+        # every backend must place each cross-term pair at the position the
+        # host probe gave it, which a summed check cannot see
+        function build(T, backend, buffered)
+            c = ExaCore(T; backend)
+            # start values computed on the host: a generator body in Float64
+            # arithmetic would be mapped in a kernel, which Metal cannot compile
+            c, x = add_var(c, 3, 4; start = T[0.3 + 0.1i + 0.05j for i in 1:3, j in 1:4])
+            c, e = add_expr(c, (exp(x[n, k]) * sin(x[n, k]) for n in 1:3, k in 1:4); buffered)
+            c, e2 = add_expr(c, (e[n, 1] * e[n, 3] + x[n, 2]^2 for n in 1:3); buffered)
+            c, g = add_con(c, (e2[n] * x[n, 4] + cos(x[n, 1] * x[n, 2])) * (x[n, 3] + e[n, 2] * x[n, 1]) for n in 1:3)
+            c, _ = add_con!(c, g, n => (e[n, 2] + x[n, 1]) * (x[n, 3]^3 + e[n, 4] * x[n, 2]) for n in 1:3)
+            c, _ = add_obj(c, (e2[n] + x[n, 1] * x[n, 2]) * (x[n, 3] + e[n, 1] * x[n, 4]) for n in 1:3)
+            return ExaModel(c)
+        end
+        for backend in backends, buffered in (false, true)
+            backend === nothing && continue
+            # the backend's own element type (Float32 on Metal), on both sides
+            T = ExaModels.default_T(backend)
+            mh = build(T, nothing, buffered)
+            md = build(T, backend, buffered)
+            x = mh.meta.x0 .+ T(0.1) .* (1:mh.meta.nvar)
+            y = collect(T(1):mh.meta.ncon) ./ 3
+            # device outputs: `hess_structure(md)` would allocate host vectors
+            rows = ExaModels.convert_array(zeros(Int, md.meta.nnzh), backend)
+            cols = ExaModels.convert_array(zeros(Int, md.meta.nnzh), backend)
+            NLPModels.hess_structure!(md, rows, cols)
+            @test NLPModels.hess_structure(mh) == (Array(rows), Array(cols))
+            xd = ExaModels.convert_array(x, backend)
+            yd = ExaModels.convert_array(y, backend)
+            hd = ExaModels.convert_array(zeros(T, md.meta.nnzh), backend)
+            NLPModels.hess_coord!(md, xd, yd, hd)
+            @test NLPModels.hess_coord(mh, x, y) ≈ Array(hd) rtol = (T == Float32 ? 1.0e-4 : 1.0e-12)
+        end
+    end
+    @testset "reindexed bodies reach buffered and sum nodes" begin
+        # an Expression whose body holds a buffered reference (or an exa_sum),
+        # used at a shifted index, must read the shifted element, in its value
+        # and in its derivatives (the buffered slot also drives the scatter)
+        dense_jac(m, x) = (J = zeros(m.meta.ncon, m.meta.nvar);
+            for (r, c, v) in zip(NLPModels.jac_structure(m)..., NLPModels.jac_coord(m, x)); J[r, c] += v; end; J)
+        dense_hess(m, x, y) = (H = zeros(m.meta.nvar, m.meta.nvar);
+            for (r, c, v) in zip(NLPModels.hess_structure(m)..., NLPModels.hess_coord(m, x, y)); H[max(r, c), min(r, c)] += v; end; H)
+        cr = ExaCore()
+        cr, xr = add_var(cr, 4; start = (Float64(i) for i in 1:4))
+        cr, _ = add_con(cr, 2 * xr[k + 1]^2 for k in 1:3)
+        mr = ExaModel(cr)
+        for buffered in (false, true)
+            c = ExaCore()
+            c, x = add_var(c, 4; start = (Float64(i) for i in 1:4))
+            c, e = add_expr(c, (x[k]^2 for k in 1:4); buffered)
+            c, f = add_expr(c, (2 * e[k] for k in 1:4))
+            c, _ = add_con(c, f[k + 1] for k in 1:3)
+            m = ExaModel(c)
+            x0 = m.meta.x0
+            y0 = [1.0, 2.0, 3.0]
+            @test NLPModels.cons(m, x0) == [8.0, 18.0, 32.0]
+            @test dense_jac(m, x0) ≈ dense_jac(mr, x0)
+            @test dense_hess(m, x0, y0) ≈ dense_hess(mr, x0, y0)
+        end
+        c = ExaCore()
+        c, x = add_var(c, 4; start = (Float64(i) for i in 1:4))
+        c, f = add_expr(c, (exa_sum(x[k] * j for j in 1:2) for k in 1:4))
+        c, _ = add_con(c, f[k + 1] for k in 1:3)
+        m = ExaModel(c)
+        @test NLPModels.cons(m, m.meta.x0) == [6.0, 9.0, 12.0]
+        c = ExaCore()
+        c, x = add_var(c, 4; start = (Float64(i) for i in 1:4))
+        c, f = add_expr(c, (exa_prod(x[k] + j for j in 1:2) for k in 1:4))
+        c, _ = add_con(c, f[k + 1] for k in 1:3)
+        m = ExaModel(c)
+        @test NLPModels.cons(m, m.meta.x0) == [12.0, 20.0, 30.0]
+    end
     @testset "Buffered subexpressions (first-order)" begin
         m0 = _nested_model(buffered = false)
         m1 = _nested_model(buffered = true)
