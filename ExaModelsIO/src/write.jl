@@ -74,6 +74,14 @@ end
 # Merged blocks (same-structure blocks that ExaModels merges into one family)
 # are written as their source blocks, one per segment.
 _blocks(t) = reduce(vcat, [ExaModels.expand_family(b) for b in _in_order(t)]; init = Any[])
+# A family sits at its first block's position, so `add_con A1; add_con B;
+# add_con A2` stores (B, [A1, A2]) and expands to A1, A2, B, while the reader
+# rebuilds blocks in file order and checks each offset. Constraints are
+# written by row offset instead; an augmentation goes after its base (a
+# stable sort keeps augmentations of one base in add order).
+_con_key(b::ExaModels.Constraint) = (b.offset, 0)
+_con_key(b::ExaModels.ConstraintAugmentation) = (b.f.o0, 1)
+_con_blocks(t) = sort!(_blocks(t); by = _con_key, alg = Base.Sort.DEFAULT_STABLE)
 
 function describe(m::ExaModel{T}) where {T}
     refs = m.refs === nothing ? (;) : m.refs
@@ -118,7 +126,7 @@ function describe(m::ExaModel{T}) where {T}
         d
     end
 
-    constraints = map(enumerate(_blocks(m.cons))) do (k, c)
+    constraints = map(enumerate(_con_blocks(m.cons))) do (k, c)
         d = block("con", c, k)
         if c isa ExaModels.ConstraintAugmentation
             d["kind"] = "augmentation"

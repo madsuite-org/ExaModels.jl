@@ -831,7 +831,7 @@ _dims_decode(v::AbstractVector{Int}) = Tuple(
 
 # (o0, o1, o2, iv, fv, elements, dims) per segment, on the host
 _family_segments(s::SegmentedItr) =
-    [(seg.o0, seg.o1, seg.o2, seg.iv, seg.fv, collect(seg.itr), seg.dims) for seg in s.segs]
+    [(seg.o0, seg.o1, seg.o2, seg.iv, seg.fv, seg.itr, seg.dims) for seg in s.segs]
 function _family_segments(s::DeviceSegItr)
     h = _host_array(s)
     return [
