@@ -673,10 +673,10 @@ function instantiate(c::ExaCore{T}, a::Vararg{Any, N}) where {T, N}
     return ExaCore{T}(
         c.name,
         c.backend,
-        instantiate(c.var, a...),
+        _iters_to_backend(instantiate(c.var, a...), c.backend),
         instantiate(c.par, a...),
-        instantiate(c.obj, a...),
-        instantiate(c.cons, a...),
+        _iters_to_backend(instantiate(c.obj, a...), c.backend),
+        _iters_to_backend(instantiate(c.cons, a...), c.backend),
         instantiate(c.subexprs, a...),
         instantiate(c.nvar, a...),
         instantiate(c.npar, a...),
@@ -703,6 +703,21 @@ function instantiate(c::ExaCore{T}, a::Vararg{Any, N}) where {T, N}
         Val(0),
     )
 end
+
+# An iterator built from an argument node (`ArgNode1(f, N)` and the like) is
+# computed by `instantiate` on the host. `add_con`/`add_obj` move iterators to
+# the core's backend when a block is added; a recipe core's iterators only
+# exist after instantiation, so they are moved here.
+@inline _iters_to_backend(blocks, ::Nothing) = blocks
+@inline _iters_to_backend(blocks, backend) = map(b -> _iter_to_backend(b, backend), blocks)
+@inline _iter_to_backend(b, backend) = b
+@inline _iter_to_backend(b::Objective, backend) = Objective(b.f, convert_array(b.itr, backend))
+@inline _iter_to_backend(b::Constraint, backend) =
+    Constraint(b.f, convert_array(b.itr, backend), b.offset, b.size, b.tag)
+@inline _iter_to_backend(b::ConstraintAugmentation, backend) =
+    ConstraintAugmentation(b.f, convert_array(b.itr, backend), b.oa, b.dims, b.tag)
+@inline _iter_to_backend(b::Expression, backend) =
+    Expression(b.size, b.length, b.f, convert_array(b.iter, backend), b.tag)
 
 instantiate(v::Variable, a::Vararg{Any, N}) where {N} =
     Variable(

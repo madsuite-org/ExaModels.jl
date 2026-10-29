@@ -282,6 +282,31 @@ function runtests()
                 end
             end
         end
+
+        @testset "an iterable computed on the host moves to the core's backend" begin
+            # An iterable built from an argument node (`ArgNode1(f, N)`) is
+            # computed on the host when the recipe is instantiated. `add_con`
+            # converts iterables when a block is added, but a recipe core's
+            # iterables only exist after `instantiate`, which must convert them
+            # too; otherwise the first kernel launch meets a host array.
+            idx(N) = collect(1:2:(N - 1))
+            for backend in Main.BACKENDS
+                backend === nothing && continue
+                c, N = ExaModels.ExaCore(; backend = backend, nargs = Val(1))
+                ExaModels.@add_var(c, x, N; start = 1.0)
+                ExaModels.@add_con(c, x[i] * x[i+1] - 1 for i in ExaModels.ArgNode1(idx, N))
+                ExaModels.@add_obj(c, x[i]^2 for i in ExaModels.ArgNode1(idx, N))
+                m = ExaModels.ExaModel(c, 10)
+                host = ExaModels.convert_array(idx(10), backend)
+                @testset "$backend" begin
+                    @test typeof(m.cons[1].itr) == typeof(host)
+                    @test typeof(m.objs[1].itr) == typeof(host)
+                    x0 = ExaModels.convert_array(collect(1.0:10.0), backend)
+                    @test Array(NLPModels.cons(m, x0)) ≈ [i * (i + 1) - 1 for i = 1:2:9]
+                    @test NLPModels.obj(m, x0) ≈ sum(i^2 for i = 1:2:9)
+                end
+            end
+        end
     end
 end
 
