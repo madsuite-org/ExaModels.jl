@@ -1145,9 +1145,13 @@ end
     idx = i - _start(s.size[1]) + 1
     return _reindex(s.f, s.iter[idx])
 end
+# A symbolic index is a position, like a concrete one, but it can only be
+# substituted for the iterator element when the two coincide: the element at
+# every position is that position (`1:n`, `2:5`, a product of unit ranges).
+# Otherwise `s[i]` would silently mean `f(i)` instead of `f(iter[i])` (#293),
+# and the lookup `iter[i]` cannot be expressed in the node tree.
 @inline function Base.getindex(s::Expression, i)
-    # Symbolic index case - the symbolic index IS the iterator element
-    # No adjustment needed; the index is used directly in expression building
+    _check_positional(s)
     return _reindex(s.f, i)
 end
 @inline function Base.getindex(s::Expression, is::Vararg{I, N}) where {I <: Integer, N}
@@ -1157,11 +1161,43 @@ end
     return _reindex(s.f, s.iter[idx])
 end
 @inline function _getindex(s::Expression, is, ::Val{false})
-    # Symbolic indices case - the symbolic indices ARE the iterator elements
-    # No adjustment needed; the indices are used directly in expression building
     @assert(length(is) == length(s.size), "Expression index dimension error")
+    _check_positional(s)
     return _reindex(s.f, is)
 end
+
+function _check_positional(s::Expression)
+    _is_positional(s.size, s.iter) && return nothing
+    throw(
+        ArgumentError(
+            "a subexpression created by `add_expr` can be indexed symbolically " *
+                "(`s[i]` inside a generator) only when its iterator is its own " *
+                "index set, such as `1:n` or a product of unit ranges; this one " *
+                "iterates over other values, so `s[i]` cannot select the i-th " *
+                "element. Create it with `buffered = true` or `lift = true`, " *
+                "or index it with concrete integers.",
+        ),
+    )
+end
+
+# Whether the element at each position of `iter` is the position itself, in
+# the index set `size` describes. Placeholder sizes or iterators (a recipe)
+# resolve only at instantiation and are not checked.
+_is_positional(size, iter) = true
+function _is_positional(size::Tuple, iter::Union{Array, AbstractRange})
+    axes = map(_lin_axis, size)
+    any(isnothing, axes) && return true
+    length(iter) == prod(length, axes) || return false
+    for (el, ci) in zip(iter, Iterators.product(axes...))
+        _same_position(el, ci) || return false
+    end
+    return true
+end
+@inline _same_position(el, ci::Tuple{Any}) = el == ci[1]
+@inline _same_position(el, ci) = el == ci
+_lin_axis(n::Integer) = 1:Int(n)
+_lin_axis(n::AbstractUnitRange) = n
+_lin_axis(n) = nothing
 
 # BufferedExpression indexing - resolves to the θ slot holding the element's
 # buffered value instead of splicing the subexpression tree into the use site.
@@ -2064,6 +2100,12 @@ _infer_subexpr_dims(itr) = (length(collect(itr)),)  # fallback
 Creates a subexpression from a `generator` and returns `(core, Expression)`.
 The expression is stored for direct substitution (inlining) when indexed — no auxiliary
 variables or constraints are added to the problem.
+
+Indexing is positional: `s[k]` is the `k`-th element of the generator. Indexing with a
+generator variable (`s[i]` inside another generator) substitutes `i` into the body, so it
+is supported only when the iterator is its own index set (`1:n`, `0:T`, a product of unit
+ranges) and throws an `ArgumentError` otherwise, e.g. for `x[p_i] for p_i in p` with a
+permutation `p`. Use `buffered = true` or `lift = true` for such iterators.
 
 ## Keyword Arguments
 - `name`: When given as `Val(:name)`, registers the subexpression in `core` for later retrieval as `core.name` or `model.name`. See [`@add_expr`](@ref) for the idiomatic named interface.

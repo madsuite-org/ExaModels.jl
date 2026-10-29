@@ -422,6 +422,32 @@ function test_subexpr_reduced_0based_nested(backend)
 end
 
 """
+Symbolic indexing of a subexpression whose iterator is not its own index set
+(#293): `y[i]` must not silently mean `f(i)` instead of `f(p[i])`.
+"""
+function test_subexpr_permuted_iterator(backend)
+    p = [3, 1, 2]
+    x0 = [1.0, 2.0, 3.0]
+    want = sum(i * x0[p[i]] for i in 1:3)
+
+    c = ExaCore(; backend = backend, concrete = Val(true))
+    @add_var(c, x, 3; start = x0)
+    @add_expr(c, y, x[p_i] for p_i in p)
+    @test_throws ArgumentError add_obj(c, i * y[i] for i in 1:3)
+    # concrete indices are positional and stay supported
+    @add_obj(c, y[1] + 2 * y[2] + 3 * y[3] for _ in 1:1)
+    m = ExaModel(c)
+    @test NLPModels.obj(m, m.meta.x0) ≈ want
+
+    c = ExaCore(; backend = backend, concrete = Val(true))
+    @add_var(c, x, 3; start = x0)
+    @add_expr(c, y, x[p_i] for p_i in p; buffered = true)
+    @add_obj(c, i * y[i] for i in 1:3)
+    m = ExaModel(c)
+    return @test NLPModels.obj(m, m.meta.x0) ≈ want
+end
+
+"""
 Run all subexpression tests.
 """
 function test_subexpr(backend)
@@ -475,6 +501,10 @@ function test_subexpr(backend)
 
     @testset "Subexpr concrete index with constant term" begin
         test_subexpr_concrete_index_constant_term(backend)
+    end
+
+    @testset "Subexpr permuted iterator" begin
+        test_subexpr_permuted_iterator(backend)
     end
 
 end
