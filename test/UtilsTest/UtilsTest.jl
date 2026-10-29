@@ -139,6 +139,33 @@ function runtests()
             @test ExaModels.replace_float_64_by_32(sl) == sl
             @test ExaModels.replace_float_64_by_32.(sl)[1] === _RFTestI1(_RFTestI2((1, 1)))
         end
+
+        # The register macros must not assume `ExaModels` or its names are in
+        # scope at the call site.
+        @testset "register macro hygiene" begin
+            m = Module(:RegisterHygiene)
+            Core.eval(m, :(import ExaModels as EM))
+            Core.eval(
+                m, quote
+                    f(x) = exp(x)
+                    g(x, y) = x * y
+                    EM.@register_univariate(f, f, f)
+                    EM.@register_bivariate(g, (x, y) -> y, (x, y) -> x, (x, y) -> zero(x), (x, y) -> one(x), (x, y) -> zero(x))
+                end
+            )
+            @test !isdefined(m, :ExaModels)
+            # the methods were just defined, so build and evaluate in the latest world
+            obj, grad = Base.invokelatest() do
+                c = ExaModels.ExaCore()
+                c, x = ExaModels.add_var(c, 2; start = [0.5, 2.0])
+                c, _ = ExaModels.add_obj(c, m.f(x[1]) + m.g(x[1], x[2]) for _ in 1:1)
+                nlp = ExaModels.ExaModel(c)
+                x0 = [0.5, 2.0]
+                ExaModels.NLPModels.obj(nlp, x0), ExaModels.NLPModels.grad(nlp, x0)
+            end
+            @test obj ≈ exp(0.5) + 1.0
+            @test grad ≈ [exp(0.5) + 2.0, 0.5]
+        end
     end
 end
 
