@@ -597,6 +597,12 @@ end
 # materialized into a device element array, which the extension's kernels
 # index directly; the map over the block tuples keeps the result inferable.
 
+# a recipe's instantiated blocks are moved to the backend in `instantiate`
+# (`_iters_to_backend`, nlp.jl); a merged family is not, since its layout is
+# built from the host segments at finalization
+_iter_to_backend(b::Constraint{F, I}, backend) where {F, I <: _MergedItr} = b
+_iter_to_backend(b::Objective{F, I}, backend) where {F, I <: _MergedItr} = b
+
 _materialize_block(backend, b) = b
 _materialize_block(backend, b::Constraint{F, I}) where {F, I <: _MergedItr} =
     Constraint(b.f, _materialize_mergeditr(backend, getfield(b, :itr)), 0, b.size, b.tag)
