@@ -741,48 +741,7 @@ function Adapt.adapt_structure(to, s::DeviceSegItr{T, D}) where {T, D}
     )
 end
 
-"""
-    DeviceSeg1Itr{T, D}
-
-Device layout of a single-segment [`SegmentedItr`](@ref): the segment's
-offsets and steps are fields of the iterator itself (kernel parameter space),
-its leaves and compressors are device vectors read through views, and the
-iterator elements `d` are a device vector. The common case on a GPU: one
-block per family, so no segment search per row.
-"""
-struct DeviceSeg1Itr{
-        T, D, VI <: AbstractVector{Int}, VT <: AbstractVector{T}, VD <: AbstractVector{D},
-    } <: AbstractVector{MergedRow{T, SegView{VI}, SegView{VT}, D, CompView{VI}, CompView{VI}}}
-    o0::Int
-    o1::Int
-    o2::Int
-    o1step::Int
-    o2step::Int
-    iv::VI
-    fv::VT
-    comp1::VI
-    comp2::VI
-    d::VD
-    dims::VI                    # the source block's shape (writers only)
-    n::Int
-end
-Base.size(s::DeviceSeg1Itr) = (s.n,)
-Base.IndexStyle(::Type{<:DeviceSeg1Itr}) = IndexLinear()
-@inline function Base.getindex(s::DeviceSeg1Itr, i::Int)
-    return @inbounds eltype(s)(
-        s.o0 + i, s.o1 + s.o1step * (i - 1), s.o2 + s.o2step * (i - 1),
-        SegView(s.iv, 0), SegView(s.fv, 0), s.d[i], CompView(s.comp1, 0), CompView(s.comp2, 0),
-    )
-end
-@inline _devseg1itr(::Type{T}, ::Type{D}, o0, o1, o2, s1, s2, iv, fv, c1, c2, d, dims, n) where {T, D} =
-    DeviceSeg1Itr{T, D, typeof(iv), typeof(fv), typeof(d)}(o0, o1, o2, s1, s2, iv, fv, c1, c2, d, dims, n)
-Adapt.adapt_structure(to, s::DeviceSeg1Itr{T, D}) where {T, D} =
-    _devseg1itr(
-    T, D, s.o0, s.o1, s.o2, s.o1step, s.o2step, Adapt.adapt(to, s.iv), Adapt.adapt(to, s.fv),
-    Adapt.adapt(to, s.comp1), Adapt.adapt(to, s.comp2), Adapt.adapt(to, s.d), Adapt.adapt(to, s.dims), s.n,
-)
-
-const _DeviceMergedItr = Union{DeviceSegItr, DeviceSeg1Itr}
+const _DeviceMergedItr = DeviceSegItr
 # host copy for the host-side passes that read every block's rows
 # (`_build_subexpr_jac` and friends): adapt the arrays to `Array`, which is a
 # bulk copy, where `Array(itr)` would index the device arrays element by element
@@ -793,18 +752,8 @@ _host_array(s::_DeviceMergedItr) = Adapt.adapt(Array, s)
 function _materialize_mergeditr(backend, s::SegmentedItr{K, S, T, D}) where {K, S, T, D}
     segs = s.segs
     cv = v -> convert_array(v, backend)
-    if length(segs) == 1
-        seg = @inbounds segs[1]
-        # a 2-D generator's iterator is a Matrix; the layout holds a vector, in the
-        # same (column-major) order the host's linear getindex uses
-        dd = cv(vec(collect(D, seg.itr)))   # may rewrite Float64 inside D (Metal)
-        fv = cv(collect(T, seg.fv))
-        return _devseg1itr(
-            eltype(fv), eltype(dd), seg.o0, seg.o1, seg.o2, seg.o1step, seg.o2step,
-            cv(collect(Int, seg.iv)), fv, cv(collect(Int, seg.comp1.inner)), cv(collect(Int, seg.comp2.inner)),
-            dd, cv(_dims_code(seg.dims)), length(s),
-        )
-    end
+    # a 2-D generator's iterator is a Matrix; its elements are appended in the
+    # same (column-major) order the host's linear getindex uses
     d = D[]
     for seg in segs
         Base.append!(d, seg.itr)   # ExaModels has its own `append!`
@@ -883,10 +832,6 @@ _dims_decode(v::AbstractVector{Int}) = Tuple(
 # (o0, o1, o2, iv, fv, elements, dims) per segment, on the host
 _family_segments(s::SegmentedItr) =
     [(seg.o0, seg.o1, seg.o2, seg.iv, seg.fv, collect(seg.itr), seg.dims) for seg in s.segs]
-function _family_segments(s::DeviceSeg1Itr)
-    h = _host_array(s)
-    return [(h.o0, h.o1, h.o2, Tuple(h.iv), Tuple(h.fv), collect(h.d), _dims_decode(h.dims))]
-end
 function _family_segments(s::DeviceSegItr)
     h = _host_array(s)
     return [
@@ -945,6 +890,11 @@ function sjacobian!(y1, y2, f::Constraint{F, I}, x, θ, adj) where {F, I <: Segm
     end
     return
 end
+
+# resolves the ambiguity with the generic vector-adjoint driver; an objective's
+# Hessian weight is a scalar, so nothing reaches this
+shessian!(y1, y2, f::Objective{F, I}, x, θ, adj1s::V, adj2) where {F, I <: SegmentedItr, V <: AbstractVector} =
+    throw(ArgumentError("an objective's Hessian takes a scalar weight"))
 
 function shessian!(y1, y2, f::Union{Constraint{F, I}, Objective{F, I}}, x, θ, adj1, adj2) where {F, I <: SegmentedItr}
     s = getfield(f, :itr)

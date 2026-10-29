@@ -209,9 +209,7 @@ function _test_backend_matches_host(backend)
         if b.itr isa ExaModels.DeviceSegItr
             @test length(b.itr.d) == length(b.itr)
             @test length(b.itr.iv) == b.itr.K * length(b.itr.offs)
-            @test length(b.itr.offs) > 1                 # single segments take the field layout
-        elseif b.itr isa ExaModels.DeviceSeg1Itr
-            @test length(b.itr.d) == length(b.itr)
+            @test length(b.itr.offs) > 1                 # single segments run as plain blocks
         end
     end
     # eight families: the range, data-tuple and mixed-footprint families have 2+ segments; the
@@ -219,7 +217,6 @@ function _test_backend_matches_host(backend)
     # iterator on the host) are single-segment
     @test count(b -> b.itr isa ExaModels.DeviceSegItr, mb.cons) == 3
     # one-segment families go back to their plain blocks on a device
-    @test !any(b -> b.itr isa ExaModels.DeviceSeg1Itr, mb.cons)
     @test any(b -> b isa ExaModels.Constraint && b.size == (1:3, 1:2), mb.cons)
     # the multi-segment layout carries the source shapes
     @test any(b -> b.itr isa ExaModels.DeviceSegItr && ExaModels.expand_family(b)[2].size == (1:(64 - 1),), mb.cons)
@@ -343,7 +340,7 @@ function _test_layout_float32_rewrite()
         @test s isa ExaModels.SegmentedItr
         rows = [s[i] for i in 1:length(s)]
         dev = ExaModels._materialize_mergeditr(_F32Backend(), s)
-        @test dev isa (length(s.segs) == 1 ? ExaModels.DeviceSeg1Itr : ExaModels.DeviceSegItr)
+        @test dev isa ExaModels.DeviceSegItr
         @test eltype(dev.d) === Tuple{Int, Float32}                 # the rewrite reached the layout's type
         @test eltype(dev.fv) === Float32 && ExaModels._mrow_T(eltype(dev)) === Float32
         @test length(dev) == length(rows)

@@ -673,7 +673,7 @@ function instantiate(c::ExaCore{T}, a::Vararg{Any, N}) where {T, N}
     return ExaCore{T}(
         c.name,
         c.backend,
-        _iters_to_backend(instantiate(c.var, a...), c.backend),
+        instantiate(c.var, a...),
         instantiate(c.par, a...),
         _iters_to_backend(instantiate(c.obj, a...), c.backend),
         _iters_to_backend(instantiate(c.cons, a...), c.backend),
@@ -722,8 +722,6 @@ end
     Constraint(b.f, convert_array(b.itr, backend), b.offset, b.size, b.tag)
 @inline _iter_to_backend(b::ConstraintAugmentation, backend) =
     ConstraintAugmentation(b.f, convert_array(b.itr, backend), b.oa, b.dims, b.tag)
-@inline _iter_to_backend(b::Expression, backend) =
-    Expression(b.size, b.length, b.f, convert_array(b.iter, backend), b.tag)
 
 instantiate(v::Variable, a::Vararg{Any, N}) where {N} =
     Variable(
