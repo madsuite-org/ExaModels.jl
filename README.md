@@ -36,6 +36,10 @@ Because the pattern and its data travel separately, the repetitive structure is 
 
 This is a deliberate trade relative to general algebraic modeling tools such as [JuMP](https://github.com/jump-dev/JuMP.jl) or [AMPL](https://ampl.com/): ExaModels.jl asks for the model equations in the structured iterator form above, and in exchange preserves the parallelizable structure end to end. Paired with a GPU-capable solver such as [MadNLP.jl](https://github.com/madsuite-org/MadNLP.jl), the entire solution pipeline (model evaluation, derivatives, and the optimization itself) runs on the GPU.
 
+## Saving models with ExaModelsIO
+
+The `ExaModelsIO` subpackage writes an `ExaModel` to an HDF5 file in a version-independent format (`write_model`) and rebuilds it with any later ExaModels version (`read_model`). Install it with `Pkg.add("ExaModelsIO")`; see [ExaModelsIO/README.md](ExaModelsIO/README.md) and the [file format specification](ExaModelsIO/SPEC.md).
+
 ## Modeling libraries built on ExaModels.jl
 
 If you are planning to implement a modeling library with ExaModels.jl, these
