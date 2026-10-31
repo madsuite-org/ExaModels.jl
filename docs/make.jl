@@ -22,6 +22,7 @@ if !(@isdefined _PAGES)
             "distillation.md",
             "opf.md",
             "upgrade.md",
+            "io.md",
         ],
         "Oracle Constraints" => "oracle.md",
         "JuMP Interface (experimental)" => "jump.md",

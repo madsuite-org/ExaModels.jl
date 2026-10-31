@@ -2,11 +2,15 @@
 
 Save an `ExaModel` to a file that later versions of ExaModels can read.
 
-ExaModelsIO lives in the `ExaModelsIO/` directory of the ExaModels.jl repository:
+ExaModelsIO lives in the `ExaModelsIO/` directory of the
+[ExaModels.jl](https://github.com/madsuite-org/ExaModels.jl) repository and is
+documented in the
+[ExaModels documentation](https://madsuite-org.github.io/ExaModels.jl/dev/io/).
+Install it from the General registry:
 
 ```julia
 using Pkg
-Pkg.add(url = "https://github.com/madsuite-org/ExaModels.jl", subdir = "ExaModelsIO")
+Pkg.add("ExaModelsIO")
 ```
 
 ```julia
