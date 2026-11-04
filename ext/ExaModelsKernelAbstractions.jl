@@ -19,7 +19,7 @@ function ExaModels.getptr(backend, array; cmp = !=)
 end
 
 
-struct KAExtension{T, VT <: AbstractVector{T}, H, VI1, VI2, B}
+struct KAExtension{T, VT <: AbstractVector{T}, H, VI1, VI2, B, GP, AP}
     backend::B
     objbuffer::VT
     gradbuffer::VT
@@ -29,6 +29,8 @@ struct KAExtension{T, VT <: AbstractVector{T}, H, VI1, VI2, B}
     conaugsparsity::VI1
     conaugptr::VI2
     prodhelper::H
+    gplan::GP        # segmented reduction of the gradient buffer
+    augplan::AP      # fused evaluation of augmented constraint rows
 end
 
 function ExaModels.build_extension(
@@ -48,6 +50,8 @@ function ExaModels.build_extension(
 
     conaugsparsity = similar(c.x0, Tuple{Int, Int}, c.nconaug)
     _conaug_structure!(T, c.backend, c.cons, conaugsparsity)
+    # the target row of every augmentation term, before sorting, for the fused plan
+    augrows = Int[first(t) for t in Array(conaugsparsity)]
     if !isempty(conaugsparsity)
         ExaModels.sort!(conaugsparsity; lt = ExaModels._first_lt)
     end
@@ -144,6 +148,10 @@ function ExaModels.build_extension(
         end
 
         prodhelper = (
+            jacplani = _seg_plan(c.backend, c.x0, jacptri),
+            jacplanj = _seg_plan(c.backend, c.x0, jacptrj),
+            hessplani = _seg_plan(c.backend, c.x0, hessptri),
+            hessplanj = _seg_plan(c.backend, c.x0, hessptrj),
             jacbuffer = jacbuffer,
             jacsparsityi = jacsparsityi,
             jacsparsityj = jacsparsityj,
@@ -170,6 +178,8 @@ function ExaModels.build_extension(
         conaugsparsity,
         conaugptr,
         prodhelper,
+        _seg_plan(c.backend, c.x0, gptr),
+        _aug_plan(c.backend, c.x0, c.cons, augrows),
     )
 end
 
@@ -317,17 +327,7 @@ function ExaModels.cons_nln!(
     ) where {T, VT, E <: KAExtension}
     _ska(m) === nothing || return _cons_buffered!(m, x, y)
     _cons_nln!(m.ext.backend, y, m.cons, x, m.θ)
-    _conaugs!(m.ext.backend, m.ext.conbuffer, m.cons, x, m.θ)
-
-    if length(m.ext.conaugptr) > 1
-        compress_to_dense(m.ext.backend)(
-            y,
-            m.ext.conbuffer,
-            m.ext.conaugptr,
-            m.ext.conaugsparsity;
-            ndrange = length(m.ext.conaugptr) - 1,
-        )
-    end
+    _conaugs_fused!(m.ext.backend, y, m.ext.augplan, m.cons, x, m.θ)
     return y
 end
 _cons_nln!(backend, y, ::Tuple{}, x, θ) = nothing
@@ -379,13 +379,7 @@ function ExaModels.grad!(
     if !isempty(gradbuffer)
         fill!(gradbuffer, zero(eltype(gradbuffer)))
         _grad!(m.ext.backend, m.ext.gradbuffer, m.objs, x, m.θ)
-        compress_to_dense(m.ext.backend)(
-            y,
-            gradbuffer,
-            m.ext.gptr,
-            m.ext.gsparsity;
-            ndrange = length(m.ext.gptr) - 1,
-        )
+        _seg_reduce!(m.ext.backend, y, _Gather(), m.ext.gplan, m.ext.gsparsity, gradbuffer, nothing)
     end
 
     return y
@@ -455,14 +449,7 @@ function ExaModels.jprod_nln!(
     fill!(Jv, zero(eltype(Jv)))
     fill!(m.ext.prodhelper.jacbuffer, zero(eltype(Jv)))
     _jac_coord!(m.ext.backend, m.ext.prodhelper.jacbuffer, m.cons, x, m.θ)
-    kerspmv(m.ext.backend)(
-        Jv,
-        v,
-        m.ext.prodhelper.jacsparsityi,
-        m.ext.prodhelper.jacbuffer,
-        m.ext.prodhelper.jacptri,
-        ndrange = length(m.ext.prodhelper.jacptri) - 1,
-    )
+    _seg_reduce!(m.ext.backend, Jv, _RowSpmv(), m.ext.prodhelper.jacplani, m.ext.prodhelper.jacsparsityi, m.ext.prodhelper.jacbuffer, v)
     return Jv
 end
 function ExaModels.jtprod_nln!(
@@ -474,14 +461,7 @@ function ExaModels.jtprod_nln!(
     fill!(Jtv, zero(eltype(Jtv)))
     fill!(m.ext.prodhelper.jacbuffer, zero(eltype(Jtv)))
     _jac_coord!(m.ext.backend, m.ext.prodhelper.jacbuffer, m.cons, x, m.θ)
-    kerspmv2(m.ext.backend)(
-        Jtv,
-        v,
-        m.ext.prodhelper.jacsparsityj,
-        m.ext.prodhelper.jacbuffer,
-        m.ext.prodhelper.jacptrj,
-        ndrange = length(m.ext.prodhelper.jacptrj) - 1,
-    )
+    _seg_reduce!(m.ext.backend, Jtv, _ColSpmv(), m.ext.prodhelper.jacplanj, m.ext.prodhelper.jacsparsityj, m.ext.prodhelper.jacbuffer, v)
     return Jtv
 end
 function ExaModels.hprod!(
@@ -501,22 +481,8 @@ function ExaModels.hprod!(
 
     _obj_hess_coord!(m.ext.backend, m.ext.prodhelper.hessbuffer, m.objs, x, m.θ, obj_weight)
     _con_hess_coord!(m.ext.backend, m.ext.prodhelper.hessbuffer, m.cons, x, m.θ, y)
-    kersyspmv(m.ext.backend)(
-        Hv,
-        v,
-        m.ext.prodhelper.hesssparsityi,
-        m.ext.prodhelper.hessbuffer,
-        m.ext.prodhelper.hessptri,
-        ndrange = length(m.ext.prodhelper.hessptri) - 1,
-    )
-    kersyspmv2(m.ext.backend)(
-        Hv,
-        v,
-        m.ext.prodhelper.hesssparsityj,
-        m.ext.prodhelper.hessbuffer,
-        m.ext.prodhelper.hessptrj,
-        ndrange = length(m.ext.prodhelper.hessptrj) - 1,
-    )
+    _seg_reduce!(m.ext.backend, Hv, _RowSpmv(), m.ext.prodhelper.hessplani, m.ext.prodhelper.hesssparsityi, m.ext.prodhelper.hessbuffer, v)
+    _seg_reduce!(m.ext.backend, Hv, _ColSySpmv(), m.ext.prodhelper.hessplanj, m.ext.prodhelper.hesssparsityj, m.ext.prodhelper.hessbuffer, v)
 
     return Hv
 end
@@ -535,22 +501,8 @@ function ExaModels.hprod!(
     fill!(m.ext.prodhelper.hessbuffer, zero(eltype(Hv)))
 
     _obj_hess_coord!(m.ext.backend, m.ext.prodhelper.hessbuffer, m.objs, x, m.θ, obj_weight)
-    kersyspmv(m.ext.backend)(
-        Hv,
-        v,
-        m.ext.prodhelper.hesssparsityi,
-        m.ext.prodhelper.hessbuffer,
-        m.ext.prodhelper.hessptri,
-        ndrange = length(m.ext.prodhelper.hessptri) - 1,
-    )
-    kersyspmv2(m.ext.backend)(
-        Hv,
-        v,
-        m.ext.prodhelper.hesssparsityj,
-        m.ext.prodhelper.hessbuffer,
-        m.ext.prodhelper.hessptrj,
-        ndrange = length(m.ext.prodhelper.hessptrj) - 1,
-    )
+    _seg_reduce!(m.ext.backend, Hv, _RowSpmv(), m.ext.prodhelper.hessplani, m.ext.prodhelper.hesssparsityi, m.ext.prodhelper.hessbuffer, v)
+    _seg_reduce!(m.ext.backend, Hv, _ColSySpmv(), m.ext.prodhelper.hessplanj, m.ext.prodhelper.hesssparsityj, m.ext.prodhelper.hessbuffer, v)
 
     return Hv
 end
@@ -864,13 +816,7 @@ function ExaModels.grad!(
     if !isempty(gradbuffer)
         fill!(gradbuffer, zero(eltype(gradbuffer)))
         _grad!(m.ext.backend, m.ext.gradbuffer, m.objs, x, m.θ)
-        compress_to_dense(m.ext.backend)(
-            y,
-            gradbuffer,
-            m.ext.gptr,
-            m.ext.gsparsity;
-            ndrange = length(m.ext.gptr) - 1,
-        )
+        _seg_reduce!(m.ext.backend, y, _Gather(), m.ext.gplan, m.ext.gsparsity, gradbuffer, nothing)
     end
     backend = m.ext.backend
     for (i, oracle) in enumerate(m.scalar_oracles)
@@ -948,16 +894,7 @@ function ExaModels.cons_nln!(
         y::AbstractVector,
     ) where {T, VT, E <: KAExtension}
     _cons_nln!(m.ext.backend, y, m.cons, x, m.θ)
-    _conaugs!(m.ext.backend, m.ext.conbuffer, m.cons, x, m.θ)
-    if length(m.ext.conaugptr) > 1
-        compress_to_dense(m.ext.backend)(
-            y,
-            m.ext.conbuffer,
-            m.ext.conaugptr,
-            m.ext.conaugsparsity;
-            ndrange = length(m.ext.conaugptr) - 1,
-        )
-    end
+    _conaugs_fused!(m.ext.backend, y, m.ext.augplan, m.cons, x, m.θ)
     backend = m.ext.backend
     for (i, oracle) in enumerate(m.oracles)
         cache = m.oracle_caches[i]
@@ -1603,6 +1540,7 @@ function ExaModels.shessian!(backend::B, y1, y2, f::_MergedCon, x, θ, adj::V, a
     end
 end
 
+include("ExaModelsKASegmented.jl")
 include("ExaModelsKABuffered.jl")
 
 

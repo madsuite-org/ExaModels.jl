@@ -1,0 +1,199 @@
+# Segmented reductions and the fused evaluation of augmented constraint rows.
+# Included in ExaModelsKernelAbstractions.
+
+# ---- Segmented reductions -------------------------------------------------------
+#
+# Several callbacks reduce a list of values sorted by output index: the objective
+# gradient and the products J*v, J'*v and H*v. Reducing each output entry in one work
+# item leaves a device mostly idle when there are few outputs with long segments, and
+# serializes each long segment. Instead, every segment is cut into chunks of at most
+# `SEGCHUNK` entries: one work item sums a chunk into a partial, and one work item per
+# output entry adds that entry's partials. The chunk table fixes the order of the
+# summation, so results are the same from run to run.
+
+const SEGCHUNK = 256
+
+# Chunk table for the segments given by `ptr` (segment s is ptr[s]:ptr[s+1]-1):
+# chunk c is cstart[c]:cstart[c+1]-1, and segment s has chunks kptr[s]:kptr[s+1]-1.
+# Built on the host, once, when the model is built.
+function _seg_chunks(ptr::Vector{Int})
+    cstart = Int[]
+    kptr = Int[1]
+    for s in 1:(length(ptr) - 1)
+        for st in ptr[s]:SEGCHUNK:(ptr[s + 1] - 1)
+            push!(cstart, st)
+        end
+        push!(kptr, length(cstart) + 1)
+    end
+    push!(cstart, isempty(ptr) ? 1 : ptr[end])
+    return cstart, kptr
+end
+
+# A planned reduction over a sorted coordinate list; `partial` holds the chunk sums.
+struct SegPlan{VI, VT}
+    cstart::VI
+    kptr::VI
+    partial::VT
+end
+function _seg_plan(backend, x0, ptr)
+    cstart, kptr = _seg_chunks(Array(ptr))
+    return SegPlan(
+        ExaModels.convert_array(cstart, backend),
+        ExaModels.convert_array(kptr, backend),
+        similar(x0, max(length(cstart) - 1, 0)),
+    )
+end
+_nseg(p::SegPlan) = length(p.kptr) - 1
+
+# The terms reduced. Coordinates are `(key, index)` for a gather and `((i, j), index)`
+# for a sparse product.
+struct _Gather end                          # y[key] += V[index]
+@inline _segkey(::_Gather, c) = c[1]
+@inline _segterm(::_Gather, c, V, x) = @inbounds V[c[2]]
+struct _RowSpmv end                         # y[i] += V * x[j]
+@inline _segkey(::_RowSpmv, c) = c[1][1]
+@inline _segterm(::_RowSpmv, c, V, x) = @inbounds V[c[2]] * x[c[1][2]]
+struct _ColSpmv end                         # y[j] += V * x[i]
+@inline _segkey(::_ColSpmv, c) = c[1][2]
+@inline _segterm(::_ColSpmv, c, V, x) = @inbounds V[c[2]] * x[c[1][1]]
+struct _ColSySpmv end                       # y[j] += V * x[i], off-diagonal entries only
+@inline _segkey(::_ColSySpmv, c) = c[1][2]
+@inline _segterm(::_ColSySpmv, c, V, x) =
+    @inbounds c[1][1] != c[1][2] ? V[c[2]] * x[c[1][1]] : zero(eltype(V))
+
+@kernel function seg_partial!(partial, @Const(op), @Const(coord), @Const(V), @Const(x), @Const(cstart))
+    I = @index(Global)
+    @inbounds begin
+        s = zero(eltype(partial))
+        for l in cstart[I]:(cstart[I + 1] - 1)
+            s += _segterm(op, coord[l], V, x)
+        end
+        partial[I] = s
+    end
+end
+@kernel function seg_finish!(y, @Const(op), @Const(partial), @Const(coord), @Const(cstart), @Const(kptr))
+    I = @index(Global)
+    @inbounds begin
+        s = zero(eltype(y))
+        for c in kptr[I]:(kptr[I + 1] - 1)
+            s += partial[c]
+        end
+        y[_segkey(op, coord[cstart[kptr[I]]])] += s
+    end
+end
+
+# y[key] += the sum of the terms of each segment of the sorted list `coord`
+function _seg_reduce!(backend, y, op, plan::SegPlan, coord, V, x)
+    n = _nseg(plan)
+    n == 0 && return y
+    seg_partial!(backend)(plan.partial, op, coord, V, x, plan.cstart; ndrange = length(plan.partial))
+    seg_finish!(backend)(y, op, plan.partial, coord, plan.cstart, plan.kptr; ndrange = n)
+    return y
+end
+
+# ---- Fused evaluation of augmented constraint rows -------------------------------
+#
+# The terms that `add_con!` adds to constraint rows were evaluated into a buffer and
+# then summed per row, one work item per row. With few rows and many terms per row
+# (a quadratic constraint has one term per nonzero of its matrix) that loop dominated
+# `cons!`. Now each augmentation block keeps a copy of its data sorted by target row
+# and a chunk table whose chunks never cross a row: one work item evaluates the terms
+# of a chunk and writes their sum, and the chunk sums of all blocks are added per row.
+
+struct AugBlockPlan{I, VI}
+    itr::I          # the block's data, sorted by target row
+    cstart::VI      # chunk c covers itr[cstart[c]:cstart[c+1]-1]
+    poff::Int       # offset of this block's chunks in the partial buffer
+end
+struct AugPlan{B, VI, VT}
+    blocks::B       # per block of `cons`: an AugBlockPlan, or nothing
+    partial::VT     # chunk sums of all blocks
+    perm::VI        # chunk indices sorted by row
+    ptr::VI         # the chunks of the r-th augmented row are perm[ptr[r]:ptr[r+1]-1]
+    rows::VI        # the augmented rows
+end
+
+# `rows_host[oa + I]` is the target row of term I of the augmentation block at `oa`.
+function _aug_plan(backend, x0, cons, rows_host::Vector{Int})
+    chunk_rows = Int[]
+    function plan_of(con)
+        (con isa ExaModels.ConstraintAugmentation && !isempty(con.itr)) || return nothing
+        n = length(con.itr)
+        r = rows_host[(con.oa + 1):(con.oa + n)]
+        perm = sortperm(r)                  # stable: a row keeps its terms in order
+        r = r[perm]
+        cstart = Int[]
+        i = 1
+        while i <= n
+            j = i
+            while j < n && r[j + 1] == r[i] && j - i + 1 < SEGCHUNK
+                j += 1
+            end
+            push!(cstart, i)
+            push!(chunk_rows, r[i])
+            i = j + 1
+        end
+        poff = length(chunk_rows) - length(cstart)
+        push!(cstart, n + 1)
+        itr = ExaModels.convert_array(collect(Array(con.itr))[perm], backend)
+        return AugBlockPlan(itr, ExaModels.convert_array(cstart, backend), poff)
+    end
+    blocks = cons isa _LongTuple ? Any[plan_of(con) for con in cons] : map(plan_of, cons)
+    perm = sortperm(chunk_rows)
+    sorted_rows = chunk_rows[perm]
+    ptr = isempty(sorted_rows) ? [1] : ExaModels.getptr(nothing, sorted_rows)
+    rows = sorted_rows[ptr[1:(end - 1)]]
+    return AugPlan(
+        blocks,
+        similar(x0, length(chunk_rows)),
+        ExaModels.convert_array(perm, backend),
+        ExaModels.convert_array(ptr, backend),
+        ExaModels.convert_array(rows, backend),
+    )
+end
+
+@kernel function aug_chunk_sum!(partial, @Const(f), @Const(itr), @Const(cstart), @Const(x), @Const(θ), @Const(poff))
+    I = @index(Global)
+    @inbounds begin
+        s = zero(eltype(partial))
+        for t in cstart[I]:(cstart[I + 1] - 1)
+            s += f(itr[t], x, θ)
+        end
+        partial[poff + I] = s
+    end
+end
+@kernel function aug_finish!(y, @Const(partial), @Const(perm), @Const(ptr), @Const(rows))
+    I = @index(Global)
+    @inbounds begin
+        s = zero(eltype(y))
+        for k in ptr[I]:(ptr[I + 1] - 1)
+            s += partial[perm[k]]
+        end
+        y[rows[I]] += s
+    end
+end
+
+_aug_chunks!(backend, partial, ::Nothing, con, x, θ) = nothing
+function _aug_chunks!(backend, partial, b::AugBlockPlan, con, x, θ)
+    aug_chunk_sum!(backend)(partial, con.f, b.itr, b.cstart, x, θ, b.poff; ndrange = length(b.cstart) - 1)
+    return nothing
+end
+_aug_cons!(backend, partial, ::Tuple{}, ::Tuple{}, x, θ) = nothing
+function _aug_cons!(backend, partial, (b, bs...), (con, cons...), x, θ)
+    _aug_chunks!(backend, partial, b, con, x, θ)
+    return _aug_cons!(backend, partial, bs, cons, x, θ)
+end
+function _aug_cons!(backend, partial, bs::Vector{Any}, cons::_LongTuple, x, θ)
+    for (b, con) in zip(bs, cons)
+        _aug_chunks!(backend, partial, b, con, x, θ)
+    end
+    return nothing
+end
+
+# y[row] += the sum of the augmentation terms of each row
+function _conaugs_fused!(backend, y, plan::AugPlan, cons, x, θ)
+    isempty(plan.rows) && return y
+    _aug_cons!(backend, plan.partial, plan.blocks, cons, x, θ)
+    aug_finish!(backend)(y, plan.partial, plan.perm, plan.ptr, plan.rows; ndrange = length(plan.rows))
+    return y
+end
