@@ -7,8 +7,8 @@ The model is rebuilt through ExaModels' modelling functions (`add_var`,
 `add_par`, `add_obj`, `add_con`, `add_con!`), so it gets the derivative
 structures of the ExaModels version doing the reading. `backend` places it on a
 device as in `ExaCore(; backend)`, and `prod` is passed on as in
-`ExaModel(c; prod)`: `prod = true` builds what `jprod_nln!` and `jtprod_nln!`
-need.
+`ExaModel(c; prod)`: on a KernelAbstractions backend, `prod = true` builds the
+product helper that `jprod_nln!`, `jtprod_nln!` and `hprod!` need there.
 
 Functions are stored by their name in the operator vocabulary (SPEC.md).
 Functions from SpecialFunctions need that package loaded. A function the user
