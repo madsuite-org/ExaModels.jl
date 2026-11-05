@@ -159,6 +159,22 @@ ExaModels.@register_univariate(myf, x -> 2x + 1, x -> 2.0)
         end
     end
 
+    @testset "prod keyword" begin
+        c = ExaCore()
+        x = @add_var(c, x, 6; start = 0.4)
+        @add_obj(c, x[i]^2 for i in 1:6)
+        @add_con(c, sin(x[i]) * x[i + 1] for i in 1:5; lcon = -1.0, ucon = 1.0)
+        m = ExaModel(c; prod = true)
+        path = tempname() * ".h5"
+        write_model(path, m)
+        m2 = read_model(path; prod = true)
+        x0 = m.meta.x0 .+ 0.1 .* (1:6)
+        v, w = collect(1.0:6.0), collect(1.0:5.0)
+        J = _jac(m, x0)
+        @test jprod_nln!(m2, x0, v, zeros(5)) ≈ J * v
+        @test jtprod_nln!(m2, x0, w, zeros(6)) ≈ J' * w
+    end
+
     @testset "Float32, maximize, solution" begin
         c = ExaCore(Float32; minimize = false)
         x = @add_var(c, x, 3; start = 1)
