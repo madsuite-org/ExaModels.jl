@@ -17,8 +17,10 @@ function model(backend)
     long = [(1 + (k % 3 == 0 ? 0 : k % 10), 1 + k % 50, 1 + (7k) % 50, 0.5 + sin(k)) for k in 1:20000]
     c, _ = add_con!(c, g, p[1] => p[4] * x[p[2]] * x[p[3]] for p in long)
     c, _ = add_con!(c, g, p[1] => sin(x[p[2]]) for p in [(1, 1), (1, 3), (2, 2), (5, 5), (5, 6), (5, 7)])
-    c, _ = add_obj(c, (x[q[1]] - 0.3)^2 * x[q[2]] * q[3]
-        for q in [(1 + k % 50, 1 + (k + 1) % 50, cos(k)) for k in 1:30000])
+    c, _ = add_obj(
+        c, (x[q[1]] - 0.3)^2 * x[q[2]] * q[3]
+            for q in [(1 + k % 50, 1 + (k + 1) % 50, cos(k)) for k in 1:30000]
+    )
     return ExaModel(c; prod = true)
 end
 
@@ -45,7 +47,7 @@ function runtests()
         cons(ref, x), grad(ref, x), jprod(ref, x, v), jtprod(ref, x, w),
         hprod(ref, x, y, v; obj_weight = 0.7), [obj(ref, x)],
     )
-    @testset "reductions on $(something(backend, "host"))" for backend in BACKENDS
+    return @testset "reductions on $(something(backend, "host"))" for backend in BACKENDS
         backend === nothing && continue
         m = model(backend)
         dev(a) = ExaModels.convert_array(a, backend)
