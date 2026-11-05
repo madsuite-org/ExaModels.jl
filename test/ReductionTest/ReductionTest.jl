@@ -28,8 +28,7 @@ end
 
 rel(a, b) = maximum(abs.(a .- b) ./ (1 .+ abs.(b)); init = 0.0)
 
-# Jacobian and Hessian as sparse matrices: a device model may list coordinates in
-# another order (augmentation data is sorted by row when it is built)
+# Jacobian and Hessian as sparse matrices
 idx(m, n) = similar(m.meta.x0, Int, n)
 function structures(m)
     j = jac_structure!(m, idx(m, m.meta.nnzj), idx(m, m.meta.nnzj))
@@ -69,7 +68,7 @@ function runtests()
         for (name, a, b) in zip((:cons, :grad, :jprod, :jtprod, :hprod, :obj), got, expected)
             @test rel(Array(a), b) < tol
         end
-        # augmentation data is sorted by row on every backend, so coordinates come in the same order
+        # augmentation data is not reordered on any backend, so coordinates come in the same order
         @test structures(m) == structures(ref)
         Jm, Hm = matrices(m, dev(x), dev(y))
         Jr, Hr = matrices(ref, x, y)

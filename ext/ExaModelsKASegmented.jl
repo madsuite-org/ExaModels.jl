@@ -111,50 +111,24 @@ function _seg_reduce_index!(backend, y, plan::SegPlan, coord, V)
     return y
 end
 
-# ---- Augmentation data sorted by row at build time --------------------------------
-#
-# The fused `cons!` and `jprod` walk an augmentation block's terms in row order. As on
-# the host (`ExaModels._sort_augmentations`), the block's data is sorted by target row
-# once, before the model is built, and the model holds only the sorted array; here the
-# rows are computed on the device.
-
-function ExaModels._prepare_backend(c::ExaModels.ExaCore{T, VT, B}) where {T, VT, B <: KernelAbstractions.Backend}
-    any(con -> con isa ExaModels.ConstraintAugmentation, c.cons) || return c
-    rows = similar(c.x0, Tuple{Int, Int}, c.nconaug)
-    _conaug_structure!(T, c.backend, c.cons, rows)
-    rows_host = Int[first(t) for t in Array(rows)]
-    sorted(con) = _sorted_by_row(con, rows_host, c.backend)
-    cons = c.cons isa _LongTuple ? Tuple(Any[sorted(con) for con in c.cons]) : map(sorted, c.cons)
-    return ExaModels._with_blocks(c, c.var, c.par, c.obj, cons, c.refs)
-end
-# The sorted data is always a device array of the backend, so the block's type does not
-# depend on whether its data happened to be sorted already.
-_sorted_by_row(con, rows_host, backend) = con
-function _sorted_by_row(con::ExaModels.ConstraintAugmentation, rows_host, backend)
-    con.itr isa AbstractVector || return con
-    r = rows_host[(con.oa + 1):(con.oa + length(con.itr))]
-    VI = typeof(ExaModels.convert_array(eltype(con.itr)[], backend))
-    con.itr isa VI && issorted(r) && return con
-    sorted = ExaModels.convert_array(collect(Array(con.itr))[sortperm(r)], backend)
-    return ExaModels.ConstraintAugmentation(con.f, sorted, con.oa, con.dims, con.tag)
-end
-
 # ---- Fused evaluation of augmented constraint rows -------------------------------
 #
 # The terms that `add_con!` adds to constraint rows were evaluated into a buffer and
 # then summed per row, one work item per row. With few rows and many terms per row
 # (a quadratic constraint has one term per nonzero of its matrix) that loop dominated
-# `cons!`. Now each augmentation block keeps a copy of its data sorted by target row
-# and a chunk table whose chunks never cross a row: one work item evaluates the terms
-# of a chunk and writes their sum, and the chunk sums of all blocks are added per row.
+# `cons!`. Now each augmentation block keeps the permutation that orders its terms by
+# target row (its data stays where it is, so Jacobian and Hessian coordinates keep their
+# order) and a chunk table whose chunks never cross a row: one work item evaluates the
+# terms of a chunk and writes their sum, and the chunk sums of all blocks are added per
+# row.
 
-struct AugBlockPlan{I, VI}
-    itr::I          # the block's data, sorted by target row
-    cstart::VI      # chunk c covers itr[cstart[c]:cstart[c+1]-1]
+struct AugBlockPlan{VI}
+    perm::VI        # the block's terms in row order (stable: a row keeps its terms in order)
+    cstart::VI      # chunk c covers the terms perm[cstart[c]:cstart[c+1]-1]
     poff::Int       # offset of this block's chunks in the partial buffer
 end
 struct AugPlan{B, VI, VT}
-    blocks::B       # per block of `cons`: an AugBlockPlan, or nothing
+    blocks::B       # per block of `cons`: an AugBlockPlan for an augmentation, else nothing
     partial::VT     # chunk sums of all blocks
     perm::VI        # chunk indices sorted by row
     ptr::VI         # the chunks of the r-th augmented row are perm[ptr[r]:ptr[r+1]-1]
@@ -164,30 +138,7 @@ end
 # `rows_host[oa + I]` is the target row of term I of the augmentation block at `oa`.
 function _aug_plan(backend, x0, cons, rows_host::Vector{Int})
     chunk_rows = Int[]
-    function plan_of(con)
-        (con isa ExaModels.ConstraintAugmentation && !isempty(con.itr)) || return nothing
-        n = length(con.itr)
-        r = rows_host[(con.oa + 1):(con.oa + n)]
-        perm = sortperm(r)                  # stable: a row keeps its terms in order
-        r = r[perm]
-        cstart = Int[]
-        i = 1
-        while i <= n
-            j = i
-            while j < n && r[j + 1] == r[i] && j - i + 1 < SEGCHUNK
-                j += 1
-            end
-            push!(cstart, i)
-            push!(chunk_rows, r[i])
-            i = j + 1
-        end
-        poff = length(chunk_rows) - length(cstart)
-        push!(cstart, n + 1)
-        # data sorted at build time (`_prepare_backend`) is used as is; anything else
-        # (e.g. a range) gets a sorted copy here
-        itr = issorted(perm) ? con.itr : ExaModels.convert_array(collect(Array(con.itr))[perm], backend)
-        return AugBlockPlan(itr, ExaModels.convert_array(cstart, backend), poff)
-    end
+    plan_of(con) = _block_plan(con, backend, rows_host, chunk_rows)
     blocks = cons isa _LongTuple ? Any[plan_of(con) for con in cons] : map(plan_of, cons)
     perm = sortperm(chunk_rows)
     sorted_rows = chunk_rows[perm]
@@ -201,13 +152,34 @@ function _aug_plan(backend, x0, cons, rows_host::Vector{Int})
         ExaModels.convert_array(rows, backend),
     )
 end
+_block_plan(con, backend, rows_host, chunk_rows) = nothing
+function _block_plan(con::ExaModels.ConstraintAugmentation, backend, rows_host, chunk_rows)
+    n = length(con.itr)
+    r = rows_host[(con.oa + 1):(con.oa + n)]
+    perm = sortperm(r)
+    r = r[perm]
+    cstart = Int[]
+    i = 1
+    while i <= n
+        j = i
+        while j < n && r[j + 1] == r[i] && j - i + 1 < SEGCHUNK
+            j += 1
+        end
+        push!(cstart, i)
+        push!(chunk_rows, r[i])
+        i = j + 1
+    end
+    poff = length(chunk_rows) - length(cstart)
+    push!(cstart, n + 1)
+    return AugBlockPlan(ExaModels.convert_array(perm, backend), ExaModels.convert_array(cstart, backend), poff)
+end
 
-@kernel function aug_chunk_sum!(partial, @Const(f), @Const(itr), @Const(cstart), @Const(x), @Const(θ), @Const(poff))
+@kernel function aug_chunk_sum!(partial, @Const(f), @Const(itr), @Const(perm), @Const(cstart), @Const(x), @Const(θ), @Const(poff))
     I = @index(Global)
     @inbounds begin
         s = zero(eltype(partial))
         for t in cstart[I]:(cstart[I + 1] - 1)
-            s += f(itr[t], x, θ)
+            s += f(itr[perm[t]], x, θ)
         end
         partial[poff + I] = s
     end
@@ -225,7 +197,8 @@ end
 
 _aug_chunks!(backend, partial, ::Nothing, con, x, θ) = nothing
 function _aug_chunks!(backend, partial, b::AugBlockPlan, con, x, θ)
-    aug_chunk_sum!(backend)(partial, con.f, b.itr, b.cstart, x, θ, b.poff; ndrange = length(b.cstart) - 1)
+    isempty(b.perm) && return nothing
+    aug_chunk_sum!(backend)(partial, con.f, con.itr, b.perm, b.cstart, x, θ, b.poff; ndrange = length(b.cstart) - 1)
     return nothing
 end
 _aug_cons!(backend, partial, ::Tuple{}, ::Tuple{}, x, θ) = nothing
@@ -266,35 +239,39 @@ end
     @inbounds Jv[ExaModels.offset0(f, itr, I)] =
         _gdot(f(itr[I], ExaModels.AdjointNodeSource(x), θ), v, one(eltype(Jv)))
 end
-@kernel function aug_chunk_jv!(partial, @Const(f), @Const(itr), @Const(cstart), @Const(x), @Const(θ), @Const(v), @Const(poff))
+@kernel function aug_chunk_jv!(partial, @Const(f), @Const(itr), @Const(perm), @Const(cstart), @Const(x), @Const(θ), @Const(v), @Const(poff))
     I = @index(Global)
     @inbounds begin
         s = zero(eltype(partial))
         for t in cstart[I]:(cstart[I + 1] - 1)
-            s += _gdot(f(itr[t], ExaModels.AdjointNodeSource(x), θ), v, one(eltype(partial)))
+            s += _gdot(f(itr[perm[t]], ExaModels.AdjointNodeSource(x), θ), v, one(eltype(partial)))
         end
         partial[poff + I] = s
     end
 end
 
+_jv_block!(backend, Jv, con, x, θ, v) = nothing
+function _jv_block!(backend, Jv, con::ExaModels.Constraint, x, θ, v)
+    isempty(con.itr) && return nothing
+    kerjv(backend)(Jv, con.f, con.itr, x, θ, v; ndrange = length(con.itr))
+    return nothing
+end
 _jv_rows!(backend, Jv, ::Tuple{}, x, θ, v) = nothing
 function _jv_rows!(backend, Jv, (con, cons...), x, θ, v)
     _jv_rows!(backend, Jv, cons, x, θ, v)
-    con isa ExaModels.Constraint && !isempty(con.itr) &&
-        kerjv(backend)(Jv, con.f, con.itr, x, θ, v; ndrange = length(con.itr))
-    return nothing
+    return _jv_block!(backend, Jv, con, x, θ, v)
 end
 function _jv_rows!(backend, Jv, cons::_LongTuple, x, θ, v)
     for con in cons
-        con isa ExaModels.Constraint && !isempty(con.itr) &&
-            kerjv(backend)(Jv, con.f, con.itr, x, θ, v; ndrange = length(con.itr))
+        _jv_block!(backend, Jv, con, x, θ, v)
     end
     return nothing
 end
 
 _aug_jv_chunks!(backend, partial, ::Nothing, con, x, θ, v) = nothing
 function _aug_jv_chunks!(backend, partial, b::AugBlockPlan, con, x, θ, v)
-    aug_chunk_jv!(backend)(partial, con.f, b.itr, b.cstart, x, θ, v, b.poff; ndrange = length(b.cstart) - 1)
+    isempty(b.perm) && return nothing
+    aug_chunk_jv!(backend)(partial, con.f, con.itr, b.perm, b.cstart, x, θ, v, b.poff; ndrange = length(b.cstart) - 1)
     return nothing
 end
 _aug_jv!(backend, partial, ::Tuple{}, ::Tuple{}, x, θ, v) = nothing

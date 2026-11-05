@@ -732,7 +732,6 @@ end
 # ── Internal constructor ───────────────────────────────────────────────────────
 
 function _build_with_oracle(c::ExaCore{T}; kwargs...) where {T}
-    c = _prepare_backend(c)
     oracles = c.oracles                          # Tuple of VectorNonlinearOracle
     s_oracles = c.scalar_oracles                 # Tuple of ScalarNonlinearOracle
     evaluators = c.evals                         # Tuple of OracleEvaluator
