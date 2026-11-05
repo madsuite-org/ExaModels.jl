@@ -1,10 +1,10 @@
 module ReductionTest
 
 # Callbacks that reduce many terms into few outputs: constraint rows with long and
-# uneven augmentations (several blocks feeding the same rows, rows without any), an
-# objective sum long enough for a work item to take several terms (value and gradient),
-# and the products J*v, J'*v and H*v. Each backend is compared with the host model
-# (`backend = nothing`), which reduces in a plain loop.
+# uneven augmentations (several blocks feeding the same rows, rows without any), a
+# large objective sum (value and gradient), and the products J*v, J'*v and H*v. Each
+# backend is compared with the host model (`backend = nothing`), which reduces in a
+# plain loop.
 
 using Test, ExaModels, NLPModels, SparseArrays
 import ..BACKENDS
@@ -21,8 +21,18 @@ function model(backend)
     c, _ = add_con!(c, g, p[1] => sin(x[p[2]]) for p in [(1, 1), (1, 3), (2, 2), (5, 5), (5, 6), (5, 7)])
     c, _ = add_obj(
         c, (x[q[1]] - 0.3)^2 * x[q[2]] * q[3]
-            for q in [(1 + k % 50, 1 + (k + 1) % 50, T(cos(k))) for k in 1:300000]
+            for q in [(1 + k % 50, 1 + (k + 1) % 50, T(cos(k))) for k in 1:30000]
     )
+    return ExaModel(c; prod = true)
+end
+
+# one row long enough that a workgroup sums more terms than it has work items
+function long_row(backend)
+    T = ExaModels.default_T(backend)
+    c = ExaCore(T; backend, concrete = Val(true))
+    c, x = add_var(c, 50; start = T[0.1 * i for i in 1:50])
+    c, g = add_con(c, x[i] for i in 1:2)
+    c, _ = add_con!(c, g, 1 => p[2] * x[p[1]] for p in [(1 + k % 50, T(sin(k))) for k in 1:400000])
     return ExaModel(c; prod = true)
 end
 
@@ -83,6 +93,10 @@ function runtests()
         @test Hc.colptr == Hcr.colptr && Hc.rowval == Hcr.rowval && rel(Hc.nzval, Hcr.nzval) < tol
         # rows without augmentation keep their own value
         @test Array(got[1])[11:12] ≈ expected[1][11:12] rtol = tol
+        lm, lr = long_row(backend), long_row(nothing)
+        lx, lv = lr.meta.x0, sin.(1:lr.meta.nvar)
+        @test rel(Array(cons(lm, dev(lx))), cons(lr, lx)) < tol
+        @test rel(Array(jprod(lm, dev(lx), dev(lv))), jprod(lr, lx, lv)) < tol
     end
 end
 

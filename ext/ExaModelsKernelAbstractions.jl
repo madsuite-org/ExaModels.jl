@@ -3,7 +3,7 @@ module ExaModelsKernelAbstractions
 import Adapt
 import ExaModels: ExaModels, NLPModels
 import ExaModels: _LongTuple
-import KernelAbstractions: KernelAbstractions, @kernel, @index, @Const, synchronize, CPU
+import KernelAbstractions: KernelAbstractions, @kernel, @index, @Const, @groupreduce, synchronize, CPU
 
 function getitr(gen::UnitRange{Int64})
     return gen

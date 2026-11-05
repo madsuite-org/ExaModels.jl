@@ -13,9 +13,11 @@
 # the same from run to run.
 
 const SEGCHUNK = 256    # most entries one work item sums
-const OBJITEMS = 262144 # a longer objective block gives each work item several terms
-const AUGITEMS = 16384  # a longer augmentation block gives each work item several terms
-const SHORTROW = 16     # terms of a row this short get a work item each
+# `@groupreduce` leaves the reduction inside a workgroup to the backend, and the number
+# of work items follows the number of terms, so these do not depend on the device.
+const GROUPSIZE = 256  # work items of a workgroup that sums terms
+const SHORTROW = 128   # up to this many terms, a row gets a work item per term, not a workgroup
+const MAXGROUPS = 1024 # most workgroups of a row, which bounds the serial sum of its partials
 
 # Chunk table for the segments given by `ptr` (segment s is ptr[s]:ptr[s+1]-1):
 # chunk c is cstart[c]:cstart[c+1]-1, and segment s has chunks kptr[s]:kptr[s+1]-1.
@@ -136,20 +138,22 @@ end
 # (a quadratic constraint has one term per nonzero of its matrix) that loop dominated
 # `cons!`. Now each augmentation block keeps the permutation that orders its terms by
 # target row (its data stays where it is, so Jacobian and Hessian coordinates keep their
-# order) and a chunk table whose chunks never cross a row: one work item evaluates the
-# terms of a chunk and writes their sum, and the chunk sums of all blocks are added per
-# row. The chunks of a row interleave, so neighboring work items read neighboring terms.
+# order). A short row's terms are evaluated one per work item, and a long row is cut
+# into ranges that one workgroup evaluates and sums with `@groupreduce`, so the number
+# of work items follows the number of terms and the backend does the rest. The partial
+# sums of all blocks are then added per row.
 
 struct AugBlockPlan{VI, VC}
     perm::VI        # the block's terms in row order (stable: a row keeps its terms in order)
-    chunks::VC      # chunk c covers the terms perm[start:stride:stop], (start, stride, stop) = chunks[c]
-    poff::Int       # offset of this block's chunks in the partial buffer
+    nshort::Int     # perm[1:nshort] are the terms of short rows, one partial each
+    groups::VC      # (start, stop): workgroup g sums the terms perm[start:stop], one partial
+    poff::Int       # offset of this block's partials in the partial buffer
 end
 struct AugPlan{B, VI, VT}
     blocks::B       # per block of `cons`: an AugBlockPlan for an augmentation, else nothing
-    partial::VT     # chunk sums of all blocks
-    perm::VI        # chunk indices sorted by row
-    ptr::VI         # the chunks of the r-th augmented row are perm[ptr[r]:ptr[r+1]-1]
+    partial::VT     # partial sums of all blocks
+    perm::VI        # partial indices sorted by row
+    ptr::VI         # the partials of the r-th augmented row are perm[ptr[r]:ptr[r+1]-1]
     rows::VI        # the augmented rows
 end
 
@@ -174,37 +178,53 @@ _block_plan(con, backend, rows_host, chunk_rows) = nothing
 function _block_plan(con::ExaModels.ConstraintAugmentation, backend, rows_host, chunk_rows)
     n = length(con.itr)
     r = rows_host[(con.oa + 1):(con.oa + n)]
-    perm = sortperm(r)
-    r = r[perm]
-    size = clamp(cld(n, AUGITEMS), 1, SEGCHUNK)
-    chunks = NTuple{3, Int}[]
+    sorted = sortperm(r)
     poff = length(chunk_rows)
+    short, long = Int[], Int[]
+    ranges = Tuple{Int, Int}[]      # of long rows, into `long`
     i = 1
     while i <= n
         j = i
-        while j < n && r[j + 1] == r[i]
+        while j < n && r[sorted[j + 1]] == r[sorted[i]]
             j += 1
         end
-        len = j - i + 1
-        nc = len <= SHORTROW ? len : cld(len, size)
-        for k in 1:nc
-            push!(chunks, (i + k - 1, nc, j))
-            push!(chunk_rows, r[i])
+        if j - i + 1 <= SHORTROW
+            append!(short, view(sorted, i:j))
+        else
+            push!(ranges, (length(long) + 1, length(long) + j - i + 1))
+            append!(long, view(sorted, i:j))
         end
         i = j + 1
     end
-    return AugBlockPlan(ExaModels.convert_array(perm, backend), ExaModels.convert_array(chunks, backend), poff)
+    append!(chunk_rows, r[short])
+    groups = Tuple{Int, Int}[]
+    ns = length(short)
+    for (a, b) in ranges
+        size = max(GROUPSIZE, cld(b - a + 1, MAXGROUPS))
+        for st in a:size:b
+            push!(groups, (ns + st, ns + min(st + size - 1, b)))
+            push!(chunk_rows, r[long[a]])
+        end
+    end
+    perm = vcat(short, long)
+    return AugBlockPlan(ExaModels.convert_array(perm, backend), ns, ExaModels.convert_array(groups, backend), poff)
 end
 
-@kernel function aug_chunk_sum!(partial, @Const(f), @Const(itr), @Const(perm), @Const(chunks), @Const(x), @Const(θ), @Const(poff))
+@kernel function aug_term!(partial, @Const(f), @Const(itr), @Const(perm), @Const(x), @Const(θ), @Const(poff))
     I = @index(Global)
-    @inbounds begin
-        s = zero(eltype(partial))
-        start, stride, stop = chunks[I]
-        for t in start:stride:stop
-            s += f(itr[perm[t]], x, θ)
-        end
-        partial[poff + I] = s
+    @inbounds partial[poff + I] = f(itr[perm[I]], x, θ)
+end
+@kernel function aug_group!(partial, @Const(f), @Const(itr), @Const(perm), @Const(groups), @Const(x), @Const(θ), @Const(poff))
+    g = @index(Group, Linear)
+    l = @index(Local, Linear)
+    start, stop = @inbounds groups[g]
+    s = zero(eltype(partial))
+    @inbounds for t in (start + l - 1):GROUPSIZE:stop
+        s += f(itr[perm[t]], x, θ)
+    end
+    res = @groupreduce(+, s, zero(eltype(partial)); groupsize = GROUPSIZE)
+    if l == 1
+        @inbounds partial[poff + g] = res
     end
 end
 @kernel function aug_finish!(y, @Const(partial), @Const(perm), @Const(ptr), @Const(rows))
@@ -220,8 +240,9 @@ end
 
 _aug_chunks!(backend, partial, ::Nothing, con, x, θ) = nothing
 function _aug_chunks!(backend, partial, b::AugBlockPlan, con, x, θ)
-    isempty(b.perm) && return nothing
-    aug_chunk_sum!(backend)(partial, con.f, con.itr, b.perm, b.chunks, x, θ, b.poff; ndrange = length(b.chunks))
+    b.nshort > 0 && aug_term!(backend)(partial, con.f, con.itr, b.perm, x, θ, b.poff; ndrange = b.nshort)
+    ng = length(b.groups)
+    ng > 0 && aug_group!(backend, GROUPSIZE)(partial, con.f, con.itr, b.perm, b.groups, x, θ, b.poff + b.nshort; ndrange = ng * GROUPSIZE)
     return nothing
 end
 _aug_cons!(backend, partial, ::Tuple{}, ::Tuple{}, x, θ) = nothing
@@ -266,15 +287,21 @@ end
     @inbounds Jv[ExaModels.offset0(f, itr, I)] =
         _gdot(f(itr[I], ExaModels.AdjointNodeSource(x), θ), v, one(eltype(Jv)))
 end
-@kernel function aug_chunk_jv!(partial, @Const(f), @Const(itr), @Const(perm), @Const(chunks), @Const(x), @Const(θ), @Const(v), @Const(poff))
+@kernel function aug_term_jv!(partial, @Const(f), @Const(itr), @Const(perm), @Const(x), @Const(θ), @Const(v), @Const(poff))
     I = @index(Global)
-    @inbounds begin
-        s = zero(eltype(partial))
-        start, stride, stop = chunks[I]
-        for t in start:stride:stop
-            s += _gdot(f(itr[perm[t]], ExaModels.AdjointNodeSource(x), θ), v, one(eltype(partial)))
-        end
-        partial[poff + I] = s
+    @inbounds partial[poff + I] = _gdot(f(itr[perm[I]], ExaModels.AdjointNodeSource(x), θ), v, one(eltype(partial)))
+end
+@kernel function aug_group_jv!(partial, @Const(f), @Const(itr), @Const(perm), @Const(groups), @Const(x), @Const(θ), @Const(v), @Const(poff))
+    g = @index(Group, Linear)
+    l = @index(Local, Linear)
+    start, stop = @inbounds groups[g]
+    s = zero(eltype(partial))
+    @inbounds for t in (start + l - 1):GROUPSIZE:stop
+        s += _gdot(f(itr[perm[t]], ExaModels.AdjointNodeSource(x), θ), v, one(eltype(partial)))
+    end
+    res = @groupreduce(+, s, zero(eltype(partial)); groupsize = GROUPSIZE)
+    if l == 1
+        @inbounds partial[poff + g] = res
     end
 end
 
@@ -299,8 +326,9 @@ end
 
 _aug_jv_chunks!(backend, partial, ::Nothing, con, x, θ, v) = nothing
 function _aug_jv_chunks!(backend, partial, b::AugBlockPlan, con, x, θ, v)
-    isempty(b.perm) && return nothing
-    aug_chunk_jv!(backend)(partial, con.f, con.itr, b.perm, b.chunks, x, θ, v, b.poff; ndrange = length(b.chunks))
+    b.nshort > 0 && aug_term_jv!(backend)(partial, con.f, con.itr, b.perm, x, θ, v, b.poff; ndrange = b.nshort)
+    ng = length(b.groups)
+    ng > 0 && aug_group_jv!(backend, GROUPSIZE)(partial, con.f, con.itr, b.perm, b.groups, x, θ, v, b.poff + b.nshort; ndrange = ng * GROUPSIZE)
     return nothing
 end
 _aug_jv!(backend, partial, ::Tuple{}, ::Tuple{}, x, θ, v) = nothing
@@ -328,38 +356,32 @@ end
 
 # ---- Fused objective ---------------------------------------------------------------
 #
-# The objective is the sum of all its terms. Each work item evaluates every
-# `nitems`-th term of a block and writes their sum, and these sums are then added on
-# the device. A block of at most `OBJITEMS` terms has one work item per term; a longer
-# one writes a buffer shorter than its term count.
+# The objective is the sum of all its terms. Each work item evaluates one term, each
+# workgroup sums its terms with `@groupreduce`, and these sums are then added on the
+# device, so no buffer with one entry per term is written.
 
 struct ObjPlan{O, VT}
     poff::O         # per block: offset of its chunks in `partial`
     partial::VT
 end
-_obj_items(n) = cld(n, clamp(cld(n, OBJITEMS), 1, SEGCHUNK))
 function _obj_plan(x0, objs)
     n = 0
-    off(o) = (k = n; n += _obj_items(length(o.itr)); k)
+    off(o) = (k = n; n += cld(length(o.itr), GROUPSIZE); k)
     poff = objs isa _LongTuple ? Int[off(o) for o in Any[objs...]] : map(off, objs)
     return ObjPlan(poff, similar(x0, n))
 end
 
-@kernel function obj_chunk_sum!(partial, @Const(f), @Const(itr), @Const(x), @Const(θ), @Const(n), @Const(nitems), @Const(poff))
+@kernel function obj_group!(partial, @Const(f), @Const(itr), @Const(x), @Const(θ), @Const(n), @Const(poff))
     I = @index(Global)
-    @inbounds begin
-        s = zero(eltype(partial))
-        for t in I:nitems:n
-            s += f(itr[t], x, θ)
-        end
-        partial[poff + I] = s
+    res = @groupreduce(+, I <= n ? (@inbounds f(itr[I], x, θ)) : zero(eltype(partial)), zero(eltype(partial)); groupsize = GROUPSIZE)
+    if @index(Local, Linear) == 1
+        @inbounds partial[poff + @index(Group, Linear)] = res
     end
 end
 function _obj_block!(backend, partial, poff, o, x, θ)
     n = length(o.itr)
     n == 0 && return nothing
-    nitems = _obj_items(n)
-    obj_chunk_sum!(backend)(partial, o.f, o.itr, x, θ, n, nitems, poff; ndrange = nitems)
+    obj_group!(backend, GROUPSIZE)(partial, o.f, o.itr, x, θ, n, poff; ndrange = n)
     return nothing
 end
 _obj_fused!(backend, partial, ::Tuple{}, ::Tuple{}, x, θ) = nothing
