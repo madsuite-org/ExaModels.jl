@@ -139,7 +139,7 @@ end
 function _aug_plan(backend, x0, cons, rows_host::Vector{Int})
     chunk_rows = Int[]
     plan_of(con) = _block_plan(con, backend, rows_host, chunk_rows)
-    blocks = cons isa _LongTuple ? Any[plan_of(con) for con in cons] : map(plan_of, cons)
+    blocks = cons isa _LongTuple ? Any[plan_of(con) for con in Any[cons...]] : map(plan_of, cons)
     perm = sortperm(chunk_rows)
     sorted_rows = chunk_rows[perm]
     ptr = isempty(sorted_rows) ? [1] : ExaModels.getptr(nothing, sorted_rows)
@@ -207,8 +207,9 @@ function _aug_cons!(backend, partial, (b, bs...), (con, cons...), x, θ)
     return _aug_cons!(backend, partial, bs, cons, x, θ)
 end
 function _aug_cons!(backend, partial, bs::Vector{Any}, cons::_LongTuple, x, θ)
-    for (b, con) in zip(bs, cons)
-        _aug_chunks!(backend, partial, b, con, x, θ)
+    blocks = Any[cons...]
+    for i in length(blocks):-1:1
+        _aug_chunks!(backend, partial, bs[i], blocks[i], x, θ)
     end
     return nothing
 end
@@ -265,8 +266,9 @@ function _jv_rows!(backend, Jv, (con, cons...), x, θ, v)
     return _jv_block!(backend, Jv, con, x, θ, v)
 end
 function _jv_rows!(backend, Jv, cons::_LongTuple, x, θ, v)
-    for con in cons
-        _jv_block!(backend, Jv, con, x, θ, v)
+    blocks = Any[cons...]
+    for i in length(blocks):-1:1
+        _jv_block!(backend, Jv, blocks[i], x, θ, v)
     end
     return nothing
 end
@@ -283,8 +285,9 @@ function _aug_jv!(backend, partial, (b, bs...), (con, cons...), x, θ, v)
     return _aug_jv!(backend, partial, bs, cons, x, θ, v)
 end
 function _aug_jv!(backend, partial, bs::Vector{Any}, cons::_LongTuple, x, θ, v)
-    for (b, con) in zip(bs, cons)
-        _aug_jv_chunks!(backend, partial, b, con, x, θ, v)
+    blocks = Any[cons...]
+    for i in length(blocks):-1:1
+        _aug_jv_chunks!(backend, partial, bs[i], blocks[i], x, θ, v)
     end
     return nothing
 end
@@ -312,7 +315,7 @@ end
 function _obj_plan(x0, objs)
     n = 0
     off(o) = (k = n; n += cld(length(o.itr), SEGCHUNK); k)
-    poff = objs isa _LongTuple ? Int[off(o) for o in objs] : map(off, objs)
+    poff = objs isa _LongTuple ? Int[off(o) for o in Any[objs...]] : map(off, objs)
     return ObjPlan(poff, similar(x0, n))
 end
 
@@ -338,8 +341,9 @@ function _obj_fused!(backend, partial, (p, ps...), (o, os...), x, θ)
     return _obj_fused!(backend, partial, ps, os, x, θ)
 end
 function _obj_fused!(backend, partial, ps::Vector{Int}, os::_LongTuple, x, θ)
-    for (p, o) in zip(ps, os)
-        _obj_block!(backend, partial, p, o, x, θ)
+    blocks = Any[os...]
+    for i in length(blocks):-1:1
+        _obj_block!(backend, partial, ps[i], blocks[i], x, θ)
     end
     return nothing
 end
