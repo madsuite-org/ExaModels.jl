@@ -941,7 +941,7 @@ _model_from_dynamic_core(c, prod) =
 _prepare_backend(c) = _sort_augmentations(c)
 
 function _sort_augmentations(c::ExaCore)
-    any(con -> con isa ConstraintAugmentation && !isempty(con.itr), c.cons) || return c
+    any(con -> con isa ConstraintAugmentation, c.cons) || return c
     cons = c.cons isa _LongTuple ? Tuple(Any[_sorted_by_row(con) for con in c.cons]) :
         map(_sorted_by_row, c.cons)
     return _with_blocks(c, c.var, c.par, c.obj, cons, c.refs)
@@ -950,7 +950,7 @@ end
 # its data happened to be sorted already.
 _sorted_by_row(con) = con
 function _sorted_by_row(con::ConstraintAugmentation)
-    (isempty(con.itr) || !(con.itr isa AbstractVector)) && return con
+    con.itr isa AbstractVector || return con
     r = [offset0(con, i) for i in eachindex(con.itr)]
     con.itr isa Vector && issorted(r) && return con
     return ConstraintAugmentation(con.f, collect(con.itr)[sortperm(r)], con.oa, con.dims, con.tag)

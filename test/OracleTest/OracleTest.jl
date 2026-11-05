@@ -301,7 +301,7 @@ function test_val_false_jprod_jtprod_hprod(backend)
     # Regression test for the `oracle.adapt === Val(false)` branch in
     # `jprod_nln!` / `jtprod_nln!` / `hprod!` on KA backends.  Earlier code wrote
     # `oracle.jac!(jacbuffer[cache.jac_idx], xin)` — `getindex` returns a copy,
-    # so the buffer was never updated and the subsequent kerspmv silently read
+    # so the buffer was never updated and the subsequent product silently read
     # zeros for the oracle's slice.  Mirror `test_jprod_jtprod` / `test_hprod`
     # but with `adapt = Val(false)` and broadcast callbacks so the path is
     # exercised end-to-end against the analytic Jacobian / Hessian.

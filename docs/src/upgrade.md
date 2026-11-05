@@ -135,3 +135,9 @@ c = ExaCore()
 @add_obj(c, s[i] for i in 1:n)
 m = ExaModel(c)
 ```
+
+---
+
+# Coordinate order of augmented constraints (v0.15)
+
+The data of every `add_con!` block is now sorted by target constraint row (a stable sort) when the model is built, on every backend. Values are unchanged, but the order of the Jacobian and Hessian coordinates that come from augmented constraints can differ from earlier versions. Code that matches `jac_structure`/`hess_structure` output against coordinates saved from an earlier version should compare the assembled matrices instead.

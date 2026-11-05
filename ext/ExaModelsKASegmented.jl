@@ -119,7 +119,7 @@ end
 # rows are computed on the device.
 
 function ExaModels._prepare_backend(c::ExaModels.ExaCore{T, VT, B}) where {T, VT, B <: KernelAbstractions.Backend}
-    any(con -> con isa ExaModels.ConstraintAugmentation && !isempty(con.itr), c.cons) || return c
+    any(con -> con isa ExaModels.ConstraintAugmentation, c.cons) || return c
     rows = similar(c.x0, Tuple{Int, Int}, c.nconaug)
     _conaug_structure!(T, c.backend, c.cons, rows)
     rows_host = Int[first(t) for t in Array(rows)]
@@ -131,10 +131,11 @@ end
 # depend on whether its data happened to be sorted already.
 _sorted_by_row(con, rows_host, backend) = con
 function _sorted_by_row(con::ExaModels.ConstraintAugmentation, rows_host, backend)
-    (isempty(con.itr) || !(con.itr isa AbstractVector)) && return con
+    con.itr isa AbstractVector || return con
     r = rows_host[(con.oa + 1):(con.oa + length(con.itr))]
+    VI = typeof(ExaModels.convert_array(eltype(con.itr)[], backend))
+    con.itr isa VI && issorted(r) && return con
     sorted = ExaModels.convert_array(collect(Array(con.itr))[sortperm(r)], backend)
-    typeof(sorted) == typeof(con.itr) && issorted(r) && return con
     return ExaModels.ConstraintAugmentation(con.f, sorted, con.oa, con.dims, con.tag)
 end
 
