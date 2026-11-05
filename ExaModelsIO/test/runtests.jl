@@ -1,5 +1,6 @@
 using Test
 using ExaModelsIO, ExaModels, NLPModels
+using KernelAbstractions: CPU
 include("roundtrip.jl")
 
 # A function outside the operator vocabulary, registered with ExaModels.
@@ -157,6 +158,25 @@ ExaModels.@register_univariate(myf, x -> 2x + 1, x -> 2.0)
             @test length(m2.subexprs) == 3 && m2.r isa ExaModels.BufferedExpression
             @test m2.s3.size == (3:4,)
         end
+    end
+
+    @testset "prod keyword" begin
+        c = ExaCore()
+        x = @add_var(c, x, 6; start = 0.4)
+        @add_obj(c, x[i]^2 for i in 1:6)
+        @add_con(c, sin(x[i]) * x[i + 1] for i in 1:5; lcon = -1.0, ucon = 1.0)
+        m = ExaModel(c)
+        path = tempname() * ".h5"
+        write_model(path, m)
+        x0 = m.meta.x0 .+ 0.1 .* (1:6)
+        v, w = collect(1.0:6.0), collect(1.0:5.0)
+        J = _jac(m, x0)
+        # the product helper exists on a KernelAbstractions backend only, so the
+        # keyword is observable there and not on the host
+        m2 = read_model(path; backend = CPU(), prod = true)
+        @test jprod_nln!(m2, x0, v, zeros(5)) ≈ J * v
+        @test jtprod_nln!(m2, x0, w, zeros(6)) ≈ J' * w
+        @test_throws ErrorException jprod_nln!(read_model(path; backend = CPU()), x0, v, zeros(5))
     end
 
     @testset "Float32, maximize, solution" begin
