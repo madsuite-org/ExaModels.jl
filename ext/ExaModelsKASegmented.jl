@@ -4,132 +4,125 @@
 # ---- Segmented reductions -------------------------------------------------------
 #
 # Several callbacks reduce a list of values sorted by output index: the objective
-# gradient and the products J*v, J'*v and H*v. Reducing each output entry in one work
-# item leaves a device mostly idle when there are few outputs with long segments, and
-# serializes each long segment. Instead, every segment is cut into chunks of at most
-# `SEGCHUNK` entries: one work item sums a chunk into a partial, and one work item per
-# output entry adds that entry's partials. When no segment spans two chunks a single
-# launch does both. The chunk table fixes the order of the summation, so results are
-# the same from run to run.
-
-const SEGCHUNK = 256    # most entries one work item sums
+# gradient, the products J*v, J'*v and H*v, and the programs of buffered subexpressions.
+# Reducing each output entry in one work item leaves a device mostly idle when there
+# are few outputs with long segments, and serializes each long segment. Instead, a short
+# segment is summed by one work item, and a long one is cut into ranges that one
+# workgroup each sums with `@groupreduce`, after which one work item per long segment
+# adds its partial sums.
+#
 # `@groupreduce` leaves the reduction inside a workgroup to the backend, and the number
 # of work items follows the number of terms, so these do not depend on the device.
+
 const GROUPSIZE = 256  # work items of a workgroup that sums terms
-const SHORTROW = 128   # up to this many terms, a row gets a work item per term, not a workgroup
-const MAXGROUPS = 1024 # most workgroups of a row, which bounds the serial sum of its partials
+const SHORTROW = 128   # a segment or row up to this long does not get a workgroup
+const MAXGROUPS = 1024 # most workgroups of a segment, which bounds the serial sum of its partials
 
-# Chunk table for the segments given by `ptr` (segment s is ptr[s]:ptr[s+1]-1):
-# chunk c is cstart[c]:cstart[c+1]-1, and segment s has chunks kptr[s]:kptr[s+1]-1.
-# Built on the host, once, when the model is built.
-function _seg_chunks(ptr::Vector{Int})
-    cstart = Int[]
-    kptr = Int[1]
-    for s in 1:(length(ptr) - 1)
-        for st in ptr[s]:SEGCHUNK:(ptr[s + 1] - 1)
-            push!(cstart, st)
-        end
-        push!(kptr, length(cstart) + 1)
-    end
-    push!(cstart, isempty(ptr) ? 1 : ptr[end])
-    return cstart, kptr
+# The ranges of a long segment a:b, one per workgroup.
+function _group_ranges(a, b)
+    size = max(GROUPSIZE, cld(b - a + 1, MAXGROUPS))
+    return ((st, min(st + size - 1, b)) for st in a:size:b)
 end
 
-# A planned reduction over a sorted coordinate list; `partial` holds the chunk sums.
+# A planned reduction of the segments given by `ptr` (segment s is ptr[s]:ptr[s+1]-1).
 struct SegPlan{VI, VT}
-    cstart::VI
-    kptr::VI
-    partial::VT
+    ptr::VI
+    short::VI       # the segments one work item sums
+    long::VI        # the segments cut into ranges
+    gstart::VI      # workgroup g sums the entries gstart[g]:gstop[g]
+    gstop::VI
+    kptr::VI        # the r-th long segment has the workgroups kptr[r]:kptr[r+1]-1
+    partial::VT     # the sum of each workgroup
 end
-function _seg_plan(backend, x0, ptr)
-    cstart, kptr = _seg_chunks(Array(ptr))
-    return SegPlan(
-        ExaModels.convert_array(cstart, backend),
-        ExaModels.convert_array(kptr, backend),
-        similar(x0, max(length(cstart) - 1, 0)),
-    )
+# `conv` moves a host vector to the device. Built once, when the model is built.
+function _seg_table(conv, x0, ptr::Vector{Int})
+    short, long, gstart, gstop, kptr = Int[], Int[], Int[], Int[], Int[1]
+    for s in 1:(length(ptr) - 1)
+        a, b = ptr[s], ptr[s + 1] - 1
+        if b - a + 1 <= SHORTROW
+            push!(short, s)
+        else
+            push!(long, s)
+            for (st, stop) in _group_ranges(a, b)
+                push!(gstart, st)
+                push!(gstop, stop)
+            end
+            push!(kptr, length(gstart) + 1)
+        end
+    end
+    return SegPlan(conv(ptr), conv(short), conv(long), conv(gstart), conv(gstop), conv(kptr), similar(x0, length(gstart)))
 end
-_nseg(p::SegPlan) = length(p.kptr) - 1
+_seg_plan(backend, x0, ptr) = _seg_table(v -> ExaModels.convert_array(v, backend), x0, Array(ptr))
+_nseg(p::SegPlan) = length(p.ptr) - 1
 
-# The terms reduced. Coordinates are `(key, index)` for a gather and `((i, j), index)`
-# for a sparse product.
+# What is reduced: `_segterm` is the value of entry l, and `_segput!` stores the sum of
+# segment s. `args` holds the arrays; here coordinates are `(key, index)` for a gather
+# and `((i, j), index)` for a sparse product, with `args = (coord, V, x)`.
 struct _Gather end                          # y[key] += V[index]
-@inline _segkey(::_Gather, c) = c[1]
-@inline _segterm(::_Gather, c, V, x) = @inbounds V[c[2]]
+@inline _segterm(::_Gather, l, (coord, V, x)) = @inbounds V[coord[l][2]]
+@inline _segput!(::_Gather, y, s, ptr, acc, (coord, V, x)) = @inbounds y[coord[ptr[s]][1]] += acc
+struct _GatherIndex end                     # y[s] += V[index], as in coalescing duplicates
+@inline _segterm(::_GatherIndex, l, (coord, V, x)) = @inbounds V[coord[l][2]]
+@inline _segput!(::_GatherIndex, y, s, ptr, acc, args) = @inbounds y[s] += acc
 struct _RowSpmv end                         # y[i] += V * x[j]
-@inline _segkey(::_RowSpmv, c) = c[1][1]
-@inline _segterm(::_RowSpmv, c, V, x) = @inbounds V[c[2]] * x[c[1][2]]
+@inline _segterm(::_RowSpmv, l, (coord, V, x)) = @inbounds V[coord[l][2]] * x[coord[l][1][2]]
+@inline _segput!(::_RowSpmv, y, s, ptr, acc, (coord, V, x)) = @inbounds y[coord[ptr[s]][1][1]] += acc
 struct _ColSpmv end                         # y[j] += V * x[i]
-@inline _segkey(::_ColSpmv, c) = c[1][2]
-@inline _segterm(::_ColSpmv, c, V, x) = @inbounds V[c[2]] * x[c[1][1]]
+@inline _segterm(::_ColSpmv, l, (coord, V, x)) = @inbounds V[coord[l][2]] * x[coord[l][1][1]]
+@inline _segput!(::_ColSpmv, y, s, ptr, acc, (coord, V, x)) = @inbounds y[coord[ptr[s]][1][2]] += acc
 struct _ColSySpmv end                       # y[j] += V * x[i], off-diagonal entries only
-@inline _segkey(::_ColSySpmv, c) = c[1][2]
-@inline _segterm(::_ColSySpmv, c, V, x) =
-    @inbounds c[1][1] != c[1][2] ? V[c[2]] * x[c[1][1]] : zero(eltype(V))
+@inline function _segterm(::_ColSySpmv, l, (coord, V, x))
+    @inbounds c = coord[l]
+    return @inbounds c[1][1] != c[1][2] ? V[c[2]] * x[c[1][1]] : zero(eltype(V))
+end
+@inline _segput!(::_ColSySpmv, y, s, ptr, acc, (coord, V, x)) = @inbounds y[coord[ptr[s]][1][2]] += acc
 
-@kernel function seg_partial!(partial, @Const(op), @Const(coord), @Const(V), @Const(x), @Const(cstart))
+@kernel function seg_short!(y, @Const(op), @Const(ptr), @Const(segs), args)
     I = @index(Global)
     @inbounds begin
-        s = zero(eltype(partial))
-        for l in cstart[I]:(cstart[I + 1] - 1)
-            s += _segterm(op, coord[l], V, x)
+        s = segs[I]
+        acc = zero(eltype(y))
+        for l in ptr[s]:(ptr[s + 1] - 1)
+            acc += _segterm(op, l, args)
         end
-        partial[I] = s
+        _segput!(op, y, s, ptr, acc, args)
     end
 end
-@kernel function seg_direct!(y, @Const(op), @Const(coord), @Const(V), @Const(x), @Const(cstart))
-    I = @index(Global)
-    @inbounds begin
-        s = zero(eltype(y))
-        for l in cstart[I]:(cstart[I + 1] - 1)
-            s += _segterm(op, coord[l], V, x)
-        end
-        y[_segkey(op, coord[cstart[I]])] += s
+@kernel function seg_group!(partial, @Const(op), @Const(gstart), @Const(gstop), args)
+    g = @index(Group, Linear)
+    l = @index(Local, Linear)
+    acc = zero(eltype(partial))
+    @inbounds for t in (gstart[g] + l - 1):GROUPSIZE:gstop[g]
+        acc += _segterm(op, t, args)
+    end
+    res = @groupreduce(+, acc, zero(eltype(partial)); groupsize = GROUPSIZE)
+    if l == 1
+        @inbounds partial[g] = res
     end
 end
-@kernel function seg_finish!(y, @Const(op), @Const(partial), @Const(coord), @Const(cstart), @Const(kptr))
+@kernel function seg_finish!(y, @Const(op), @Const(ptr), @Const(long), @Const(kptr), @Const(partial), args)
     I = @index(Global)
     @inbounds begin
-        s = zero(eltype(y))
+        acc = zero(eltype(y))
         for c in kptr[I]:(kptr[I + 1] - 1)
-            s += partial[c]
+            acc += partial[c]
         end
-        y[_segkey(op, coord[cstart[kptr[I]]])] += s
+        _segput!(op, y, long[I], ptr, acc, args)
     end
 end
 
+function _seg_reduce!(backend, y, op, plan::SegPlan, args::Tuple)
+    isempty(plan.short) || seg_short!(backend)(y, op, plan.ptr, plan.short, args; ndrange = length(plan.short))
+    if !isempty(plan.long)
+        seg_group!(backend, GROUPSIZE)(plan.partial, op, plan.gstart, plan.gstop, args; ndrange = length(plan.gstart) * GROUPSIZE)
+        seg_finish!(backend)(y, op, plan.ptr, plan.long, plan.kptr, plan.partial, args; ndrange = length(plan.long))
+    end
+    return y
+end
 # y[key] += the sum of the terms of each segment of the sorted list `coord`
-function _seg_reduce!(backend, y, op, plan::SegPlan, coord, V, x)
-    n = _nseg(plan)
-    n == 0 && return y
-    if length(plan.partial) == n        # no segment spans two chunks: one launch is enough
-        seg_direct!(backend)(y, op, coord, V, x, plan.cstart; ndrange = n)
-        return y
-    end
-    seg_partial!(backend)(plan.partial, op, coord, V, x, plan.cstart; ndrange = length(plan.partial))
-    seg_finish!(backend)(y, op, plan.partial, coord, plan.cstart, plan.kptr; ndrange = n)
-    return y
-end
-
-# The same reduction where output entry s is the s-th segment itself (V[s] += its
-# terms), as in coalescing duplicate coordinates.
-@kernel function seg_finish_index!(y, @Const(partial), @Const(kptr))
-    I = @index(Global)
-    @inbounds begin
-        s = zero(eltype(y))
-        for c in kptr[I]:(kptr[I + 1] - 1)
-            s += partial[c]
-        end
-        y[I] += s
-    end
-end
-function _seg_reduce_index!(backend, y, plan::SegPlan, coord, V)
-    n = _nseg(plan)
-    n == 0 && return y
-    seg_partial!(backend)(plan.partial, _Gather(), coord, V, nothing, plan.cstart; ndrange = length(plan.partial))
-    seg_finish_index!(backend)(y, plan.partial, plan.kptr; ndrange = n)
-    return y
-end
+_seg_reduce!(backend, y, op, plan::SegPlan, coord, V, x) = _seg_reduce!(backend, y, op, plan, (coord, V, x))
+# the same where output entry s is the s-th segment itself
+_seg_reduce_index!(backend, y, plan::SegPlan, coord, V) = _seg_reduce!(backend, y, _GatherIndex(), plan, (coord, V, nothing))
 
 # ---- Fused evaluation of augmented constraint rows -------------------------------
 #
@@ -199,12 +192,9 @@ function _block_plan(con::ExaModels.ConstraintAugmentation, backend, rows_host, 
     append!(chunk_rows, r[short])
     groups = Tuple{Int, Int}[]
     ns = length(short)
-    for (a, b) in ranges
-        size = max(GROUPSIZE, cld(b - a + 1, MAXGROUPS))
-        for st in a:size:b
-            push!(groups, (ns + st, ns + min(st + size - 1, b)))
-            push!(chunk_rows, r[long[a]])
-        end
+    for (a, b) in ranges, (st, stop) in _group_ranges(a, b)
+        push!(groups, (ns + st, ns + stop))
+        push!(chunk_rows, r[long[a]])
     end
     perm = vcat(short, long)
     return AugBlockPlan(ExaModels.convert_array(perm, backend), ns, ExaModels.convert_array(groups, backend), poff)

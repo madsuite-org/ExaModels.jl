@@ -16,36 +16,25 @@
 
 # ── segmented scatter programs ────────────────────────────────────────────────
 
-# Each program also carries a chunk table (see ExaModelsKASegmented.jl): a work item
-# sums one chunk of at most `SEGCHUNK` entries into `partial`, and one work item per
-# destination adds that destination's chunks, so a destination with a long segment
-# does not serialize the launch.
+# Each program carries a segment plan (see ExaModelsKASegmented.jl), so a destination
+# with a long segment does not serialize the launch.
 struct SegCopy{VI, VT}
     dstu::VI
-    ptr::VI
     src::VI
-    cstart::VI
-    kptr::VI
-    partial::VT
+    plan::SegPlan{VI, VT}
 end
 struct SegProd{VI, VT}
     dstu::VI
-    ptr::VI
     a::VI
     b::VI
-    cstart::VI
-    kptr::VI
-    partial::VT
+    plan::SegPlan{VI, VT}
 end
 struct SegProdC{VI, VT}
     dstu::VI
-    ptr::VI
     a::VI
     b::VI
     c::VT
-    cstart::VI
-    kptr::VI
-    partial::VT
+    plan::SegPlan{VI, VT}
 end
 
 # Sum-slot curvature μ·∇v∇vᵀ (see `SubexprHess`): one workitem per Hessian
@@ -54,8 +43,7 @@ end
 # layout, so device storage scales with the distinct supports, not with the
 # number of (slot, pair) contributions.
 struct SegRank1{VI, VT}
-    dstu::VI
-    ptr::VI          # per destination: its table entries
+    dstu::VI         # per destination: its table entries are a segment of `plan`
     a::VI            # per table entry: positions within a slot's segment
     b::VI
     pat::VI          # per table entry: its support table
@@ -64,9 +52,7 @@ struct SegRank1{VI, VT}
     rk_slot::VI
     rk_ptr::VI
     rk_res::VI
-    cstart::VI
-    kptr::VI
-    partial::VT
+    plan::SegPlan{VI, VT}
 end
 
 _seg_isempty(s) = isempty(s.dstu)
@@ -89,24 +75,20 @@ end
 _dev(x0, v::Vector{Int}) = copyto!(similar(x0, Int, length(v)), v)
 _dev(x0, v::Vector{T}) where {T <: AbstractFloat} = copyto!(similar(x0, length(v)), v)
 
-# chunk table of a program's segments, on the device, with its partial buffer
-function _dev_chunks(x0, ptr::Vector{Int})
-    cstart, kptr = _seg_chunks(ptr)
-    return _dev(x0, cstart), _dev(x0, kptr), similar(x0, length(cstart) - 1)
-end
+_dev_plan(x0, ptr::Vector{Int}) = _seg_table(v -> _dev(x0, v), x0, ptr)
 
 function _seg_copy(x0, dst::Vector{Int}, src::Vector{Int})
     p, dstu, ptr = _segment_perm(dst)
-    return SegCopy(_dev(x0, dstu), _dev(x0, ptr), _dev(x0, src[p]), _dev_chunks(x0, ptr)...)
+    return SegCopy(_dev(x0, dstu), _dev(x0, src[p]), _dev_plan(x0, ptr))
 end
 function _seg_prod(x0, dst::Vector{Int}, a::Vector{Int}, b::Vector{Int})
     p, dstu, ptr = _segment_perm(dst)
-    return SegProd(_dev(x0, dstu), _dev(x0, ptr), _dev(x0, a[p]), _dev(x0, b[p]), _dev_chunks(x0, ptr)...)
+    return SegProd(_dev(x0, dstu), _dev(x0, a[p]), _dev(x0, b[p]), _dev_plan(x0, ptr))
 end
 function _seg_prodc(x0, dst::Vector{Int}, a::Vector{Int}, b::Vector{Int}, c::Vector)
     p, dstu, ptr = _segment_perm(dst)
     return SegProdC(
-        _dev(x0, dstu), _dev(x0, ptr), _dev(x0, a[p]), _dev(x0, b[p]), _dev(x0, c[p]), _dev_chunks(x0, ptr)...,
+        _dev(x0, dstu), _dev(x0, a[p]), _dev(x0, b[p]), _dev(x0, c[p]), _dev_plan(x0, ptr),
     )
 end
 function _seg_rank1(x0, sh)
@@ -128,48 +110,27 @@ function _seg_rank1(x0, sh)
         fillp[q] += 1
     end
     return SegRank1(
-        _dev(x0, dstu), _dev(x0, ptr), _dev(x0, sh.pat_a[p]), _dev(x0, sh.pat_b[p]),
+        _dev(x0, dstu), _dev(x0, sh.pat_a[p]), _dev(x0, sh.pat_b[p]),
         _dev(x0, pat[p]), _dev(x0, pslot_ptr), _dev(x0, pslot),
         _dev(x0, sh.rk_slot), _dev(x0, sh.rk_ptr), _dev(x0, sh.rk_res),
-        _dev_chunks(x0, ptr)...,
+        _dev_plan(x0, ptr),
     )
 end
 
-@kernel function kseg_copy(partial, @Const(cstart), @Const(src), @Const(S))
-    I = @index(Global)
-    acc = zero(eltype(partial))
-    @inbounds for j in cstart[I]:(cstart[I + 1] - 1)
-        acc += S[src[j]]
-    end
-    @inbounds partial[I] = acc
-end
-@kernel function kseg_prod(partial, @Const(cstart), @Const(a), @Const(b), @Const(A), @Const(B))
-    I = @index(Global)
-    acc = zero(eltype(partial))
-    @inbounds for j in cstart[I]:(cstart[I + 1] - 1)
-        acc += A[a[j]] * B[b[j]]
-    end
-    @inbounds partial[I] = acc
-end
-@kernel function kseg_prodc(partial, @Const(cstart), @Const(a), @Const(b), @Const(c), @Const(A), @Const(B))
-    I = @index(Global)
-    acc = zero(eltype(partial))
-    @inbounds for j in cstart[I]:(cstart[I + 1] - 1)
-        acc += c[j] * A[a[j]] * B[b[j]]
-    end
-    @inbounds partial[I] = acc
-end
-@kernel function kseg_rank1(
-        partial, @Const(cstart), @Const(a), @Const(b), @Const(pat),
-        @Const(pslot_ptr), @Const(pslot), @Const(rk_slot), @Const(rk_ptr), @Const(rk_res),
-        @Const(res), @Const(abuf2),
-    )
-    I = @index(Global)
-    acc = zero(eltype(partial))
-    @inbounds for j in cstart[I]:(cstart[I + 1] - 1)
-        q = pat[j]
-        ea = a[j]
-        eb = b[j]
+# The programs as segmented reductions; `args` starts with the destinations.
+struct _SegCopyOp end                       # y[dstu[d]] += Σ S[src]
+@inline _segterm(::_SegCopyOp, l, (dstu, src, S)) = @inbounds S[src[l]]
+struct _SegProdOp end                       # y[dstu[d]] += Σ A[a] * B[b]
+@inline _segterm(::_SegProdOp, l, (dstu, a, b, A, B)) = @inbounds A[a[l]] * B[b[l]]
+struct _SegProdCOp end                      # y[dstu[d]] += Σ c * A[a] * B[b]
+@inline _segterm(::_SegProdCOp, l, (dstu, a, b, c, A, B)) = @inbounds c[l] * A[a[l]] * B[b[l]]
+struct _SegRank1Op end
+@inline function _segterm(::_SegRank1Op, l, (dstu, a, b, pat, pslot_ptr, pslot, rk_slot, rk_ptr, rk_res, res, abuf2))
+    acc = zero(eltype(res))
+    @inbounds begin
+        q = pat[l]
+        ea = a[l]
+        eb = b[l]
         for t in pslot_ptr[q]:(pslot_ptr[q + 1] - 1)
             k = pslot[t]
             μ = abuf2[rk_slot[k]]
@@ -178,41 +139,29 @@ end
             acc += ifelse(iszero(μ), zero(v), v)
         end
     end
-    @inbounds partial[I] = acc
+    return acc
 end
-# y[dstu[d]] += the chunk sums of destination d
-@kernel function kseg_finish(y, @Const(dstu), @Const(kptr), @Const(partial))
-    I = @index(Global)
-    acc = zero(eltype(y))
-    @inbounds for c in kptr[I]:(kptr[I + 1] - 1)
-        acc += partial[c]
-    end
-    @inbounds y[dstu[I]] += acc
-end
-_finish!(backend, s, y) = kseg_finish(backend)(y, s.dstu, s.kptr, s.partial; ndrange = length(s.dstu))
+const _ScatterOp = Union{_SegCopyOp, _SegProdOp, _SegProdCOp, _SegRank1Op}
+@inline _segput!(::_ScatterOp, y, s, ptr, acc, args) = @inbounds y[first(args)[s]] += acc
 
 function _run!(backend, s::SegRank1, y, res, abuf2)
     _seg_isempty(s) && return true
-    kseg_rank1(backend)(
-        s.partial, s.cstart, s.a, s.b, s.pat, s.pslot_ptr, s.pslot, s.rk_slot, s.rk_ptr, s.rk_res,
-        res, abuf2; ndrange = length(s.partial),
+    return _seg_reduce!(
+        backend, y, _SegRank1Op(), s.plan,
+        (s.dstu, s.a, s.b, s.pat, s.pslot_ptr, s.pslot, s.rk_slot, s.rk_ptr, s.rk_res, res, abuf2),
     )
-    return _finish!(backend, s, y)
 end
 function _run!(backend, s::SegCopy, y, S)
     _seg_isempty(s) && return true
-    kseg_copy(backend)(s.partial, s.cstart, s.src, S; ndrange = length(s.partial))
-    return _finish!(backend, s, y)
+    return _seg_reduce!(backend, y, _SegCopyOp(), s.plan, (s.dstu, s.src, S))
 end
 function _run!(backend, s::SegProd, y, A, B)
     _seg_isempty(s) && return true
-    kseg_prod(backend)(s.partial, s.cstart, s.a, s.b, A, B; ndrange = length(s.partial))
-    return _finish!(backend, s, y)
+    return _seg_reduce!(backend, y, _SegProdOp(), s.plan, (s.dstu, s.a, s.b, A, B))
 end
 function _run!(backend, s::SegProdC, y, A, B)
     _seg_isempty(s) && return true
-    kseg_prodc(backend)(s.partial, s.cstart, s.a, s.b, s.c, A, B; ndrange = length(s.partial))
-    return _finish!(backend, s, y)
+    return _seg_reduce!(backend, y, _SegProdCOp(), s.plan, (s.dstu, s.a, s.b, s.c, A, B))
 end
 
 # ── per-element stage kernels ─────────────────────────────────────────────────
@@ -222,26 +171,13 @@ end
     @inbounds θ[off + I] = f(itr[I], x, θ)
 end
 
-# Sum-stage sync: the CSR segments of the stage's slots are summed in chunks (sources
-# are strictly older θ slots or variables), then each slot adds its chunks to its
-# initial value.
-@kernel function ksum_chunks(partial, @Const(cstart), @Const(src), @Const(w), @Const(x), @Const(θ))
-    I = @index(Global)
-    acc = zero(eltype(partial))
-    @inbounds for m in cstart[I]:(cstart[I + 1] - 1)
-        s = src[m]
-        acc += s > 0 ? w[m] * x[s] : w[m] * θ[-s]
-    end
-    @inbounds partial[I] = acc
+# Sum-stage sync: slot s is its initial value plus its CSR segment (sources are strictly
+# older θ slots or variables).
+struct _SumStageOp end
+@inline function _segterm(::_SumStageOp, m, (src, w, x, θ, init, off))
+    return @inbounds src[m] > 0 ? w[m] * x[src[m]] : w[m] * θ[-src[m]]
 end
-@kernel function ksum_finish(θ, @Const(init), @Const(kptr), @Const(partial), @Const(off))
-    J = @index(Global)
-    acc = init[J]
-    @inbounds for c in kptr[J]:(kptr[J + 1] - 1)
-        acc += partial[c]
-    end
-    @inbounds θ[off + J] = acc
-end
+@inline _segput!(::_SumStageOp, θ, s, ptr, acc, (src, w, x, θo, init, off)) = @inbounds θ[off + s] = init[s] + acc
 
 @kernel function kstagej(y1, @Const(f), @Const(itr), @Const(x), @Const(θ), @Const(o1base))
     I = @index(Global)
@@ -594,8 +530,7 @@ end
 
 _sum_plan(x0, s) = nothing
 function _sum_plan(x0, s::ExaModels.SubexprSumStage)
-    cstart, kptr = _seg_chunks(collect(s.ptr))
-    return SegPlan(_dev(x0, cstart), _dev(x0, kptr), similar(x0, length(cstart) - 1))
+    return _dev_plan(x0, collect(s.ptr))
 end
 
 # ── drivers ───────────────────────────────────────────────────────────────────
@@ -614,8 +549,7 @@ function _sync_ka_stage!(backend, s::ExaModels.SubexprStage, off, plan, x, θ)
 end
 function _sync_ka_stage!(backend, s::ExaModels.SubexprSumStage, off, plan::SegPlan, x, θ)
     if s.n > 0
-        isempty(plan.partial) || ksum_chunks(backend)(plan.partial, plan.cstart, s.src, s.w, x, θ; ndrange = length(plan.partial))
-        ksum_finish(backend)(θ, s.init, plan.kptr, plan.partial, off; ndrange = s.n)
+        _seg_reduce!(backend, θ, _SumStageOp(), plan, (s.src, s.w, x, θ, s.init, off))
     end
     return nothing
 end
