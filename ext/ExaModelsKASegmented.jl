@@ -12,15 +12,18 @@
 # adds its partial sums.
 #
 # `@groupreduce` leaves the reduction inside a workgroup to the backend, and the number
-# of work items follows the number of terms, so these do not depend on the device.
+# of work items follows the number of terms, so nothing here is fitted to a device.
 
 const GROUPSIZE = 256  # work items of a workgroup that sums terms
 const SHORTROW = 128   # a segment or row up to this long does not get a workgroup
-const MAXGROUPS = 1024 # most workgroups of a segment, which bounds the serial sum of its partials
+
+# The most workgroups of one segment: enough to fill the device, while bounding the serial
+# sum of the segment's partials. `multiprocessor_count` is 0 when a backend does not know.
+_maxgroups(backend) = max(1024, 16 * KernelAbstractions.KernelInterface.multiprocessor_count(backend))
 
 # The ranges of a long segment a:b, one per workgroup.
-function _group_ranges(a, b)
-    size = max(GROUPSIZE, cld(b - a + 1, MAXGROUPS))
+function _group_ranges(a, b, backend)
+    size = max(GROUPSIZE, cld(b - a + 1, _maxgroups(backend)))
     return ((st, min(st + size - 1, b)) for st in a:size:b)
 end
 
@@ -43,7 +46,7 @@ function _seg_table(conv, x0, ptr::Vector{Int})
             push!(short, s)
         else
             push!(long, s)
-            for (st, stop) in _group_ranges(a, b)
+            for (st, stop) in _group_ranges(a, b, KernelAbstractions.get_backend(x0))
                 push!(gstart, st)
                 push!(gstop, stop)
             end
@@ -214,7 +217,7 @@ function _row_plan(r, backend, chunk_rows)
     append!(chunk_rows, r[short])
     groups = Tuple{Int, Int}[]
     ns = length(short)
-    for (a, b) in ranges, (st, stop) in _group_ranges(a, b)
+    for (a, b) in ranges, (st, stop) in _group_ranges(a, b, backend)
         push!(groups, (ns + st, ns + stop))
         push!(chunk_rows, r[long[a]])
     end
