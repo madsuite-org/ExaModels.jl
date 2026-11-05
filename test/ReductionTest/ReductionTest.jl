@@ -2,10 +2,11 @@ module ReductionTest
 
 # Callbacks that reduce many terms into few outputs: constraint rows with long and
 # uneven augmentations (several blocks feeding the same rows, rows without any), a
-# large objective sum, and the products J*v, J'*v and H*v. Each backend is compared
-# with the host model (`backend = nothing`), which reduces in a plain loop.
+# large objective sum (value and gradient), and the products J*v, J'*v and H*v. Each
+# backend is compared with the host model (`backend = nothing`), which reduces in a
+# plain loop.
 
-using Test, ExaModels, NLPModels
+using Test, ExaModels, NLPModels, SparseArrays
 import ..BACKENDS
 
 function model(backend)
@@ -23,6 +24,17 @@ end
 
 rel(a, b) = maximum(abs.(a .- b) ./ (1 .+ abs.(b)); init = 0.0)
 
+# Jacobian and Hessian as sparse matrices: a device model may list coordinates in
+# another order (augmentation data is sorted by row when it is built)
+function matrices(m, x, y)
+    idx(n) = similar(m.meta.x0, Int, n)
+    ji, jj = jac_structure!(m, idx(m.meta.nnzj), idx(m.meta.nnzj))
+    hi, hj = hess_structure!(m, idx(m.meta.nnzh), idx(m.meta.nnzh))
+    J = sparse(Array(ji), Array(jj), Array(jac_coord(m, x)), m.meta.ncon, m.meta.nvar)
+    H = sparse(Array(hi), Array(hj), Array(hess_coord(m, x, y)), m.meta.nvar, m.meta.nvar)
+    return J, H
+end
+
 function runtests()
     ref = model(nothing)
     x = ref.meta.x0 .+ 0.01 .* sin.(1:ref.meta.nvar)
@@ -31,7 +43,7 @@ function runtests()
     w = cos.(1:ref.meta.ncon)
     expected = (
         cons(ref, x), grad(ref, x), jprod(ref, x, v), jtprod(ref, x, w),
-        hprod(ref, x, y, v; obj_weight = 0.7),
+        hprod(ref, x, y, v; obj_weight = 0.7), [obj(ref, x)],
     )
     @testset "reductions on $(something(backend, "host"))" for backend in BACKENDS
         backend === nothing && continue
@@ -39,11 +51,15 @@ function runtests()
         dev(a) = ExaModels.convert_array(a, backend)
         got = (
             cons(m, dev(x)), grad(m, dev(x)), jprod(m, dev(x), dev(v)), jtprod(m, dev(x), dev(w)),
-            hprod(m, dev(x), dev(y), dev(v); obj_weight = 0.7),
+            hprod(m, dev(x), dev(y), dev(v); obj_weight = 0.7), [obj(m, dev(x))],
         )
-        for (name, a, b) in zip((:cons, :grad, :jprod, :jtprod, :hprod), got, expected)
+        for (name, a, b) in zip((:cons, :grad, :jprod, :jtprod, :hprod, :obj), got, expected)
             @test rel(Array(a), b) < 1.0e-12
         end
+        Jm, Hm = matrices(m, dev(x), dev(y))
+        Jr, Hr = matrices(ref, x, y)
+        @test Jm.colptr == Jr.colptr && Jm.rowval == Jr.rowval && rel(Jm.nzval, Jr.nzval) < 1.0e-12
+        @test Hm.colptr == Hr.colptr && Hm.rowval == Hr.rowval && rel(Hm.nzval, Hr.nzval) < 1.0e-12
         # rows without augmentation keep their own value
         @test Array(got[1])[11:12] ≈ expected[1][11:12]
     end

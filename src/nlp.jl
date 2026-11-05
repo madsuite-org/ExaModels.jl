@@ -933,8 +933,30 @@ _build_model(c, var, par, obj, cons, prod) = Base.invokelatest(_model_from_dynam
 _model_from_dynamic_core(c, prod) =
     Base.invokelatest(_model_from_core, Base.invokelatest(_concretize, c), prod)
 
+# Before a model is built, the data of every augmentation block (`add_con!`) is sorted
+# by target row (a stable sort, so a row keeps its terms in order). Devices evaluate
+# augmented rows chunk by chunk in this order, and sorting on every backend keeps the
+# Jacobian and Hessian coordinates in the same order on all of them. The
+# KernelAbstractions extension overrides this for device cores.
+_prepare_backend(c) = _sort_augmentations(c)
+
+function _sort_augmentations(c::ExaCore)
+    any(con -> con isa ConstraintAugmentation && !isempty(con.itr), c.cons) || return c
+    cons = c.cons isa _LongTuple ? Tuple(Any[_sorted_by_row(con) for con in c.cons]) :
+        map(_sorted_by_row, c.cons)
+    return ExaCore(c; cons)
+end
+_sorted_by_row(con) = con
+function _sorted_by_row(con::ConstraintAugmentation)
+    (isempty(con.itr) || !(con.itr isa AbstractVector)) && return con
+    r = [offset0(con, i) for i in eachindex(con.itr)]
+    issorted(r) && return con
+    return ConstraintAugmentation(con.f, con.itr[sortperm(r)], con.oa, con.dims, con.tag)
+end
+
 function _model_from_core(c::ExaCore{T}, prod) where {T}
     c = _finalize_merged(c)
+    c = _prepare_backend(c)
     prod && !isempty(c.subexprs) && error(
         "ExaModel(c; prod = true) is not yet supported with buffered subexpressions",
     )

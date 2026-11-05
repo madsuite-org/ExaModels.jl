@@ -91,6 +91,51 @@ function _seg_reduce!(backend, y, op, plan::SegPlan, coord, V, x)
     return y
 end
 
+# The same reduction where output entry s is the s-th segment itself (V[s] += its
+# terms), as in coalescing duplicate coordinates.
+@kernel function seg_finish_index!(y, @Const(partial), @Const(kptr))
+    I = @index(Global)
+    @inbounds begin
+        s = zero(eltype(y))
+        for c in kptr[I]:(kptr[I + 1] - 1)
+            s += partial[c]
+        end
+        y[I] += s
+    end
+end
+function _seg_reduce_index!(backend, y, plan::SegPlan, coord, V)
+    n = _nseg(plan)
+    n == 0 && return y
+    seg_partial!(backend)(plan.partial, _Gather(), coord, V, nothing, plan.cstart; ndrange = length(plan.partial))
+    seg_finish_index!(backend)(y, plan.partial, plan.kptr; ndrange = n)
+    return y
+end
+
+# ---- Augmentation data sorted by row at build time --------------------------------
+#
+# The fused `cons!` and `jprod` walk an augmentation block's terms in row order. As on
+# the host (`ExaModels._sort_augmentations`), the block's data is sorted by target row
+# once, before the model is built, and the model holds only the sorted array; here the
+# rows are computed on the device.
+
+function ExaModels._prepare_backend(c::ExaModels.ExaCore{T, VT, B}) where {T, VT, B <: KernelAbstractions.Backend}
+    any(con -> con isa ExaModels.ConstraintAugmentation && !isempty(con.itr), c.cons) || return c
+    rows = similar(c.x0, Tuple{Int, Int}, c.nconaug)
+    _conaug_structure!(T, c.backend, c.cons, rows)
+    rows_host = Int[first(t) for t in Array(rows)]
+    sorted(con) = _sorted_by_row(con, rows_host, c.backend)
+    cons = c.cons isa _LongTuple ? Tuple(Any[sorted(con) for con in c.cons]) : map(sorted, c.cons)
+    return ExaModels.ExaCore(c; cons)
+end
+_sorted_by_row(con, rows_host, backend) = con
+function _sorted_by_row(con::ExaModels.ConstraintAugmentation, rows_host, backend)
+    (isempty(con.itr) || !(con.itr isa AbstractVector)) && return con
+    r = rows_host[(con.oa + 1):(con.oa + length(con.itr))]
+    issorted(r) && return con
+    itr = ExaModels.convert_array(collect(Array(con.itr))[sortperm(r)], backend)
+    return ExaModels.ConstraintAugmentation(con.f, itr, con.oa, con.dims, con.tag)
+end
+
 # ---- Fused evaluation of augmented constraint rows -------------------------------
 #
 # The terms that `add_con!` adds to constraint rows were evaluated into a buffer and
@@ -135,7 +180,9 @@ function _aug_plan(backend, x0, cons, rows_host::Vector{Int})
         end
         poff = length(chunk_rows) - length(cstart)
         push!(cstart, n + 1)
-        itr = ExaModels.convert_array(collect(Array(con.itr))[perm], backend)
+        # data sorted at build time (`_prepare_backend`) is used as is; anything else
+        # (e.g. a range) gets a sorted copy here
+        itr = issorted(perm) ? con.itr : ExaModels.convert_array(collect(Array(con.itr))[perm], backend)
         return AugBlockPlan(itr, ExaModels.convert_array(cstart, backend), poff)
     end
     blocks = cons isa _LongTuple ? Any[plan_of(con) for con in cons] : map(plan_of, cons)
@@ -196,4 +243,128 @@ function _conaugs_fused!(backend, y, plan::AugPlan, cons, x, θ)
     _aug_cons!(backend, plan.partial, plan.blocks, cons, x, θ)
     aug_finish!(backend)(y, plan.partial, plan.perm, plan.ptr, plan.rows; ndrange = length(plan.rows))
     return y
+end
+
+# ---- Fused Jacobian-vector product -------------------------------------------------
+#
+# J*v without forming the Jacobian: a term's contribution to its row is its directional
+# derivative ∇termᵀv, read off the reverse-mode graph (the same local partials `grpass`
+# uses) without writing any coordinate. A constraint row writes its value directly;
+# augmentation terms are reduced per row with the chunk plan of `cons!`.
+
+@inline _gdot(::Union{ExaModels.AdjointNull, ExaModels.DataIndexed, Real}, v, adj) = zero(adj)
+@inline _gdot(d::ExaModels.AdjointNode1, v, adj) = _gdot(d.inner, v, ExaModels._amul(adj, d.y))
+@inline _gdot(d::ExaModels.AdjointNode2, v, adj) =
+    _gdot(d.inner1, v, ExaModels._amul(adj, d.y1)) + _gdot(d.inner2, v, ExaModels._amul(adj, d.y2))
+@inline _gdot(d::ExaModels.AdjointNodeVar, v, adj) = @inbounds adj * v[d.i]
+
+@kernel function kerjv(Jv, @Const(f), @Const(itr), @Const(x), @Const(θ), @Const(v))
+    I = @index(Global)
+    @inbounds Jv[ExaModels.offset0(f, itr, I)] =
+        _gdot(f(itr[I], ExaModels.AdjointNodeSource(x), θ), v, one(eltype(Jv)))
+end
+@kernel function aug_chunk_jv!(partial, @Const(f), @Const(itr), @Const(cstart), @Const(x), @Const(θ), @Const(v), @Const(poff))
+    I = @index(Global)
+    @inbounds begin
+        s = zero(eltype(partial))
+        for t in cstart[I]:(cstart[I + 1] - 1)
+            s += _gdot(f(itr[t], ExaModels.AdjointNodeSource(x), θ), v, one(eltype(partial)))
+        end
+        partial[poff + I] = s
+    end
+end
+
+_jv_rows!(backend, Jv, ::Tuple{}, x, θ, v) = nothing
+function _jv_rows!(backend, Jv, (con, cons...), x, θ, v)
+    _jv_rows!(backend, Jv, cons, x, θ, v)
+    con isa ExaModels.Constraint && !isempty(con.itr) &&
+        kerjv(backend)(Jv, con.f, con.itr, x, θ, v; ndrange = length(con.itr))
+    return nothing
+end
+function _jv_rows!(backend, Jv, cons::_LongTuple, x, θ, v)
+    for con in cons
+        con isa ExaModels.Constraint && !isempty(con.itr) &&
+            kerjv(backend)(Jv, con.f, con.itr, x, θ, v; ndrange = length(con.itr))
+    end
+    return nothing
+end
+
+_aug_jv_chunks!(backend, partial, ::Nothing, con, x, θ, v) = nothing
+function _aug_jv_chunks!(backend, partial, b::AugBlockPlan, con, x, θ, v)
+    aug_chunk_jv!(backend)(partial, con.f, b.itr, b.cstart, x, θ, v, b.poff; ndrange = length(b.cstart) - 1)
+    return nothing
+end
+_aug_jv!(backend, partial, ::Tuple{}, ::Tuple{}, x, θ, v) = nothing
+function _aug_jv!(backend, partial, (b, bs...), (con, cons...), x, θ, v)
+    _aug_jv_chunks!(backend, partial, b, con, x, θ, v)
+    return _aug_jv!(backend, partial, bs, cons, x, θ, v)
+end
+function _aug_jv!(backend, partial, bs::Vector{Any}, cons::_LongTuple, x, θ, v)
+    for (b, con) in zip(bs, cons)
+        _aug_jv_chunks!(backend, partial, b, con, x, θ, v)
+    end
+    return nothing
+end
+
+# Jv = J(x) * v for the SIMD constraints (rows of oracles are not touched)
+function _jprod_fused!(backend, Jv, plan::AugPlan, cons, x, θ, v)
+    _jv_rows!(backend, Jv, cons, x, θ, v)
+    if !isempty(plan.rows)
+        _aug_jv!(backend, plan.partial, plan.blocks, cons, x, θ, v)
+        aug_finish!(backend)(Jv, plan.partial, plan.perm, plan.ptr, plan.rows; ndrange = length(plan.rows))
+    end
+    return Jv
+end
+
+# ---- Fused objective ---------------------------------------------------------------
+#
+# The objective is the sum of all its terms. Each work item evaluates up to
+# `SEGCHUNK` consecutive terms of a block and writes their sum, and the chunk sums are
+# then added on the device, so no buffer with one entry per term is written.
+
+struct ObjPlan{O, VT}
+    poff::O         # per block: offset of its chunks in `partial`
+    partial::VT
+end
+function _obj_plan(x0, objs)
+    n = 0
+    off(o) = (k = n; n += cld(length(o.itr), SEGCHUNK); k)
+    poff = objs isa _LongTuple ? Int[off(o) for o in objs] : map(off, objs)
+    return ObjPlan(poff, similar(x0, n))
+end
+
+@kernel function obj_chunk_sum!(partial, @Const(f), @Const(itr), @Const(x), @Const(θ), @Const(n), @Const(poff))
+    I = @index(Global)
+    @inbounds begin
+        s = zero(eltype(partial))
+        for t in ((I - 1) * SEGCHUNK + 1):min(I * SEGCHUNK, n)
+            s += f(itr[t], x, θ)
+        end
+        partial[poff + I] = s
+    end
+end
+function _obj_block!(backend, partial, poff, o, x, θ)
+    n = length(o.itr)
+    n == 0 && return nothing
+    obj_chunk_sum!(backend)(partial, o.f, o.itr, x, θ, n, poff; ndrange = cld(n, SEGCHUNK))
+    return nothing
+end
+_obj_fused!(backend, partial, ::Tuple{}, ::Tuple{}, x, θ) = nothing
+function _obj_fused!(backend, partial, (p, ps...), (o, os...), x, θ)
+    _obj_block!(backend, partial, p, o, x, θ)
+    return _obj_fused!(backend, partial, ps, os, x, θ)
+end
+function _obj_fused!(backend, partial, ps::Vector{Int}, os::_LongTuple, x, θ)
+    for (p, o) in zip(ps, os)
+        _obj_block!(backend, partial, p, o, x, θ)
+    end
+    return nothing
+end
+
+# the SIMD part of the objective at `x`, by the fused plan
+function _obj_sum(m, x)
+    partial = m.ext.objplan.partial
+    isempty(partial) && return zero(eltype(partial))
+    _obj_fused!(m.ext.backend, partial, m.ext.objplan.poff, m.objs, x, m.θ)
+    return ExaModels.sum(partial)
 end

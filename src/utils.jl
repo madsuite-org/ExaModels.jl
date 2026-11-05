@@ -429,6 +429,7 @@ struct CompressedNLPModel{
     VI<:AbstractVector{Int},
     VI2<:AbstractVector{Tuple{Tuple{Int,Int},Int}},
     M<:NLPModels.AbstractNLPModel{T,VT},
+    P,
 } <: NLPModels.AbstractNLPModel{T,VT}
 
     inner::M
@@ -437,6 +438,8 @@ struct CompressedNLPModel{
     hptr::VI
     hsparsity::VI2
     buffer::VT
+    jplan::P     # how a device backend splits the reductions (`nothing` on the host)
+    hplan::P
 
     backend::B
     meta::NLPModels.NLPModelMeta{T,VT}
@@ -516,6 +519,8 @@ function CompressedNLPModel(m)
         hptr,
         hsparsity,
         buffer,
+        _compress_plan(backend, m.meta.x0, jptr),
+        _compress_plan(backend, m.meta.x0, hptr),
         backend,
         meta,
         counters,
@@ -540,7 +545,7 @@ end
 
 function NLPModels.jac_coord!(m::CompressedNLPModel, x::AbstractVector, j::AbstractVector)
     NLPModels.jac_coord!(m.inner, x, m.buffer)
-    _compress!(j, m.buffer, m.jptr, m.jsparsity, m.backend)
+    _compress!(j, m.buffer, m.jptr, m.jsparsity, m.backend, m.jplan)
     return j
 end
 
@@ -552,7 +557,7 @@ function NLPModels.hess_coord!(
     obj_weight = one(eltype(x)),
 )
     NLPModels.hess_coord!(m.inner, x, y, m.buffer; obj_weight = obj_weight)
-    _compress!(h, m.buffer, m.hptr, m.hsparsity, m.backend)
+    _compress!(h, m.buffer, m.hptr, m.hsparsity, m.backend, m.hplan)
     return h
 end
 
@@ -574,7 +579,10 @@ function NLPModels.hess_structure!(
     return I, J
 end
 
-function _compress!(V, buffer, ptr, sparsity, backend::Nothing)
+# A device backend may precompute how to split the per-entry reductions.
+_compress_plan(backend, x0, ptr) = nothing
+
+function _compress!(V, buffer, ptr, sparsity, backend::Nothing, plan = nothing)
     fill!(V, zero(eltype(V)))
     @simd for i = 1:(length(ptr)-1)
         for j = ptr[i]:(ptr[i+1]-1)

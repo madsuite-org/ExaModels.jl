@@ -18,19 +18,15 @@ function ExaModels.getptr(backend, array; cmp = !=)
     return ExaModels.findall(identity, bitarray)
 end
 
-
-struct KAExtension{T, VT <: AbstractVector{T}, H, VI1, VI2, B, GP, AP}
+struct KAExtension{T, VT <: AbstractVector{T}, H, VI1, VI2, B, GP, AP, OP}
     backend::B
-    objbuffer::VT
     gradbuffer::VT
     gsparsity::VI1
     gptr::VI2
-    conbuffer::VT
-    conaugsparsity::VI1
-    conaugptr::VI2
     prodhelper::H
     gplan::GP        # segmented reduction of the gradient buffer
     augplan::AP      # fused evaluation of augmented constraint rows
+    objplan::OP      # fused evaluation of the objective
 end
 
 function ExaModels.build_extension(
@@ -48,15 +44,10 @@ function ExaModels.build_extension(
     end
     gptr = ExaModels.getptr(c.backend, gsparsity; cmp = ExaModels._first_ne)
 
+    # the target row of every augmentation term, for the fused plan
     conaugsparsity = similar(c.x0, Tuple{Int, Int}, c.nconaug)
     _conaug_structure!(T, c.backend, c.cons, conaugsparsity)
-    # the target row of every augmentation term, before sorting, for the fused plan
     augrows = Int[first(t) for t in Array(conaugsparsity)]
-    if !isempty(conaugsparsity)
-        ExaModels.sort!(conaugsparsity; lt = ExaModels._first_lt)
-    end
-    conaugptr = ExaModels.getptr(c.backend, conaugsparsity; cmp = ExaModels._first_ne)
-
 
     if prod
         # c.nnzj / c.nnzh / c.ncon contain only SIMD contributions; oracle
@@ -93,7 +84,6 @@ function ExaModels.build_extension(
         jacptrj =
             ExaModels.getptr(c.backend, jacsparsityj; cmp = ExaModels._col_ne)
 
-
         if !isempty(hesssparsityi)
             ExaModels.sort!(hesssparsityi; lt = ExaModels._row_lt)
         end
@@ -125,7 +115,7 @@ function ExaModels.build_extension(
             jac_sp_j = copy(jac_sp_i)
             ExaModels.sort!(jac_sp_j; lt = ExaModels._col_lt)
             jac_ptr_j = ExaModels.getptr(c.backend, jac_sp_j; cmp = ExaModels._col_ne)
-            # Hess: row-sorted (kersyspmv) and col-sorted (kersyspmv2)
+            # Hess: row-sorted and col-sorted, for the two halves of H*v
             if oracle.nnzh > 0
                 hess_sp_i = _oracle_hess_sparsity(oracle, off_h, c.backend, c.x0)
                 ExaModels.sort!(hess_sp_i; lt = ExaModels._row_lt)
@@ -144,6 +134,10 @@ function ExaModels.build_extension(
                 jacsparsityj = jac_sp_j, jacptrj = jac_ptr_j,
                 hesssparsityi = hess_sp_i, hessptri = hess_ptr_i,
                 hesssparsityj = hess_sp_j, hessptrj = hess_ptr_j,
+                jacplani = _seg_plan(c.backend, c.x0, jac_ptr_i),
+                jacplanj = _seg_plan(c.backend, c.x0, jac_ptr_j),
+                hessplani = _seg_plan(c.backend, c.x0, hess_ptr_i),
+                hessplanj = _seg_plan(c.backend, c.x0, hess_ptr_j),
             )
         end
 
@@ -170,16 +164,13 @@ function ExaModels.build_extension(
 
     return KAExtension(
         c.backend,
-        similar(c.x0, c.nobj),
         similar(c.x0, c.nnzg),
         gsparsity,
         gptr,
-        similar(c.x0, c.nconaug),
-        conaugsparsity,
-        conaugptr,
         prodhelper,
         _seg_plan(c.backend, c.x0, gptr),
         _aug_plan(c.backend, c.x0, c.cons, augrows),
+        _obj_plan(c.x0, c.obj),
     )
 end
 
@@ -205,7 +196,6 @@ end
     I = @index(Global)
     @inbounds sparsity[oa + I] = (ExaModels.offset0(f, itr, I, dims), oa + I)
 end
-
 
 _grad_structure!(T, backend, ::Tuple{}, gsparsity) = nothing
 function _grad_structure!(T, backend, (obj, objs...), gsparsity)
@@ -244,7 +234,6 @@ function _jac_structure!(T, backend, cons::_LongTuple, rows, cols)
     end
     return nothing
 end
-
 
 function ExaModels.hess_structure!(
         m::ExaModels.AbstractExaModel{T, VT, E},
@@ -285,7 +274,6 @@ function _con_hess_structure!(T, backend, cons::_LongTuple, rows, cols)
     return nothing
 end
 
-
 _ska(m::ExaModels.ExaModel) = m.ska
 _ska(m) = nothing
 
@@ -294,30 +282,7 @@ function ExaModels.obj(
         x::AbstractVector,
     ) where {T, VT, E <: KAExtension}
     _ska(m) === nothing || return _obj_buffered(m, x)
-    if !isempty(m.ext.objbuffer)
-        _obj(m.ext.backend, m.ext.objbuffer, m.objs, x, m.θ)
-        result = ExaModels.sum(m.ext.objbuffer)
-        return result
-    else
-        return zero(T)
-    end
-end
-_obj(backend, objbuffer, ::Tuple{}, x, θ) = nothing
-function _obj(backend, objbuffer, (obj, objs...), x, θ)
-    _obj(backend, objbuffer, objs, x, θ)
-    return if !isempty(obj.itr)
-        kerf(backend)(objbuffer, obj.f, obj.itr, x, θ; ndrange = length(obj.itr))
-    end
-end
-function _obj(backend, objbuffer, objs::_LongTuple, x, θ)
-    blocks = Any[objs...]
-    for i in length(blocks):-1:1
-        obj = blocks[i]
-        if !isempty(obj.itr)
-            kerf(backend)(objbuffer, obj.f, obj.itr, x, θ; ndrange = length(obj.itr))
-        end
-    end
-    return nothing
+    return _obj_sum(m, x)
 end
 
 function ExaModels.cons_nln!(
@@ -343,25 +308,6 @@ function _cons_nln!(backend, y, cons::_LongTuple, x, θ)
         con = blocks[i]
         if con isa ExaModels.Constraint && !isempty(con.itr)
             kerf(backend)(y, con.f, con.itr, x, θ; ndrange = length(con.itr))
-        end
-    end
-    return nothing
-end
-
-
-_conaugs!(backend, y, ::Tuple{}, x, θ) = nothing
-function _conaugs!(backend, y, (con, cons...), x, θ)
-    _conaugs!(backend, y, cons, x, θ)
-    return if con isa ExaModels.ConstraintAugmentation && !isempty(con.itr)
-        kerf2(backend)(y, con.f, con.itr, x, θ, con.oa; ndrange = length(con.itr))
-    end
-end
-function _conaugs!(backend, y, cons::_LongTuple, x, θ)
-    blocks = Any[cons...]
-    for i in length(blocks):-1:1
-        con = blocks[i]
-        if con isa ExaModels.ConstraintAugmentation && !isempty(con.itr)
-            kerf2(backend)(y, con.f, con.itr, x, θ, con.oa; ndrange = length(con.itr))
         end
     end
     return nothing
@@ -447,9 +393,7 @@ function ExaModels.jprod_nln!(
         Jv::AbstractVector,
     ) where {T, VT, N <: NamedTuple, E <: KAExtension{T, VT, N}}
     fill!(Jv, zero(eltype(Jv)))
-    fill!(m.ext.prodhelper.jacbuffer, zero(eltype(Jv)))
-    _jac_coord!(m.ext.backend, m.ext.prodhelper.jacbuffer, m.cons, x, m.θ)
-    _seg_reduce!(m.ext.backend, Jv, _RowSpmv(), m.ext.prodhelper.jacplani, m.ext.prodhelper.jacsparsityi, m.ext.prodhelper.jacbuffer, v)
+    _jprod_fused!(m.ext.backend, Jv, m.ext.augplan, m.cons, x, m.θ, v)
     return Jv
 end
 function ExaModels.jtprod_nln!(
@@ -507,38 +451,6 @@ function ExaModels.hprod!(
     return Hv
 end
 
-@kernel function kerspmv(y, @Const(x), @Const(coord), @Const(V), @Const(ptr))
-    idx = @index(Global)
-    @inbounds for l in ptr[idx]:(ptr[idx + 1] - 1)
-        ((i, j), ind) = coord[l]
-        y[i] += V[ind] * x[j]
-    end
-end
-@kernel function kerspmv2(y, @Const(x), @Const(coord), @Const(V), @Const(ptr))
-    idx = @index(Global)
-    @inbounds for l in ptr[idx]:(ptr[idx + 1] - 1)
-        ((i, j), ind) = coord[l]
-        y[j] += V[ind] * x[i]
-    end
-end
-@kernel function kersyspmv(y, @Const(x), @Const(coord), @Const(V), @Const(ptr))
-    idx = @index(Global)
-    @inbounds for l in ptr[idx]:(ptr[idx + 1] - 1)
-        ((i, j), ind) = coord[l]
-        y[i] += V[ind] * x[j]
-    end
-end
-@kernel function kersyspmv2(y, @Const(x), @Const(coord), @Const(V), @Const(ptr))
-    idx = @index(Global)
-    @inbounds for l in ptr[idx]:(ptr[idx + 1] - 1)
-        ((i, j), ind) = coord[l]
-        if i != j
-            y[j] += V[ind] * x[i]
-        end
-    end
-end
-
-
 function ExaModels.hess_coord!(
         m::ExaModels.AbstractExaModel{T, VT, E},
         x::AbstractVector,
@@ -588,7 +500,6 @@ function _con_hess_coord!(backend, hess, cons::_LongTuple, x, θ, y)
     end
     return nothing
 end
-
 
 function ExaModels.sgradient!(
         backend::B,
@@ -725,19 +636,6 @@ end
     I = @index(Global)
     @inbounds y[ExaModels.offset0(f, itr, I)] = f(itr[I], x, θ)
 end
-@kernel function kerf2(y, @Const(f), @Const(itr), @Const(x), @Const(θ), @Const(oa))
-    I = @index(Global)
-    @inbounds y[oa + I] = f(itr[I], x, θ)
-end
-
-
-@kernel function compress_to_dense(y, @Const(y0), @Const(ptr), @Const(sparsity))
-    I = @index(Global)
-    @inbounds for j in ptr[I]:(ptr[I + 1] - 1)
-        (k, l) = sparsity[j]
-        y[k] += y0[l]
-    end
-end
 
 @kernel function kergetptr(cmp, bitarray, @Const(array))
     I = @index(Global)
@@ -791,13 +689,8 @@ function ExaModels.obj(
         m::ExaModels.ExaModelWithOracle{T, VT, E},
         x::AbstractVector,
     ) where {T, VT, E <: KAExtension}
-    # SIMD part via GPU kernel (avoids scalar indexing on device arrays)
-    if !isempty(m.ext.objbuffer)
-        _obj(m.ext.backend, m.ext.objbuffer, m.objs, x, m.θ)
-        val = ExaModels.sum(m.ext.objbuffer)
-    else
-        val = zero(T)
-    end
+    # SIMD part via GPU kernels (avoids scalar indexing on device arrays)
+    val = _obj_sum(m, x)
     # Oracle callbacks are CPU functions; adapt device array to CPU first
     for oracle in m.scalar_oracles
         xin = ExaModels._oracle_input(oracle, x)
@@ -1023,17 +916,17 @@ end
 # ── jprod_nln! / jtprod_nln! / hprod! for ExaModelWithOracle on GPU ──────────
 #
 # Strategy:
-#   • SIMD part: re-use the existing prod-helper GPU kernels (kerspmv etc.)
-#     which operate entirely on device memory with no scalar indexing.
-#   • Oracle part (gpu=true):  call jac!/hess! with device arrays, then use
-#     kerspmv/kersyspmv directly on the oracle's own device sparsity buffers.
+#   • SIMD part: the prod-helper's segmented reductions (`_seg_reduce!`), which
+#     operate entirely on device memory with no scalar indexing.
+#   • Oracle part (gpu=true):  call jac!/hess! with device arrays, then reduce
+#     over the oracle's own device sparsity buffers the same way.
 #   • Oracle part (gpu=false): CPU bridge; accumulate on host and copyto! back.
 #
 # For the "prod=false" case (no prodhelper) we still handle the oracle part
 # correctly; the SIMD part falls back to the cpu path via the base method.
 
 # Helper: build the ((row,col), global_index) sparsity vector for one oracle's
-# Jacobian, in the format expected by kerspmv / kerspmv2.
+# Jacobian, in the format expected by `_seg_reduce!`.
 function _oracle_jac_sparsity(oracle, off_j, off_c, backend, x0)
     n = oracle.nnzj
     cpu = [
@@ -1082,18 +975,8 @@ function ExaModels.jprod_nln!(
         Jv::AbstractVector,
     ) where {T, VT, N <: NamedTuple, E <: KAExtension{T, VT, N}}
     fill!(Jv, zero(eltype(Jv)))
-    # SIMD symbolic part via GPU sparse-matvec kernel.
-    fill!(m.ext.prodhelper.jacbuffer, zero(eltype(Jv)))
-    _jac_coord!(m.ext.backend, m.ext.prodhelper.jacbuffer, m.cons, x, m.θ)
-    let _n = length(m.ext.prodhelper.jacptri) - 1
-        _n > 0 && kerspmv(m.ext.backend)(
-            Jv, v,
-            m.ext.prodhelper.jacsparsityi,
-            m.ext.prodhelper.jacbuffer,
-            m.ext.prodhelper.jacptri;
-            ndrange = _n,
-        )
-    end
+    # SIMD symbolic part: directional derivatives, without forming the Jacobian
+    _jprod_fused!(m.ext.backend, Jv, m.ext.augplan, m.cons, x, m.θ, v)
     backend = m.ext.backend
     for (i, oracle) in enumerate(m.oracles)
         cache = m.oracle_caches[i]
@@ -1109,13 +992,10 @@ function ExaModels.jprod_nln!(
             prod_cache = m.ext.prodhelper.oracle_prod[i]
             # `view` (not `getindex`) so the user's `jac!` writes into the buffer
             # in place; `jacbuffer[cache.jac_idx]` would return a fresh copy and
-            # the kerspmv below would read zeros from the oracle slice.
+            # the reduction below would read zeros from the oracle slice.
             oracle.jac!(view(m.ext.prodhelper.jacbuffer, cache.jac_idx), xin)
             let _n = length(prod_cache.jacptri) - 1
-                _n > 0 && kerspmv(m.ext.backend)(
-                    Jv, v, prod_cache.jacsparsityi, m.ext.prodhelper.jacbuffer, prod_cache.jacptri;
-                    ndrange = _n,
-                )
+                _n > 0 && _seg_reduce!(m.ext.backend, Jv, _RowSpmv(), prod_cache.jacplani, prod_cache.jacsparsityi, m.ext.prodhelper.jacbuffer, v)
             end
         else
             off_c = m.oracle_con_offsets[i]
@@ -1171,13 +1051,7 @@ function ExaModels.jtprod_nln!(
     fill!(m.ext.prodhelper.jacbuffer, zero(eltype(Jtv)))
     _jac_coord!(m.ext.backend, m.ext.prodhelper.jacbuffer, m.cons, x, m.θ)
     let _n = length(m.ext.prodhelper.jacptrj) - 1
-        _n > 0 && kerspmv2(m.ext.backend)(
-            Jtv, v,
-            m.ext.prodhelper.jacsparsityj,
-            m.ext.prodhelper.jacbuffer,
-            m.ext.prodhelper.jacptrj;
-            ndrange = _n,
-        )
+        _n > 0 && _seg_reduce!(m.ext.backend, Jtv, _ColSpmv(), m.ext.prodhelper.jacplanj, m.ext.prodhelper.jacsparsityj, m.ext.prodhelper.jacbuffer, v)
     end
     backend = m.ext.backend
     for (i, oracle) in enumerate(m.oracles)
@@ -1195,10 +1069,7 @@ function ExaModels.jtprod_nln!(
             # See `jprod_nln!` for the `view` vs `getindex` rationale.
             oracle.jac!(view(m.ext.prodhelper.jacbuffer, cache.jac_idx), xin)
             let _n = length(prod_cache.jacptrj) - 1
-                _n > 0 && kerspmv2(m.ext.backend)(
-                    Jtv, v, prod_cache.jacsparsityj, m.ext.prodhelper.jacbuffer, prod_cache.jacptrj;
-                    ndrange = _n,
-                )
+                _n > 0 && _seg_reduce!(m.ext.backend, Jtv, _ColSpmv(), prod_cache.jacplanj, prod_cache.jacsparsityj, m.ext.prodhelper.jacbuffer, v)
             end
         else
             off_c = m.oracle_con_offsets[i]
@@ -1258,22 +1129,10 @@ function ExaModels.hprod!(
     fill!(m.ext.prodhelper.hessbuffer, zero(eltype(Hv)))
     _obj_hess_coord!(m.ext.backend, m.ext.prodhelper.hessbuffer, m.objs, x, m.θ, obj_weight)
     let _n = length(m.ext.prodhelper.hessptri) - 1
-        _n > 0 && kersyspmv(m.ext.backend)(
-            Hv, v,
-            m.ext.prodhelper.hesssparsityi,
-            m.ext.prodhelper.hessbuffer,
-            m.ext.prodhelper.hessptri;
-            ndrange = _n,
-        )
+        _n > 0 && _seg_reduce!(m.ext.backend, Hv, _RowSpmv(), m.ext.prodhelper.hessplani, m.ext.prodhelper.hesssparsityi, m.ext.prodhelper.hessbuffer, v)
     end
     let _n = length(m.ext.prodhelper.hessptrj) - 1
-        _n > 0 && kersyspmv2(m.ext.backend)(
-            Hv, v,
-            m.ext.prodhelper.hesssparsityj,
-            m.ext.prodhelper.hessbuffer,
-            m.ext.prodhelper.hessptrj;
-            ndrange = _n,
-        )
+        _n > 0 && _seg_reduce!(m.ext.backend, Hv, _ColSySpmv(), m.ext.prodhelper.hessplanj, m.ext.prodhelper.hesssparsityj, m.ext.prodhelper.hessbuffer, v)
     end
     backend = m.ext.backend
     for (i, oracle) in enumerate(m.scalar_oracles)
@@ -1303,22 +1162,10 @@ function ExaModels.hprod!(
     _obj_hess_coord!(m.ext.backend, m.ext.prodhelper.hessbuffer, m.objs, x, m.θ, obj_weight)
     _con_hess_coord!(m.ext.backend, m.ext.prodhelper.hessbuffer, m.cons, x, m.θ, y)
     let _n = length(m.ext.prodhelper.hessptri) - 1
-        _n > 0 && kersyspmv(m.ext.backend)(
-            Hv, v,
-            m.ext.prodhelper.hesssparsityi,
-            m.ext.prodhelper.hessbuffer,
-            m.ext.prodhelper.hessptri;
-            ndrange = _n,
-        )
+        _n > 0 && _seg_reduce!(m.ext.backend, Hv, _RowSpmv(), m.ext.prodhelper.hessplani, m.ext.prodhelper.hesssparsityi, m.ext.prodhelper.hessbuffer, v)
     end
     let _n = length(m.ext.prodhelper.hessptrj) - 1
-        _n > 0 && kersyspmv2(m.ext.backend)(
-            Hv, v,
-            m.ext.prodhelper.hesssparsityj,
-            m.ext.prodhelper.hessbuffer,
-            m.ext.prodhelper.hessptrj;
-            ndrange = _n,
-        )
+        _n > 0 && _seg_reduce!(m.ext.backend, Hv, _ColSySpmv(), m.ext.prodhelper.hessplanj, m.ext.prodhelper.hesssparsityj, m.ext.prodhelper.hessbuffer, v)
     end
     backend = m.ext.backend
     for (i, oracle) in enumerate(m.oracles)
@@ -1340,16 +1187,10 @@ function ExaModels.hprod!(
             buf_slice = view(m.ext.prodhelper.hessbuffer, cache.hess_idx)
             oracle.hess!(buf_slice, xin, win)
             let _n = length(prod_cache.hessptri) - 1
-                _n > 0 && kersyspmv(m.ext.backend)(
-                    Hv, v, prod_cache.hesssparsityi, m.ext.prodhelper.hessbuffer, prod_cache.hessptri;
-                    ndrange = _n,
-                )
+                _n > 0 && _seg_reduce!(m.ext.backend, Hv, _RowSpmv(), prod_cache.hessplani, prod_cache.hesssparsityi, m.ext.prodhelper.hessbuffer, v)
             end
             let _n = length(prod_cache.hessptrj) - 1
-                _n > 0 && kersyspmv2(m.ext.backend)(
-                    Hv, v, prod_cache.hesssparsityj, m.ext.prodhelper.hessbuffer, prod_cache.hessptrj;
-                    ndrange = _n,
-                )
+                _n > 0 && _seg_reduce!(m.ext.backend, Hv, _ColSySpmv(), prod_cache.hessplanj, prod_cache.hesssparsityj, m.ext.prodhelper.hessbuffer, v)
             end
         else
             ExaModels._run_with_buf!(oracle, backend, cache.buf_nnzh, cache.cpu_nnzh) do b
@@ -1415,16 +1256,10 @@ function ExaModels.hprod!(
     return Hv
 end
 
-function ExaModels._compress!(V, buffer, ptr, sparsity, backend)
+ExaModels._compress_plan(backend::KernelAbstractions.Backend, x0, ptr) = _seg_plan(backend, x0, ptr)
+function ExaModels._compress!(V, buffer, ptr, sparsity, backend, plan)
     fill!(V, zero(eltype(V)))
-    return ker_compress!(backend)(V, buffer, ptr, sparsity; ndrange = length(ptr) - 1)
-end
-
-@kernel function ker_compress!(V, @Const(buffer), @Const(ptr), @Const(sparsity))
-    i = @index(Global)
-    @inbounds for j in ptr[i]:(ptr[i + 1] - 1)
-        V[i] += buffer[sparsity[j][2]]
-    end
+    return _seg_reduce_index!(backend, V, plan, sparsity, buffer)
 end
 
 function ExaModels._structure!(I, J, ptr, sparsity, backend)
@@ -1445,7 +1280,6 @@ end
     i = @index(Global)
     @inbounds sparsity[i] = ((J[i], I[i]), i)
 end
-
 
 # ── merged (family-merged) constraint and objective blocks ──────────────────
 # A merged block's row/nonzero offsets and its source block's compressors
@@ -1542,6 +1376,5 @@ end
 
 include("ExaModelsKASegmented.jl")
 include("ExaModelsKABuffered.jl")
-
 
 end # module ExaModelsKernelAbstractions
