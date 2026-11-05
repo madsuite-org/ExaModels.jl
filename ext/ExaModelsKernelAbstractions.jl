@@ -415,7 +415,7 @@ function ExaModels.hprod!(
     fill!(Hv, zero(eltype(Hv)))
     fill!(m.ext.prodhelper.hessbuffer, zero(eltype(Hv)))
 
-    _obj_hess_coord!(m.ext.backend, m.ext.prodhelper.hessbuffer, m.objs, x, m.θ, obj_weight)
+    _obj_hess_coord!(m.ext.backend, m.ext.prodhelper.hessbuffer, m.objs, x, m.θ, T(obj_weight))
     _con_hess_coord!(m.ext.backend, m.ext.prodhelper.hessbuffer, m.cons, x, m.θ, y)
     _seg_reduce!(m.ext.backend, Hv, _RowSpmv(), m.ext.prodhelper.hessplani, m.ext.prodhelper.hesssparsityi, m.ext.prodhelper.hessbuffer, v)
     _seg_reduce!(m.ext.backend, Hv, _ColSySpmv(), m.ext.prodhelper.hessplanj, m.ext.prodhelper.hesssparsityj, m.ext.prodhelper.hessbuffer, v)
@@ -436,7 +436,7 @@ function ExaModels.hprod!(
     fill!(Hv, zero(eltype(Hv)))
     fill!(m.ext.prodhelper.hessbuffer, zero(eltype(Hv)))
 
-    _obj_hess_coord!(m.ext.backend, m.ext.prodhelper.hessbuffer, m.objs, x, m.θ, obj_weight)
+    _obj_hess_coord!(m.ext.backend, m.ext.prodhelper.hessbuffer, m.objs, x, m.θ, T(obj_weight))
     _seg_reduce!(m.ext.backend, Hv, _RowSpmv(), m.ext.prodhelper.hessplani, m.ext.prodhelper.hesssparsityi, m.ext.prodhelper.hessbuffer, v)
     _seg_reduce!(m.ext.backend, Hv, _ColSySpmv(), m.ext.prodhelper.hessplanj, m.ext.prodhelper.hesssparsityj, m.ext.prodhelper.hessbuffer, v)
 
@@ -1119,7 +1119,7 @@ function ExaModels.hprod!(
     ) where {T, VT, N <: NamedTuple, E <: KAExtension{T, VT, N}}
     fill!(Hv, zero(eltype(Hv)))
     fill!(m.ext.prodhelper.hessbuffer, zero(eltype(Hv)))
-    _obj_hess_coord!(m.ext.backend, m.ext.prodhelper.hessbuffer, m.objs, x, m.θ, obj_weight)
+    _obj_hess_coord!(m.ext.backend, m.ext.prodhelper.hessbuffer, m.objs, x, m.θ, T(obj_weight))
     let _n = length(m.ext.prodhelper.hessptri) - 1
         _n > 0 && _seg_reduce!(m.ext.backend, Hv, _RowSpmv(), m.ext.prodhelper.hessplani, m.ext.prodhelper.hesssparsityi, m.ext.prodhelper.hessbuffer, v)
     end
@@ -1151,7 +1151,7 @@ function ExaModels.hprod!(
     fill!(Hv, zero(eltype(Hv)))
     fill!(m.ext.prodhelper.hessbuffer, zero(eltype(Hv)))
     # SIMD symbolic part.
-    _obj_hess_coord!(m.ext.backend, m.ext.prodhelper.hessbuffer, m.objs, x, m.θ, obj_weight)
+    _obj_hess_coord!(m.ext.backend, m.ext.prodhelper.hessbuffer, m.objs, x, m.θ, T(obj_weight))
     _con_hess_coord!(m.ext.backend, m.ext.prodhelper.hessbuffer, m.cons, x, m.θ, y)
     let _n = length(m.ext.prodhelper.hessptri) - 1
         _n > 0 && _seg_reduce!(m.ext.backend, Hv, _RowSpmv(), m.ext.prodhelper.hessplani, m.ext.prodhelper.hesssparsityi, m.ext.prodhelper.hessbuffer, v)
