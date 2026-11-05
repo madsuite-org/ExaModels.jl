@@ -62,6 +62,13 @@ function runtests()
         Jr, Hr = matrices(ref, x, y)
         @test Jm.colptr == Jr.colptr && Jm.rowval == Jr.rowval && rel(Jm.nzval, Jr.nzval) < 1.0e-12
         @test Hm.colptr == Hr.colptr && Hm.rowval == Hr.rowval && rel(Hm.nzval, Hr.nzval) < 1.0e-12
+        # CompressedNLPModel: duplicate coordinates (here many) summed on the device
+        cm, cr = ExaModels.CompressedNLPModel(m), ExaModels.CompressedNLPModel(ref)
+        @test cm.meta.nnzj == cr.meta.nnzj && cm.meta.nnzh == cr.meta.nnzh
+        Jc, Hc = matrices(cm, dev(x), dev(y))
+        Jcr, Hcr = matrices(cr, x, y)
+        @test Jc.colptr == Jcr.colptr && Jc.rowval == Jcr.rowval && rel(Jc.nzval, Jcr.nzval) < 1.0e-12
+        @test Hc.colptr == Hcr.colptr && Hc.rowval == Hcr.rowval && rel(Hc.nzval, Hcr.nzval) < 1.0e-12
         # rows without augmentation keep their own value
         @test Array(got[1])[11:12] ≈ expected[1][11:12]
     end

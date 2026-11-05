@@ -125,15 +125,17 @@ function ExaModels._prepare_backend(c::ExaModels.ExaCore{T, VT, B}) where {T, VT
     rows_host = Int[first(t) for t in Array(rows)]
     sorted(con) = _sorted_by_row(con, rows_host, c.backend)
     cons = c.cons isa _LongTuple ? Tuple(Any[sorted(con) for con in c.cons]) : map(sorted, c.cons)
-    return ExaModels.ExaCore(c; cons)
+    return ExaModels._with_blocks(c, c.var, c.par, c.obj, cons, c.refs)
 end
+# The sorted data is always a device array of the backend, so the block's type does not
+# depend on whether its data happened to be sorted already.
 _sorted_by_row(con, rows_host, backend) = con
 function _sorted_by_row(con::ExaModels.ConstraintAugmentation, rows_host, backend)
     (isempty(con.itr) || !(con.itr isa AbstractVector)) && return con
     r = rows_host[(con.oa + 1):(con.oa + length(con.itr))]
-    issorted(r) && return con
-    itr = ExaModels.convert_array(collect(Array(con.itr))[sortperm(r)], backend)
-    return ExaModels.ConstraintAugmentation(con.f, itr, con.oa, con.dims, con.tag)
+    sorted = ExaModels.convert_array(collect(Array(con.itr))[sortperm(r)], backend)
+    typeof(sorted) == typeof(con.itr) && issorted(r) && return con
+    return ExaModels.ConstraintAugmentation(con.f, sorted, con.oa, con.dims, con.tag)
 end
 
 # ---- Fused evaluation of augmented constraint rows -------------------------------
