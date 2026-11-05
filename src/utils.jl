@@ -429,7 +429,7 @@ struct CompressedNLPModel{
     VI<:AbstractVector{Int},
     VI2<:AbstractVector{Tuple{Tuple{Int,Int},Int}},
     M<:NLPModels.AbstractNLPModel{T,VT},
-        P,
+    P,
 } <: NLPModels.AbstractNLPModel{T,VT}
 
     inner::M

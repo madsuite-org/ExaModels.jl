@@ -226,7 +226,10 @@ end
 # J*v without forming the Jacobian: a term's contribution to its row is its directional
 # derivative ∇termᵀv, read off the reverse-mode graph (the same local partials `grpass`
 # uses) without writing any coordinate. A constraint row writes its value directly;
-# augmentation terms are reduced per row with the chunk plan of `cons!`.
+# augmentation terms are reduced per row with the chunk plan of `cons!`. The first
+# `jprod` compiles one kernel per constraint block (`kerjv` or `aug_chunk_jv!`) in
+# addition to the `kerj` kernels that `jac_coord!` and `jtprod` use, so its first-call
+# latency grows with the number of block types.
 
 @inline _gdot(::Union{ExaModels.AdjointNull, ExaModels.DataIndexed, Real}, v, adj) = zero(adj)
 @inline _gdot(d::ExaModels.AdjointNode1, v, adj) = _gdot(d.inner, v, ExaModels._amul(adj, d.y))
