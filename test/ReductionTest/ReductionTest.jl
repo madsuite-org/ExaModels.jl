@@ -1,10 +1,10 @@
 module ReductionTest
 
 # Callbacks that reduce many terms into few outputs: constraint rows with long and
-# uneven augmentations (several blocks feeding the same rows, rows without any), a
-# large objective sum (value and gradient), and the products J*v, J'*v and H*v. Each
-# backend is compared with the host model (`backend = nothing`), which reduces in a
-# plain loop.
+# uneven augmentations (several blocks feeding the same rows, rows without any), an
+# objective sum long enough for a work item to take several terms (value and gradient),
+# and the products J*v, J'*v and H*v. Each backend is compared with the host model
+# (`backend = nothing`), which reduces in a plain loop.
 
 using Test, ExaModels, NLPModels, SparseArrays
 import ..BACKENDS
@@ -21,7 +21,7 @@ function model(backend)
     c, _ = add_con!(c, g, p[1] => sin(x[p[2]]) for p in [(1, 1), (1, 3), (2, 2), (5, 5), (5, 6), (5, 7)])
     c, _ = add_obj(
         c, (x[q[1]] - 0.3)^2 * x[q[2]] * q[3]
-            for q in [(1 + k % 50, 1 + (k + 1) % 50, T(cos(k))) for k in 1:30000]
+            for q in [(1 + k % 50, 1 + (k + 1) % 50, T(cos(k))) for k in 1:300000]
     )
     return ExaModel(c; prod = true)
 end

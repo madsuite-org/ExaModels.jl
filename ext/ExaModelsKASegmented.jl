@@ -8,10 +8,14 @@
 # item leaves a device mostly idle when there are few outputs with long segments, and
 # serializes each long segment. Instead, every segment is cut into chunks of at most
 # `SEGCHUNK` entries: one work item sums a chunk into a partial, and one work item per
-# output entry adds that entry's partials. The chunk table fixes the order of the
-# summation, so results are the same from run to run.
+# output entry adds that entry's partials. When no segment spans two chunks a single
+# launch does both. The chunk table fixes the order of the summation, so results are
+# the same from run to run.
 
-const SEGCHUNK = 256
+const SEGCHUNK = 256    # most entries one work item sums
+const OBJITEMS = 262144 # a longer objective block gives each work item several terms
+const AUGITEMS = 16384  # a longer augmentation block gives each work item several terms
+const SHORTROW = 16     # terms of a row this short get a work item each
 
 # Chunk table for the segments given by `ptr` (segment s is ptr[s]:ptr[s+1]-1):
 # chunk c is cstart[c]:cstart[c+1]-1, and segment s has chunks kptr[s]:kptr[s+1]-1.
@@ -71,6 +75,16 @@ struct _ColSySpmv end                       # y[j] += V * x[i], off-diagonal ent
         partial[I] = s
     end
 end
+@kernel function seg_direct!(y, @Const(op), @Const(coord), @Const(V), @Const(x), @Const(cstart))
+    I = @index(Global)
+    @inbounds begin
+        s = zero(eltype(y))
+        for l in cstart[I]:(cstart[I + 1] - 1)
+            s += _segterm(op, coord[l], V, x)
+        end
+        y[_segkey(op, coord[cstart[I]])] += s
+    end
+end
 @kernel function seg_finish!(y, @Const(op), @Const(partial), @Const(coord), @Const(cstart), @Const(kptr))
     I = @index(Global)
     @inbounds begin
@@ -86,6 +100,10 @@ end
 function _seg_reduce!(backend, y, op, plan::SegPlan, coord, V, x)
     n = _nseg(plan)
     n == 0 && return y
+    if length(plan.partial) == n        # no segment spans two chunks: one launch is enough
+        seg_direct!(backend)(y, op, coord, V, x, plan.cstart; ndrange = n)
+        return y
+    end
     seg_partial!(backend)(plan.partial, op, coord, V, x, plan.cstart; ndrange = length(plan.partial))
     seg_finish!(backend)(y, op, plan.partial, coord, plan.cstart, plan.kptr; ndrange = n)
     return y
@@ -120,11 +138,11 @@ end
 # target row (its data stays where it is, so Jacobian and Hessian coordinates keep their
 # order) and a chunk table whose chunks never cross a row: one work item evaluates the
 # terms of a chunk and writes their sum, and the chunk sums of all blocks are added per
-# row.
+# row. The chunks of a row interleave, so neighboring work items read neighboring terms.
 
-struct AugBlockPlan{VI}
+struct AugBlockPlan{VI, VC}
     perm::VI        # the block's terms in row order (stable: a row keeps its terms in order)
-    cstart::VI      # chunk c covers the terms perm[cstart[c]:cstart[c+1]-1]
+    chunks::VC      # chunk c covers the terms perm[start:stride:stop], (start, stride, stop) = chunks[c]
     poff::Int       # offset of this block's chunks in the partial buffer
 end
 struct AugPlan{B, VI, VT}
@@ -158,27 +176,32 @@ function _block_plan(con::ExaModels.ConstraintAugmentation, backend, rows_host, 
     r = rows_host[(con.oa + 1):(con.oa + n)]
     perm = sortperm(r)
     r = r[perm]
-    cstart = Int[]
+    size = clamp(cld(n, AUGITEMS), 1, SEGCHUNK)
+    chunks = NTuple{3, Int}[]
+    poff = length(chunk_rows)
     i = 1
     while i <= n
         j = i
-        while j < n && r[j + 1] == r[i] && j - i + 1 < SEGCHUNK
+        while j < n && r[j + 1] == r[i]
             j += 1
         end
-        push!(cstart, i)
-        push!(chunk_rows, r[i])
+        len = j - i + 1
+        nc = len <= SHORTROW ? len : cld(len, size)
+        for k in 1:nc
+            push!(chunks, (i + k - 1, nc, j))
+            push!(chunk_rows, r[i])
+        end
         i = j + 1
     end
-    poff = length(chunk_rows) - length(cstart)
-    push!(cstart, n + 1)
-    return AugBlockPlan(ExaModels.convert_array(perm, backend), ExaModels.convert_array(cstart, backend), poff)
+    return AugBlockPlan(ExaModels.convert_array(perm, backend), ExaModels.convert_array(chunks, backend), poff)
 end
 
-@kernel function aug_chunk_sum!(partial, @Const(f), @Const(itr), @Const(perm), @Const(cstart), @Const(x), @Const(θ), @Const(poff))
+@kernel function aug_chunk_sum!(partial, @Const(f), @Const(itr), @Const(perm), @Const(chunks), @Const(x), @Const(θ), @Const(poff))
     I = @index(Global)
     @inbounds begin
         s = zero(eltype(partial))
-        for t in cstart[I]:(cstart[I + 1] - 1)
+        start, stride, stop = chunks[I]
+        for t in start:stride:stop
             s += f(itr[perm[t]], x, θ)
         end
         partial[poff + I] = s
@@ -198,7 +221,7 @@ end
 _aug_chunks!(backend, partial, ::Nothing, con, x, θ) = nothing
 function _aug_chunks!(backend, partial, b::AugBlockPlan, con, x, θ)
     isempty(b.perm) && return nothing
-    aug_chunk_sum!(backend)(partial, con.f, con.itr, b.perm, b.cstart, x, θ, b.poff; ndrange = length(b.cstart) - 1)
+    aug_chunk_sum!(backend)(partial, con.f, con.itr, b.perm, b.chunks, x, θ, b.poff; ndrange = length(b.chunks))
     return nothing
 end
 _aug_cons!(backend, partial, ::Tuple{}, ::Tuple{}, x, θ) = nothing
@@ -243,11 +266,12 @@ end
     @inbounds Jv[ExaModels.offset0(f, itr, I)] =
         _gdot(f(itr[I], ExaModels.AdjointNodeSource(x), θ), v, one(eltype(Jv)))
 end
-@kernel function aug_chunk_jv!(partial, @Const(f), @Const(itr), @Const(perm), @Const(cstart), @Const(x), @Const(θ), @Const(v), @Const(poff))
+@kernel function aug_chunk_jv!(partial, @Const(f), @Const(itr), @Const(perm), @Const(chunks), @Const(x), @Const(θ), @Const(v), @Const(poff))
     I = @index(Global)
     @inbounds begin
         s = zero(eltype(partial))
-        for t in cstart[I]:(cstart[I + 1] - 1)
+        start, stride, stop = chunks[I]
+        for t in start:stride:stop
             s += _gdot(f(itr[perm[t]], ExaModels.AdjointNodeSource(x), θ), v, one(eltype(partial)))
         end
         partial[poff + I] = s
@@ -276,7 +300,7 @@ end
 _aug_jv_chunks!(backend, partial, ::Nothing, con, x, θ, v) = nothing
 function _aug_jv_chunks!(backend, partial, b::AugBlockPlan, con, x, θ, v)
     isempty(b.perm) && return nothing
-    aug_chunk_jv!(backend)(partial, con.f, con.itr, b.perm, b.cstart, x, θ, v, b.poff; ndrange = length(b.cstart) - 1)
+    aug_chunk_jv!(backend)(partial, con.f, con.itr, b.perm, b.chunks, x, θ, v, b.poff; ndrange = length(b.chunks))
     return nothing
 end
 _aug_jv!(backend, partial, ::Tuple{}, ::Tuple{}, x, θ, v) = nothing
@@ -304,26 +328,28 @@ end
 
 # ---- Fused objective ---------------------------------------------------------------
 #
-# The objective is the sum of all its terms. Each work item evaluates up to
-# `SEGCHUNK` consecutive terms of a block and writes their sum, and the chunk sums are
-# then added on the device, so no buffer with one entry per term is written.
+# The objective is the sum of all its terms. Each work item evaluates every
+# `nitems`-th term of a block and writes their sum, and these sums are then added on
+# the device. A block of at most `OBJITEMS` terms has one work item per term; a longer
+# one writes a buffer shorter than its term count.
 
 struct ObjPlan{O, VT}
     poff::O         # per block: offset of its chunks in `partial`
     partial::VT
 end
+_obj_items(n) = cld(n, clamp(cld(n, OBJITEMS), 1, SEGCHUNK))
 function _obj_plan(x0, objs)
     n = 0
-    off(o) = (k = n; n += cld(length(o.itr), SEGCHUNK); k)
+    off(o) = (k = n; n += _obj_items(length(o.itr)); k)
     poff = objs isa _LongTuple ? Int[off(o) for o in Any[objs...]] : map(off, objs)
     return ObjPlan(poff, similar(x0, n))
 end
 
-@kernel function obj_chunk_sum!(partial, @Const(f), @Const(itr), @Const(x), @Const(θ), @Const(n), @Const(poff))
+@kernel function obj_chunk_sum!(partial, @Const(f), @Const(itr), @Const(x), @Const(θ), @Const(n), @Const(nitems), @Const(poff))
     I = @index(Global)
     @inbounds begin
         s = zero(eltype(partial))
-        for t in ((I - 1) * SEGCHUNK + 1):min(I * SEGCHUNK, n)
+        for t in I:nitems:n
             s += f(itr[t], x, θ)
         end
         partial[poff + I] = s
@@ -332,7 +358,8 @@ end
 function _obj_block!(backend, partial, poff, o, x, θ)
     n = length(o.itr)
     n == 0 && return nothing
-    obj_chunk_sum!(backend)(partial, o.f, o.itr, x, θ, n, poff; ndrange = cld(n, SEGCHUNK))
+    nitems = _obj_items(n)
+    obj_chunk_sum!(backend)(partial, o.f, o.itr, x, θ, n, nitems, poff; ndrange = nitems)
     return nothing
 end
 _obj_fused!(backend, partial, ::Tuple{}, ::Tuple{}, x, θ) = nothing
