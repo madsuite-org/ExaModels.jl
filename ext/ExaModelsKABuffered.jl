@@ -351,7 +351,7 @@ struct SubexprKA{T, VT <: AbstractVector{T}, VI}
     hess_vals::VT                          # composed Hessian values (hprod scratch)
     hprod::SegProd{VI, VT}                     # Hv += hess_vals·v over the symmetric COO
     # per stage (aligned with the stage tuple): the chunk plan of a sum stage's slots
-    sumplans::Vector{Union{Nothing, SegPlan{VI, VT}}}
+    sumplans::Vector{SegPlan{VI, VT}}
 end
 
 function ExaModels.build_subexpr_ka(
@@ -524,11 +524,11 @@ function ExaModels.build_subexpr_ka(
         _seg_copy(x0, shess.hess_copy_dst, shess.hess_copy_src),
         similar(x0, length(shess.rows)),
         _seg_prod(x0, hp_dst, hp_a, hp_b),
-        Union{Nothing, SegPlan{VI, VT}}[_sum_plan(x0, s) for s in reverse(ordered)],
+        SegPlan{VI, VT}[_sum_plan(x0, s) for s in reverse(ordered)],
     )
 end
 
-_sum_plan(x0, s) = nothing
+_sum_plan(x0, s) = _dev_plan(x0, [1])
 function _sum_plan(x0, s::ExaModels.SubexprSumStage)
     return _dev_plan(x0, collect(s.ptr))
 end

@@ -116,8 +116,8 @@ function _sum_core(backend)
 end
 _sum_model() = ExaModel(_sum_core(nothing))
 
-# Wide sums: slots fed by more than `SEGCHUNK` (256) sources each, so a slot adds
-# several chunk sums on device backends (and its gradient scatters as many entries).
+# Wide sums: slots fed by more than `SHORTROW` (128) sources each, so a slot adds
+# several workgroup sums on device backends (and its gradient scatters as many entries).
 function _wide_sum_core(backend)
     c = backend === nothing ? ExaCore(concrete = Val(true)) :
         ExaCore(concrete = Val(true), backend = backend)

@@ -134,7 +134,9 @@ _seg_reduce_index!(backend, y, plan::SegPlan, coord, V) = _seg_reduce!(backend, 
 # order). A short row's terms are evaluated one per work item, and a long row is cut
 # into ranges that one workgroup evaluates and sums with `@groupreduce`, so the number
 # of work items follows the number of terms and the backend does the rest. The partial
-# sums of all blocks are then added per row.
+# sums of all blocks are then added per row. A constraint block whose pairs do not map
+# one to one onto its rows (`add_con(c, 1 => ... for i in 1:4)`) sums its rows the same
+# way, after those rows are cleared.
 
 struct AugBlockPlan{VI, VC}
     perm::VI        # the block's terms in row order (stable: a row keeps its terms in order)
@@ -148,12 +150,13 @@ struct AugPlan{B, VI, VT}
     perm::VI        # partial indices sorted by row
     ptr::VI         # the partials of the r-th augmented row are perm[ptr[r]:ptr[r+1]-1]
     rows::VI        # the augmented rows
+    reset::VI       # the rows of constraint blocks that are summed here
 end
 
 # `rows_host[oa + I]` is the target row of term I of the augmentation block at `oa`.
 function _aug_plan(backend, x0, cons, rows_host::Vector{Int})
-    chunk_rows = Int[]
-    plan_of(con) = _block_plan(con, backend, rows_host, chunk_rows)
+    chunk_rows, reset = Int[], Int[]
+    plan_of(con) = _block_plan(con, backend, x0, rows_host, chunk_rows, reset)
     blocks = cons isa _LongTuple ? Any[plan_of(con) for con in Any[cons...]] : map(plan_of, cons)
     perm = sortperm(chunk_rows)
     sorted_rows = chunk_rows[perm]
@@ -165,12 +168,31 @@ function _aug_plan(backend, x0, cons, rows_host::Vector{Int})
         ExaModels.convert_array(perm, backend),
         ExaModels.convert_array(ptr, backend),
         ExaModels.convert_array(rows, backend),
+        ExaModels.convert_array(reset, backend),
     )
 end
-_block_plan(con, backend, rows_host, chunk_rows) = nothing
-function _block_plan(con::ExaModels.ConstraintAugmentation, backend, rows_host, chunk_rows)
+_block_plan(con, backend, x0, rows_host, chunk_rows, reset) = nothing
+_block_plan(con::ExaModels.ConstraintAugmentation, backend, x0, rows_host, chunk_rows, reset) =
+    _row_plan(rows_host[(con.oa + 1):(con.oa + length(con.itr))], backend, chunk_rows)
+@kernel function ker_conrows!(r, @Const(f), @Const(itr))
+    I = @index(Global)
+    @inbounds r[I] = ExaModels.offset0(f, itr, I)
+end
+function _block_plan(
+        con::ExaModels.Constraint{F}, backend, x0, rows_host, chunk_rows, reset,
+    ) where {P <: Pair, F <: ExaModels.SIMDFunction{P}}
     n = length(con.itr)
-    r = rows_host[(con.oa + 1):(con.oa + n)]
+    r = similar(x0, Int, n)
+    n > 0 && ker_conrows!(backend)(r, con.f, con.itr; ndrange = n)
+    r = Array(r)
+    span = (con.offset + 1):(con.offset + ExaModels.total(con.size))
+    sort(r) == span && return _row_plan(Int[], backend, chunk_rows)
+    append!(reset, span)
+    return _row_plan(r, backend, chunk_rows)
+end
+# `r[t]` is the row of term t.
+function _row_plan(r, backend, chunk_rows)
+    n = length(r)
     sorted = sortperm(r)
     poff = length(chunk_rows)
     short, long = Int[], Int[]
@@ -217,6 +239,10 @@ end
         @inbounds partial[poff + g] = res
     end
 end
+@kernel function aug_reset!(y, @Const(rows))
+    I = @index(Global)
+    @inbounds y[rows[I]] = zero(eltype(y))
+end
 @kernel function aug_finish!(y, @Const(partial), @Const(perm), @Const(ptr), @Const(rows))
     I = @index(Global)
     @inbounds begin
@@ -250,6 +276,7 @@ end
 
 # y[row] += the sum of the augmentation terms of each row
 function _conaugs_fused!(backend, y, plan::AugPlan, cons, x, θ)
+    isempty(plan.reset) || aug_reset!(backend)(y, plan.reset; ndrange = length(plan.reset))
     isempty(plan.rows) && return y
     _aug_cons!(backend, plan.partial, plan.blocks, cons, x, θ)
     aug_finish!(backend)(y, plan.partial, plan.perm, plan.ptr, plan.rows; ndrange = length(plan.rows))
@@ -337,6 +364,7 @@ end
 # Jv = J(x) * v for the SIMD constraints (rows of oracles are not touched)
 function _jprod_fused!(backend, Jv, plan::AugPlan, cons, x, θ, v)
     _jv_rows!(backend, Jv, cons, x, θ, v)
+    isempty(plan.reset) || aug_reset!(backend)(Jv, plan.reset; ndrange = length(plan.reset))
     if !isempty(plan.rows)
         _aug_jv!(backend, plan.partial, plan.blocks, cons, x, θ, v)
         aug_finish!(backend)(Jv, plan.partial, plan.perm, plan.ptr, plan.rows; ndrange = length(plan.rows))

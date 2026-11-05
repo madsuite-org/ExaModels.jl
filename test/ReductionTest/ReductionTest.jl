@@ -36,6 +36,17 @@ function long_row(backend)
     return ExaModel(c; prod = true)
 end
 
+# a block whose pairs share rows and leave others without a term
+function shared_rows(backend)
+    T = ExaModels.default_T(backend)
+    c = ExaCore(T; backend, concrete = Val(true))
+    c, x = add_var(c, 50; start = T[0.1 * i for i in 1:50])
+    c, g = add_con(c, p[1] => sin(x[p[2]]) * x[p[2] + 1] for p in [(1 + i % 3, 1 + i % 40) for i in 1:400])
+    c, h = add_con(c, x[i]^2 for i in 1:2)
+    c, _ = add_con!(c, h, 2 => x[i] for i in 1:5)
+    return ExaModel(c; prod = true)
+end
+
 rel(a, b) = maximum(abs.(a .- b) ./ (1 .+ abs.(b)); init = 0.0)
 
 # Jacobian and Hessian as sparse matrices
@@ -97,6 +108,11 @@ function runtests()
         lx, lv = lr.meta.x0, sin.(1:lr.meta.nvar)
         @test rel(Array(cons(lm, dev(lx))), cons(lr, lx)) < tol
         @test rel(Array(jprod(lm, dev(lx), dev(lv))), jprod(lr, lx, lv)) < tol
+        sm, sr = shared_rows(backend), shared_rows(nothing)
+        sw = cos.(1:sr.meta.ncon)
+        @test rel(Array(cons(sm, dev(lx))), cons(sr, lx)) < tol
+        @test rel(Array(jprod(sm, dev(lx), dev(lv))), jprod(sr, lx, lv)) < tol
+        @test rel(Array(jtprod(sm, dev(lx), dev(sw))), jtprod(sr, lx, sw)) < tol
     end
 end
 
