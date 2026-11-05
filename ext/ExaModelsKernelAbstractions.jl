@@ -62,21 +62,14 @@ function ExaModels.build_extension(
             sum(getproperty(o, :nnzh) for o in c.scalar_oracles; init = 0)
         jacbuffer = similar(c.x0, total_nnzj)
         hessbuffer = similar(c.x0, total_nnzh)
-        jacsparsityi = similar(c.x0, Tuple{Tuple{Int, Int}, Int}, simd_nnzj)
+        jacsparsityj = similar(c.x0, Tuple{Tuple{Int, Int}, Int}, simd_nnzj)
         hesssparsityi = similar(c.x0, Tuple{Tuple{Int, Int}, Int}, simd_nnzh)
 
-        _jac_structure!(T, c.backend, c.cons, jacsparsityi, nothing)
+        _jac_structure!(T, c.backend, c.cons, jacsparsityj, nothing)
 
-        jacsparsityj = copy(jacsparsityi)
         _obj_hess_structure!(T, c.backend, c.obj, hesssparsityi, nothing)
         _con_hess_structure!(T, c.backend, c.cons, hesssparsityi, nothing)
         hesssparsityj = copy(hesssparsityi)
-
-        if !isempty(jacsparsityi)
-            ExaModels.sort!(jacsparsityi; lt = ExaModels._row_lt)
-        end
-        jacptri =
-            ExaModels.getptr(c.backend, jacsparsityi; cmp = ExaModels._row_ne)
 
         if !isempty(jacsparsityj)
             ExaModels.sort!(jacsparsityj; lt = ExaModels._col_lt)
@@ -141,15 +134,14 @@ function ExaModels.build_extension(
             )
         end
 
+        # J*v of the SIMD constraints is fused (`_jprod_fused!`), so only the
+        # column-sorted Jacobian is kept, for J'*v
         prodhelper = (
-            jacplani = _seg_plan(c.backend, c.x0, jacptri),
             jacplanj = _seg_plan(c.backend, c.x0, jacptrj),
             hessplani = _seg_plan(c.backend, c.x0, hessptri),
             hessplanj = _seg_plan(c.backend, c.x0, hessptrj),
             jacbuffer = jacbuffer,
-            jacsparsityi = jacsparsityi,
             jacsparsityj = jacsparsityj,
-            jacptri = jacptri,
             jacptrj = jacptrj,
             hessbuffer = hessbuffer,
             hesssparsityi = hesssparsityi,
