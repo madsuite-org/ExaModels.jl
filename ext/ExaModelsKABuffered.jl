@@ -614,7 +614,7 @@ function _sync_ka_stage!(backend, s::ExaModels.SubexprStage, off, plan, x, θ)
 end
 function _sync_ka_stage!(backend, s::ExaModels.SubexprSumStage, off, plan::SegPlan, x, θ)
     if s.n > 0
-        ksum_chunks(backend)(plan.partial, plan.cstart, s.src, s.w, x, θ; ndrange = length(plan.partial))
+        isempty(plan.partial) || ksum_chunks(backend)(plan.partial, plan.cstart, s.src, s.w, x, θ; ndrange = length(plan.partial))
         ksum_finish(backend)(θ, s.init, plan.kptr, plan.partial, off; ndrange = s.n)
     end
     return nothing
