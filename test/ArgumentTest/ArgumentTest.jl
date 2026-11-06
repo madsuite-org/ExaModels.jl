@@ -24,6 +24,40 @@ mutable struct _Mutable
 end
 Base.:(==)(x::_Mutable, y::_Mutable) = x.a == y.a
 
+# A stand-in for a device backend that runs on any machine. Like a GPU launch, its
+# `map!` refuses a function or an iterator holding a host `Array`. KernelAbstractions'
+# `CPU()` backend cannot play this part: a host array is what its kernels expect.
+struct _DeviceDouble end
+struct _DeviceArray{T, N} <: AbstractArray{T, N}
+    data::Array{T, N}
+end
+const _DeviceVector{T} = _DeviceArray{T, 1}
+ExaModels.Adapt.adapt_storage(::_DeviceDouble, a::Array) = _DeviceArray(a)
+Base.size(a::_DeviceArray) = size(a.data)
+Base.getindex(a::_DeviceArray, i::Int...) = a.data[i...]
+Base.setindex!(a::_DeviceArray, v, i::Int...) = (a.data[i...] = v; a)
+Base.resize!(a::_DeviceVector, n::Integer) = (resize!(a.data, n); a)
+Base.similar(a::_DeviceArray, ::Type{T}, dims::Dims) where {T} = _DeviceArray(similar(a.data, T, dims))
+
+_refuse_host(::Array) = throw(ArgumentError("a host Array reached a device kernel"))
+_refuse_host(::_DeviceArray) = nothing
+function _refuse_host(x)
+    for i in 1:fieldcount(typeof(x))
+        isdefined(x, i) && _refuse_host(getfield(x, i))
+    end
+    return nothing
+end
+function Base.map!(f::F, dest::SubArray{T, 1, <:_DeviceVector}, src::AbstractArray) where {F, T}
+    _refuse_host(f)
+    _refuse_host(src)
+    for (i, v) in zip(eachindex(dest), src)
+        dest[i] = f(v)
+    end
+    return dest
+end
+
+_ids(N) = collect(1:N)
+
 function runtests()
     return @testset "Argument tests" begin
 
@@ -304,6 +338,64 @@ function runtests()
                     x0 = ExaModels.convert_array(collect(1.0:10.0), backend)
                     @test Array(NLPModels.cons(m, x0)) ≈ [i * (i + 1) - 1 for i = 1:2:9]
                     @test NLPModels.obj(m, x0) ≈ sum(i^2 for i = 1:2:9)
+                end
+            end
+        end
+
+        @testset "data a generator or block holds reaches the device" begin
+            p = collect(1.0:4.0)
+            host(v) = Array(v)
+            for backend in (_DeviceDouble(), filter(!isnothing, Main.BACKENDS)...)
+                @testset "$backend" begin
+                    @testset "array captured by a generator's function" begin
+                        c = ExaModels.ExaCore(; backend = backend)
+                        ExaModels.@add_var(
+                            c, x, 4; start = (p[i] for i in 1:4),
+                            lvar = (-p[i] for i in collect(1:4)), uvar = (2 * p[i] for i in 1:4),
+                        )
+                        ExaModels.@add_con(
+                            c, x[i]^2 for i in 1:4;
+                            start = (p[i] for i in 1:4), lcon = (-p[i] for i in 1:4), ucon = (p[i] for i in 1:4),
+                        )
+                        c, θ = ExaModels.add_par(c, 4; value = (p[i] for i in 1:4))
+                        ExaModels.@add_obj(c, θ[i] * x[i]^2 for i in 1:4)
+                        m = ExaModels.ExaModel(c)
+                        @test host(m.meta.x0) ≈ p
+                        @test host(m.meta.lvar) ≈ -p
+                        @test host(m.meta.uvar) ≈ 2 .* p
+                        @test host(m.meta.y0) ≈ p
+                        @test host(m.meta.lcon) ≈ -p
+                        @test host(m.meta.ucon) ≈ p
+                        @test host(m.θ) ≈ p
+                    end
+
+                    @testset "captured array in a recipe's start" begin
+                        c, N = ExaModels.ExaCore(; backend = backend, nargs = Val(1))
+                        ExaModels.@add_var(c, x, N; start = Base.Generator(i -> p[i], ArgNode1(_ids, N)))
+                        ExaModels.@add_obj(c, x[i]^2 for i in ArgNode1(_ids, N))
+                        @test host(ExaModels.ExaModel(c, 4).meta.x0) ≈ p
+                    end
+
+                    @testset "captured device array stays on the device" begin
+                        d = ExaModels.convert_array(p, backend)
+                        c = ExaModels.ExaCore(; backend = backend)
+                        ExaModels.@add_var(c, x, 4; start = (d[i] for i in 1:4))
+                        ExaModels.@add_obj(c, x[i]^2 for i in 1:4)
+                        @test host(ExaModels.ExaModel(c).meta.x0) ≈ p
+                    end
+
+                    @testset "low-level block over a non-array iterator" begin
+                        c = ExaModels.ExaCore(; backend = backend)
+                        c, x = ExaModels.add_var(c, 4; start = 2.0)
+                        s = ExaModels.DataSource()
+                        c, o = ExaModels.add_obj(c, x[s]^2, (i for i in 1:4))
+                        c, g = ExaModels.add_con(c, x[s]^2, (i for i in 1:3))
+                        m = ExaModels.ExaModel(c)
+                        array = typeof(ExaModels.convert_array(collect(1:4), backend))
+                        @test m.objs[1].itr isa array
+                        @test m.cons[1].itr isa array
+                        @test NLPModels.obj(m, m.meta.x0) ≈ 16
+                    end
                 end
             end
         end
