@@ -22,6 +22,7 @@ solver_tolerance(::Type{Float32}) = 1.0e-4
 include("ArgumentTest/ArgumentTest.jl")
 include("NLPTest/NLPTest.jl")
 include("ADTest/ADTest.jl")
+include("DomainTest/DomainTest.jl")
 include("JuMPTest/JuMPTest.jl")
 include("UtilsTest/UtilsTest.jl")
 include("JuliaCTest/JuliaCTest.jl")
@@ -47,6 +48,7 @@ include("ReductionTest/ReductionTest.jl")
     end
 
     @info "Running NLP Test"
+    DomainTest.runtests()
     NLPTest.runtests()
 
     @info "Running JuMP Test"
