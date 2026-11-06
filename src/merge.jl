@@ -753,10 +753,12 @@ function _materialize_mergeditr(backend, s::SegmentedItr{K, S, T, D}) where {K, 
     segs = s.segs
     cv = v -> convert_array(v, backend)
     # a 2-D generator's iterator is a Matrix; its elements are appended in the
-    # same (column-major) order the host's linear getindex uses
+    # same (column-major) order the host's linear getindex uses. A segment's
+    # iterator may already be on the device, where `append!` would iterate a
+    # Matrix element by element, so each one comes to the host in bulk first.
     d = D[]
     for seg in segs
-        Base.append!(d, seg.itr)   # ExaModels has its own `append!`
+        Base.append!(d, _host_array(seg.itr))   # ExaModels has its own `append!`
     end
     dd = cv(d)   # may rewrite Float64 inside D (Metal): the layout takes its D from the device array
     fv = cv(T[x for seg in segs for x in seg.fv])
