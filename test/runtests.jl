@@ -34,6 +34,7 @@ include("LongTupleTest/LongTupleTest.jl")
 # include("OptimalControlTest/OptimalControlTest.jl")
 include("OracleTest/OracleTest.jl")
 include("SubexprTest/SubexprTest.jl")
+include("PrecompileTest/PrecompileTest.jl")
 
 @testset verbose = true "ExaModels test" begin
     @info "Running Argument Test"
@@ -84,6 +85,9 @@ include("SubexprTest/SubexprTest.jl")
     SubexprTest.runtests(
         backends = unique(Any[SubexprTest.CPU(); [b for b in BACKENDS if b !== nothing]]),
     )
+
+    @info "Running Precompile Test"
+    PrecompileTest.runtests()
 end
 
 # Force full GC before Julia exits so that OpenCL/PoCL objects are finalized

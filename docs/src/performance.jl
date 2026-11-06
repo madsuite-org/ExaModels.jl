@@ -203,3 +203,18 @@ try
 catch e
     showerror(stdout, e)
 end
+
+# ## Store a model's code in a package image
+
+# A model's type depends on its expressions, not on its data, so a package that defines models can store their code once, in its package image. With [`precompile_callbacks`](@ref) in a workload, a model of the same formulation builds and evaluates in a new session without compiling:
+
+# ```julia
+# PrecompileTools.@compile_workload begin
+#     m = Base.invokelatest(my_model, 10; backend = nothing)
+#     precompile_callbacks(m)
+# end
+# ```
+
+# Calling the builder through `Base.invokelatest` compiles its keyword entry point as a standalone method, as a call from the top level needs. Code that does not depend on the model is already in the image of ExaModels, so the package stores only what is its own. On CUDA and AMDGPU, ExaModels stores that code when a device works during precompilation; for another backend, a package can call [`precompile_backend`](@ref) in its workload.
+
+# Two limits remain. Methods that the system image or an image loaded earlier holds without native code, such as `copy` on a `Vector{Float64}`, compile on their first dynamic call whatever a package stores. And the kernels of the KernelAbstractions `CPU()` backend are generated again in each session, because they do not persist across sessions.

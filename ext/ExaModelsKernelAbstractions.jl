@@ -4,6 +4,7 @@ import Adapt
 import ExaModels: ExaModels, NLPModels
 import ExaModels: _LongTuple
 import KernelAbstractions: KernelAbstractions, @kernel, @index, @Const, synchronize, CPU
+import PrecompileTools
 
 function getitr(gen::UnitRange{Int64})
     return gen
@@ -1605,5 +1606,12 @@ end
 
 include("ExaModelsKABuffered.jl")
 
+# Host code only: the kernels of `CPU()` do not persist across sessions. `precompiled_launch`
+# is false where this backend cannot run in a package workload.
+PrecompileTools.@compile_workload begin
+    if KernelAbstractions.precompiled_launch[]
+        Base.invokelatest(ExaModels._precompile_workload, CPU())
+    end
+end
 
 end # module ExaModelsKernelAbstractions
