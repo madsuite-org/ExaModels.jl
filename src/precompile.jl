@@ -56,6 +56,35 @@ function precompile_callbacks(m::AbstractExaModel; prod = false)
     return nothing
 end
 
+# Compiles what `precompile_callbacks` evaluates, without evaluating it. A device kernel
+# compiles only at launch, so a device model is evaluated instead.
+function _compile_callbacks(m, prod)
+    x = NLPModels.get_x0(m)
+    x isa Array || return precompile_callbacks(m; prod)
+    M, V, I = typeof(m), typeof(x), Vector{Int}
+    W = SubArray{eltype(x), 1, V, Tuple{UnitRange{Int}}, true}
+    K = NamedTuple{(:obj_weight,), Tuple{eltype(x)}}
+    precompile(jac_structure!, (M, I, I))
+    precompile(hess_structure!, (M, I, I))
+    precompile(obj, (M, V))
+    precompile(grad!, (M, V, V))
+    precompile(cons!, (M, V, V))
+    precompile(jac_coord!, (M, V, V))
+    precompile(jac_coord!, (M, V, W))
+    precompile(hess_coord!, (M, V, V))
+    precompile(hess_coord!, (M, V, V, V))
+    precompile(Core.kwcall, (K, typeof(hess_coord!), M, V, V))
+    precompile(Core.kwcall, (K, typeof(hess_coord!), M, V, V, V))
+    precompile(Core.kwcall, (K, typeof(hess_coord!), M, V, V, W))
+    if prod
+        precompile(jprod!, (M, V, V, V))
+        precompile(jtprod!, (M, V, V, V))
+        precompile(hprod!, (M, V, V, V))
+        precompile(hprod!, (M, V, V, V, V))
+    end
+    return nothing
+end
+
 const _META_GETTERS = (
     NLPModels.get_nvar,
     NLPModels.get_ncon,

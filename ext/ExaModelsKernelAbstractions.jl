@@ -1608,9 +1608,23 @@ include("ExaModelsKABuffered.jl")
 
 # Host code only: the kernels of `CPU()` do not persist across sessions. `precompiled_launch`
 # is false where this backend cannot run in a package workload.
-PrecompileTools.@compile_workload begin
-    if KernelAbstractions.precompiled_launch[]
-        Base.invokelatest(ExaModels._precompile_workload, CPU())
+# The guards match KernelAbstractions' own launch: pocl's cache stays out of the user's
+# cache directory, no thread per core starts, and no OpenCL handle is serialized.
+if KernelAbstractions.precompiled_launch[]
+    try
+        mktempdir() do cache_dir
+            env = (
+                "POCL_CACHE_DIR" => cache_dir,
+                "POCL_CPU_MAX_CU_COUNT" => "1", "POCL_MAX_PTHREAD_COUNT" => "1",
+            )
+            withenv(env...) do
+                PrecompileTools.@compile_workload begin
+                    Base.invokelatest(ExaModels._precompile_workload, CPU())
+                end
+            end
+        end
+    finally
+        KernelAbstractions.POCL.reset_session_state!()
     end
 end
 

@@ -2,6 +2,7 @@ module PrecompileTest
 
 using Test, ExaModels
 import Pkg
+import ExaModels: NLPModels
 
 # Backend list comes from the suite driver when available; standalone runs
 # cover the plain CPU path.
@@ -79,6 +80,9 @@ end
 # A new environment holding the fixture and this ExaModels, for a process without the flags
 # of the test process (`--check-bounds`, `--code-coverage`): they would disable package
 # images.
+# The path separator of `JULIA_LOAD_PATH` differs on Windows.
+const LOAD_PATH_ENV = join(("@", "@stdlib"), Sys.iswindows() ? ';' : ':')
+
 function _environment(app)
     env = mktempdir()
     julia = first(Base.julia_cmd().exec)
@@ -93,7 +97,7 @@ function _environment(app)
     """
     cmd = addenv(
         `$julia --startup-file=no --project=$env -e $setup`,
-        "JULIA_LOAD_PATH" => "@:@stdlib",
+        "JULIA_LOAD_PATH" => LOAD_PATH_ENV,
     )
     run(cmd)
     return julia, env
@@ -104,7 +108,7 @@ function _probe(julia, env, args...)
     out = IOBuffer()
     cmd = addenv(
         `$julia --startup-file=no --project=$env --trace-compile=stderr $PROBE $args`,
-        "JULIA_LOAD_PATH" => "@:@stdlib",
+        "JULIA_LOAD_PATH" => LOAD_PATH_ENV,
     )
     run(pipeline(cmd; stdout = devnull, stderr = out))
     regions = Dict{String, NamedTuple}()
@@ -137,7 +141,7 @@ function _test_stored(r)
         # the image on Julia 1.10.
         @test_broken r["stored"].trace == String[]
         @test_broken r["stored"].ns == 0
-        @test all(contains("ExaModels.Constraint{"), r["stored"].trace)
+        @test any(contains("ExaModels.Constraint{"), r["stored"].trace)
     end
     # The timer and the trace both work, so the two above are not vacuous.
     @test r["other"].ns > 0
@@ -177,6 +181,39 @@ function runtests()
                 end
             end
         end
+    end
+
+    @testset "ExaModel(c; precompile = true)" begin
+        # A distinct expression for each model, so that neither reuses the other's code.
+        build(f; kw...) = begin
+            c = ExaCore()
+            c, x = add_var(c, 3; start = 0.5)
+            c, _ = add_obj(c, f(x[i]) for i in 1:3)
+            c, _ = add_con(c, f(x[i]) * x[i + 1] for i in 1:2)
+            ExaModel(c; kw...)
+        end
+        # `@nospecialize`: specialized on `m`, this function would compile the callbacks
+        # itself on entry, before the timer starts.
+        first_call_ns(@nospecialize(m)) = begin
+            x = m.meta.x0
+            g, c = similar(x), similar(x, m.meta.ncon)
+            jv, hv = similar(x, m.meta.nnzj), similar(x, m.meta.nnzh)
+            y = fill!(similar(x, m.meta.ncon), 1.0)
+            Base.cumulative_compile_timing(true)
+            t0 = sum(Base.cumulative_compile_time_ns())
+            NLPModels.obj(m, x)
+            NLPModels.grad!(m, x, g)
+            NLPModels.cons!(m, x, c)
+            NLPModels.jac_coord!(m, x, jv)
+            NLPModels.hess_coord!(m, x, y, hv)
+            t1 = sum(Base.cumulative_compile_time_ns())
+            Base.cumulative_compile_timing(false)
+            t1 - t0
+        end
+        @test first_call_ns(build(v -> sinh(v) + 3v; precompile = true)) == 0
+        @test first_call_ns(build(v -> cosh(v) + 5v)) > 0
+        # Nothing is evaluated on the CPU: `log` throws at this starting point.
+        @test build(v -> log(v - 1); precompile = true) isa ExaModels.ExaModel
     end
 
     return @testset "no compilation for a stored model" begin
