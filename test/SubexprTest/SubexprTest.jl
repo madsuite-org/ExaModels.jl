@@ -116,6 +116,23 @@ function _sum_core(backend)
 end
 _sum_model() = ExaModel(_sum_core(nothing))
 
+# Wide sums: slots fed by more than `SHORTROW` (128) sources each, so a slot adds
+# several workgroup sums on device backends (and its gradient scatters as many entries).
+function _wide_sum_core(backend)
+    c = backend === nothing ? ExaCore(concrete = Val(true)) :
+        ExaCore(concrete = Val(true), backend = backend)
+    c, x = add_var(c, 40)
+    idx = [(1 + t % 40, 1 + (3t) % 40, 1 + (7t) % 40) for t in 1:800]
+    c, s = add_expr(c, (x[p[1]] * x[p[2]] + x[p[3]]^2 for p in idx); buffered = true)
+    c, v = add_expr(c, (0.5 * j for j in 1:3); buffered = true)
+    c, v = add_expr!(c, v, (1 => 0.01 * s[t] for t in 1:600))
+    c, v = add_expr!(c, v, (2 => -0.02 * s[t] for t in 301:800))
+    c, v = add_expr!(c, v, (3 => s[t] for t in 1:5))
+    c, _ = add_obj(c, (v[j]^2 + sin(v[j]) for j in 1:3))
+    c, _ = add_con(c, (v[j] * x[j] for j in 1:3))
+    return c
+end
+
 # Chained sums interleaved with traced stages, in both directions
 # (sum over stage slots, stage over sum slots, sum over sum +
 # stage + variable); ragged, so it has no inlined reference.
@@ -924,6 +941,12 @@ function runtests(; backends = Any[CPU()])
             _device_vs_host(
                 ExaModel(_sum_chain_core(nothing)), ExaModel(_sum_chain_core(backend)),
                 [0.2 + 0.07i for i in 1:6], [1.3, -0.8],
+            )
+        end
+        @testset "add_expr! (device wide sums: $backend)" begin
+            _device_vs_host(
+                ExaModel(_wide_sum_core(nothing)), ExaModel(_wide_sum_core(backend)),
+                [0.2 + 0.01i for i in 1:40], [1.0, -0.5, 2.0],
             )
         end
         @testset "add_expr! (device in place: $backend)" begin

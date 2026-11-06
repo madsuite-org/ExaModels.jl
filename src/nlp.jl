@@ -1268,7 +1268,7 @@ function append!(backend, a, b::Base.Generator, lb)
         b = _adapt_gen(b)
         la = length(a)
         resize!(a, la + lb)
-        map!(b.f, view(a, (la + 1):(la + lb)), convert_array(b.iter, backend))
+        map!(convert_function(b.f, backend), view(a, (la + 1):(la + lb)), convert_array(b.iter, backend))
     end
     return a
 end
@@ -1277,7 +1277,7 @@ function append!(backend, a, b::Base.Generator{UnitRange{I}}, lb) where {I}
     if lb != 0
         la = length(a)
         resize!(a, la + lb)
-        map!(b.f, view(a, (la + 1):(la + lb)), b.iter)
+        map!(convert_function(b.f, backend), view(a, (la + 1):(la + lb)), b.iter)
     end
     return a
 end
@@ -1752,7 +1752,7 @@ is intended for code that builds expression trees programmatically.
 function add_obj(c::C, expr::N, pars = 1:1; name = nothing) where {T, C <: ExaCore{T}, N <: AbstractNode}
     f = _block_simdfunction(c.obj, T, expr, c.nobj, c.nnzg, c.nnzh)
 
-    return _add_obj_route(c.obj, c, f, pars, name)
+    return _add_obj_route(c.obj, c, f, _adapt_iter(pars), name)
 end
 
 # as for constraints (see `_add_con_route`): specialized in concrete storage,
@@ -3071,26 +3071,25 @@ function multipliers(result::SolverCore.AbstractExecutionStats, y::Constraint)
     return reshape(view(result.multipliers, (o + 1):(o + len)), s...)
 end
 
-_adapt_gen(gen) = Base.Generator(gen.f, collect(gen.iter))
+# A block's iterator must be an array or a range: `convert_array` moves an array to
+# the backend, and kernels index it. Anything else is collected first.
+_adapt_iter(itr) = collect(itr)
+_adapt_iter(itr::Union{AbstractArray, AbstractRange}) = itr
 # A placeholder iterable resolves at instantiation, so what to do with it can
-# only be decided then. The unconditional deferred `collect` was wrong on the
-# GPU: `collect(::CuArray)` is a host Vector, so a converted argument was
-# silently pulled back to the CPU and the kernel met a non-bitstype — invisible
-# on the CPU, where `collect` of a Vector is just a copy.
+# only be decided then. It must not `collect` an array unconditionally:
+# `collect(::CuArray)` is a host Vector, which would pull a device argument back
+# to the CPU.
 _maybe_collect(x) = collect(x)
 _maybe_collect(x::Union{AbstractArray, AbstractRange}) = x
-@inline _adapt_gen(gen::Base.Generator{I}) where {I <: AbstractArgNode} =
-    Base.Generator(gen.f, ArgCall(_maybe_collect, (gen.iter,)))
+@inline _adapt_iter(itr::AbstractArgNode) = ArgCall(_maybe_collect, (itr,))
 # `for i in 1:nh, j in 1:nc` over symbolic ranges: `collect` on the product
 # needs `axes`, and `axes` needs concrete lengths, so it cannot run yet.  Defer
 # the collect itself — it happens at instantiation, on real ranges.
-@inline _adapt_gen(gen::Base.Generator{P}) where {P <: Base.Iterators.ProductIterator} =
-    _adapt_prod(_anyarg(gen.iter), gen)
-@inline _adapt_prod(::Val{false}, gen) = Base.Generator(gen.f, collect(gen.iter))
-@inline _adapt_prod(::Val{true}, gen) = Base.Generator(gen.f, ArgCall(collect, (gen.iter,)))
-_adapt_gen(gen::Base.Generator{P}) where {P <: Union{AbstractArray, AbstractRange}} = gen
-_adapt_gen(gen::Tuple{E, I}) where {E <: AbstractNode, I} = (gen[1], collect(gen[2]))
-_adapt_gen(gen::Tuple{E, I}) where {E <: AbstractNode, I <: Union{AbstractArray, AbstractRange}} = gen
+@inline _adapt_iter(itr::Base.Iterators.ProductIterator) = _adapt_prod(_anyarg(itr), itr)
+@inline _adapt_prod(::Val{false}, itr) = collect(itr)
+@inline _adapt_prod(::Val{true}, itr) = ArgCall(collect, (itr,))
+@inline _adapt_gen(gen::Base.Generator) = Base.Generator(gen.f, _adapt_iter(gen.iter))
+@inline _adapt_gen(gen::Tuple{E, I}) where {E <: AbstractNode, I} = (gen[1], _adapt_iter(gen[2]))
 
 """
     get_vars(core_or_model[, name])

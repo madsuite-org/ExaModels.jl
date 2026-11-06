@@ -179,6 +179,15 @@ function _test_backend_matches_host(backend)
         SparseArrays.sparse(rh[4], rh[5], rh[6], ncon, nvar) rtol = loose
     @test SparseArrays.sparse(rb[7], rb[8], rb[9], nvar, nvar) ≈
         SparseArrays.sparse(rh[7], rh[8], rh[9], nvar, nvar) rtol = loose
+    # products of a `prod = true` model walk the long tuples as well
+    pb, ph = ExaModel(_build(backend); prod = true), ExaModel(_build(nothing); prod = true)
+    T = eltype(pb.meta.x0)
+    xh = ph.meta.x0 .+ 0.01
+    vh, wh = sin.(1:nvar), cos.(1:ncon)
+    dev(a) = ExaModels.convert_array(T.(a), backend)
+    @test Array(NLPModels.jprod(pb, dev(xh), dev(vh))) ≈ NLPModels.jprod(ph, xh, vh) rtol = loose
+    @test Array(NLPModels.jtprod(pb, dev(xh), dev(wh))) ≈ NLPModels.jtprod(ph, xh, wh) rtol = loose
+    @test Array(NLPModels.hprod(pb, dev(xh), dev(wh), dev(vh))) ≈ NLPModels.hprod(ph, xh, wh, vh) rtol = loose
     return
 end
 

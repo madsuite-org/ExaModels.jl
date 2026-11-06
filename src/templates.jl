@@ -2,6 +2,20 @@
 convert_array(v, ::Nothing) = v
 convert_array(v, backend) = adapt(backend, v)
 
+# Walks a function through Adapt and hands every array it holds to the backend's
+# `convert_array`, which a backend may specialize (Metal rewrites Float64). A
+# backend's `convert_array` is not itself safe on a function: Metal's broadcasts
+# over its argument.
+struct _BackendAdaptor{B}
+    backend::B
+end
+Adapt.adapt_storage(to::_BackendAdaptor, x::AbstractArray) = convert_array(x, to.backend)
+
+# The function of a generator that runs on `backend`, with the arrays it captures
+# moved there.
+convert_function(f, ::Nothing) = f
+convert_function(f, backend) = adapt(_BackendAdaptor(backend), f)
+
 # Recursively replace Float64 with Float32 in scalars, containers, and the
 # fields of arbitrary structs. Used by backend extensions (Metal, oneAPI) that
 # either reject Float64 outright or perform poorly on it. Type-stable via
