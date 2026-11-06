@@ -18,9 +18,9 @@ it as `functions = Dict("MyModule.f" => f)`; the file lists the names it needs.
 function read_model(path::AbstractString; backend = nothing, functions = Dict{String, Any}(), prod = false)
     return HDF5.h5open(path, "r") do f
         _check_format(f)
-        s = JSON3.read(read(f["structure"]), Dict{String, Any})
-        a(k) = read(f["arrays/$k"])
-        return _build(s, a, k -> read(f[k]), backend, functions, prod)
+        s = JSON3.read(_read_text(f["structure"]), Dict{String, Any})
+        a(k) = _read_column(f["arrays/$k"])
+        return _build(s, a, k -> _read_column(f[k]), backend, functions, prod)
     end
 end
 
@@ -36,6 +36,32 @@ function read_solution(path::AbstractString)
         g = f["solution"]
         return NamedTuple(Symbol(k) => read(g[k]) for k in keys(g))
     end
+end
+
+# `read` types a fixed string by its length, so it would compile once per file.
+function _read_text(d)
+    t = HDF5.API.h5d_get_type(d)
+    try
+        HDF5.API.h5t_is_variable_str(t) && return read(d)::String
+        buf = Vector{UInt8}(undef, HDF5.API.h5t_get_size(t))
+        HDF5.API.h5d_read(d, t, HDF5.API.H5S_ALL, HDF5.API.H5S_ALL, HDF5.API.H5P_DEFAULT, buf)
+        i = findfirst(iszero, buf)
+        return String(i === nothing ? buf : buf[1:(i - 1)])
+    finally
+        HDF5.API.h5t_close(t)
+    end
+end
+
+# A preallocated buffer keeps these reads off HDF5's runtime-dispatched array construction.
+_read_vector(d, ::Type{T}) where {T} = copyto!(Vector{T}(undef, length(d)), d)
+
+function _read_column(d)
+    ndims(d) == 1 || return read(d)
+    T = HDF5.get_jl_type(d)
+    n = length(d)
+    T === Float64 && return n == 0 ? Float64[] : _read_vector(d, Float64)
+    T === Int64 && return n == 0 ? Int64[] : _read_vector(d, Int64)
+    return read(d)
 end
 
 function _check_format(f)
@@ -55,6 +81,11 @@ _lengths(dims) = Tuple(d isa Integer ? Int(d) : Int(d[2] - d[1] + 1) for d in di
 _axes(dims) = Tuple(d isa Integer ? Int(d) : Int(d[1]):Int(d[2]) for d in dims)
 _name(n) = n === nothing ? nothing : Val(Symbol(n))
 _shape(v, shape) = length(shape) == 1 ? v : reshape(v, Tuple(shape))
+# The arrays and sizes below come out of a file and reach Base by runtime dispatch, where a
+# package image cannot hold the code of a Base method. These keep the Base calls static.
+_span(offset, lengths) = offset .+ (1:prod(lengths))
+_slice(v, r) = v[r]
+_count(v) = length(v)
 
 function _build(s, array, column, backend, functions, product_helper)
     missing_ext = filter(k -> !haskey(functions, k), s["extensions"])
@@ -71,11 +102,11 @@ function _build(s, array, column, backend, functions, product_helper)
     c = ExaCore(T; backend, minimize = s["minimize"], name = Symbol(s["name"]))
 
     for v in s["variables"]
-        r = v["offset"] .+ (1:prod(_lengths(v["size"])))
+        r = _span(v["offset"], _lengths(v["size"]))
         c, var = ExaModels.add_var(
             c, _axes(v["size"])...;
-            start = _shape(x0[r], _lengths(v["size"])), lvar = _shape(lvar[r], _lengths(v["size"])),
-            uvar = _shape(uvar[r], _lengths(v["size"])), name = _name(v["name"])
+            start = _shape(_slice(x0, r), _lengths(v["size"])), lvar = _shape(_slice(lvar, r), _lengths(v["size"])),
+            uvar = _shape(_slice(uvar, r), _lengths(v["size"])), name = _name(v["name"])
         )
         _check_offset(var.offset, v["offset"], "variable")
     end
@@ -101,8 +132,8 @@ function _build(s, array, column, backend, functions, product_helper)
             by = t -> t[2]["offset"]
         )
         if kind === :par
-            r = p["offset"] .+ (1:prod(_lengths(p["size"])))
-            c, par = ExaModels.add_par(c, _shape(θ[r], _lengths(p["size"])); name = _name(p["name"]))
+            r = _span(p["offset"], _lengths(p["size"]))
+            c, par = ExaModels.add_par(c, _shape(_slice(θ, r), _lengths(p["size"])); name = _name(p["name"]))
             _check_offset(par.offset, p["offset"], "parameter")
         else
             c, e = ExaModels.add_expr(c, gen(p); buffered = true, name = _name(p["name"]))
@@ -122,10 +153,10 @@ function _build(s, array, column, backend, functions, product_helper)
     for b in s["constraints"]
         if b["kind"] == "constraint"
             shape = Int.(b["shape"])
-            r = b["offset"] .+ (1:prod(shape))
+            r = _span(b["offset"], shape)
             kw = (
-                start = _shape(y0[r], shape), lcon = _shape(lcon[r], shape),
-                ucon = _shape(ucon[r], shape), name = _name(b["name"]),
+                start = _shape(_slice(y0, r), shape), lcon = _shape(_slice(lcon, r), shape),
+                ucon = _shape(_slice(ucon, r), shape), name = _name(b["name"]),
             )
             c, con = b["expr"] === nothing ?
                 ExaModels.add_con(c, _axes(b["size"])...; kw...) :
@@ -142,7 +173,7 @@ function _build(s, array, column, backend, functions, product_helper)
     m = ExaModel(c; prod = product_helper)
     # Variable and parameter indices in the file are global, so the rebuilt model
     # must lay out its blocks exactly as the file says; a mismatch would be silent.
-    (m.meta.nvar, m.meta.ncon, length(m.θ)) == (s["nvar"], s["ncon"], s["npar"]) || error(
+    (m.meta.nvar, m.meta.ncon, _count(m.θ)) == (s["nvar"], s["ncon"], s["npar"]) || error(
         "rebuilt model has $(m.meta.nvar) variables, $(m.meta.ncon) constraints, " *
             "$(length(m.θ)) parameters; the file says $(s["nvar"]), $(s["ncon"]), $(s["npar"])"
     )
