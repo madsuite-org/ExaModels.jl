@@ -13,6 +13,16 @@ function stored_model(n; backend = nothing)
     return ExaModel(c)
 end
 
+# Buffered subexpressions go through their own Jacobian and Hessian assembly.
+function buffered_model(n; backend = nothing)
+    c = ExaCore(; backend)
+    c, x = add_var(c, n; start = ones(n))
+    c, b = add_expr(c, (sin(x[i]) * x[i] for i in 1:n); buffered = true)
+    c, _ = add_obj(c, b[i]^2 for i in 1:n)
+    c, _ = add_con(c, b[i] + x[i] for i in 1:n)
+    return ExaModel(c)
+end
+
 function other_model(n; backend = nothing)
     c = ExaCore(; backend)
     c, x = add_var(c, n; start = 0.5)
@@ -29,5 +39,6 @@ padded_view(x, n) = view(similar(x, n + 1), 1:n)
 function workload(backend)
     m = Base.invokelatest(stored_model, 4; backend)
     Base.invokelatest(padded_view, m.meta.x0, 4)
-    return precompile_callbacks(m)
+    precompile_callbacks(m)
+    return precompile_callbacks(Base.invokelatest(buffered_model, 4; backend))
 end

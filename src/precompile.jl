@@ -117,6 +117,17 @@ function _precompile_workload(backend = nothing; n = 4, prod = false)
     return m
 end
 
+# Buffered subexpressions on their own: they exclude the product helper, and their build
+# code is reached by runtime dispatch, so that a caller's image cannot hold it.
+function _buffered_workload(n = 4)
+    c = ExaCore()
+    c, x = add_var(c, n; start = ones(n))
+    c, b = add_expr(c, (x[i] * x[i] for i in 1:n); buffered = true)
+    c, _ = add_obj(c, b[i] for i in 1:n)
+    c, _ = add_con(c, b[i] + x[i] for i in 1:n)
+    return precompile_callbacks(ExaModel(c))
+end
+
 """
     precompile_backend(backend)
 
@@ -132,9 +143,25 @@ persist across sessions.
 function precompile_backend(backend)
     m = Base.invokelatest(_precompile_workload, backend; n = 1 << 12, prod = true)
     x = NLPModels.get_x0(m)
+    # Reached by runtime dispatch from a caller that does not infer the core.
+    t = Base.invokelatest(add_var, ExaCore(; backend), 1)
+    Base.invokelatest(Base.indexed_iterate, t, 1)
+    Base.invokelatest(Base.indexed_iterate, t, 2, 2)
+    Base.invokelatest(_append_slot, Val(false), backend, similar(x, 0), ones(eltype(x), 1), 1)
     sum(fill!(similar(x, 1 << 16), zero(eltype(x))))
+    fill!(similar(x, Int, 1 << 16), 0)
     findall(fill!(similar(x, Bool, 1 << 21), true))
     return nothing
 end
 
-PrecompileTools.@compile_workload Base.invokelatest(_precompile_workload)
+PrecompileTools.@compile_workload begin
+    Base.invokelatest(_precompile_workload)
+    Base.invokelatest(_buffered_workload)
+    # Reached by runtime dispatch from a caller whose `start` is not inferred.
+    Base.invokelatest(_append_slot, nothing, [1.0], [1.0], 1)
+    # So are these, from a caller that destructures an `add_var` it could not infer.
+    t = Base.invokelatest(add_var, ExaCore(), 1)
+    Base.invokelatest(Base.indexed_iterate, t, 1)
+    Base.invokelatest(Base.indexed_iterate, t, 2, 2)
+    Base.invokelatest(getproperty, t[2], :offset)
+end

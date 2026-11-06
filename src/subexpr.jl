@@ -641,6 +641,10 @@ end
 _build_subexpr_jac(::Type{T}, stages::Tuple{}, cons, nnzj_ext) where {T} =
     (nothing, nothing, nothing)
 
+# A size captured by a closure is boxed and reaches `zeros` by runtime dispatch, where a
+# package image cannot hold the code of a Base method.
+_zeros(::Type{T}, n) where {T} = zeros(T, n)
+
 function _build_subexpr_jac(::Type{T}, stages::Tuple, cons, nnzj_ext) where {T}
     cons = _host_blocks(cons)
     ordered = reverse(collect(Any, _host_blocks(stages)))   # oldest first
@@ -664,7 +668,7 @@ function _build_subexpr_jac(::Type{T}, stages::Tuple, cons, nnzj_ext) where {T}
         erows, ecols = _stage_jac_structure(T, s)
         for ind in 1:length(erows)
             row = erows[ind]
-            col = ecols[ind]
+            col = ecols[ind]::Int
             col == 0 && continue
             push!(get!(() -> Tuple{Int, Int}[], localrows, row), (col, off + ind))
             # Merge resolved entries per (row, x-column): one res slot per
@@ -725,9 +729,9 @@ function _build_subexpr_jac(::Type{T}, stages::Tuple, cons, nnzj_ext) where {T}
     end
     return (
         SubexprJac{T}(
-            zeros(T, off),
+            _zeros(T, off),
             stage_o1,
-            zeros(T, res_n),
+            _zeros(T, res_n),
             res_copy_dst,
             res_copy_src,
             res_prod_dst,
@@ -735,7 +739,7 @@ function _build_subexpr_jac(::Type{T}, stages::Tuple, cons, nnzj_ext) where {T}
             res_prod_b,
             lvl_res_copy,
             lvl_res_prod,
-            zeros(T, nnzj_ext),
+            _zeros(T, nnzj_ext),
             jac_copy_dst,
             jac_copy_src,
             jac_prod_dst,
@@ -743,7 +747,7 @@ function _build_subexpr_jac(::Type{T}, stages::Tuple, cons, nnzj_ext) where {T}
             jac_prod_b,
             rows,
             cols,
-            zeros(T, length(rows)),
+            _zeros(T, length(rows)),
         ),
         resolved,
         localrows,
@@ -930,7 +934,8 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, loc
 
     slotlvl = zeros(Int, nθ)
     for (i, s) in enumerate(ordered)
-        slotlvl[(s.offset + 1):(s.offset + _stage_len(s))] .= i
+        lo, hi = (s.offset + 1)::Int, (s.offset + _stage_len(s))::Int
+        slotlvl[lo:hi] .= i
     end
     lvlof(ξ) = ξ > 0 ? 0 : slotlvl[-ξ]
     normp(a, b) = a >= b ? (a, b) : (b, a)
@@ -1084,9 +1089,9 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, loc
     reverse!(stage_o2)   # match the newest-first stage tuple order
 
     return SubexprHess{T}(
-        zeros(T, total),
-        zeros(T, nθ),
-        zeros(T, Cn[]),
+        _zeros(T, total),
+        _zeros(T, nθ),
+        _zeros(T, Cn[]),
         stage_o2,
         lvl_ccopy,
         lvl_cmul,
@@ -1117,7 +1122,7 @@ function _build_subexpr_hess(::Type{T}, stages::Tuple, objs, cons, nnzh_ext, loc
         hess_copy_src,
         rows,
         cols,
-        zeros(T, length(rows)),
+        _zeros(T, length(rows)),
     )
 end
 

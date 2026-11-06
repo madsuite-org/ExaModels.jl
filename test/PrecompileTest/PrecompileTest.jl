@@ -136,6 +136,8 @@ function _test_stored(r)
     if VERSION >= v"1.11"
         @test r["stored"].trace == String[]
         @test r["stored"].ns == 0
+        @test r["stored_buffered"].trace == String[]
+        @test r["stored_buffered"].ns == 0
     else
         # The `Constraint` constructor, which `add_con` calls by runtime dispatch, is not in
         # the image on Julia 1.10.

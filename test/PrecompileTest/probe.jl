@@ -47,6 +47,11 @@ builder, backend = App.stored_model, nothing
 Base.include(Main, evaluate)
 end_region("stored", start)
 
+start = begin_region("stored_buffered")
+builder, backend = App.buffered_model, nothing
+Base.include(Main, evaluate)
+end_region("stored_buffered", start)
+
 start = begin_region("other")
 builder, backend = App.other_model, nothing
 Base.include(Main, evaluate)
