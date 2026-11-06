@@ -3,6 +3,9 @@ module DomainTest
 using Test, ExaModels, NLPModels
 import ..BACKENDS
 
+# Metal evaluates in single precision.
+const RTOL = 1.0e-5
+
 # Each case is a function, a point outside its real domain, and a point inside it.
 const CASES = [
     (x -> sqrt(x), -1.0, 4.0),
@@ -48,8 +51,8 @@ function runtests()
 
                 # Inside the domain, the values are Base's.
                 x = [inside]
-                @test NLPModels.obj(m, x) ≈ f(inside)
-                @test NLPModels.cons(m, x)[1] ≈ f(inside)
+                @test NLPModels.obj(m, x) ≈ f(inside) rtol = RTOL
+                @test NLPModels.cons(m, x)[1] ≈ f(inside) rtol = RTOL
                 @test isfinite(NLPModels.grad(m, x)[1])
                 @test all(isfinite, NLPModels.jac_coord(m, x))
                 @test all(isfinite, NLPModels.hess_coord(m, x, [1.0]))
@@ -58,14 +61,14 @@ function runtests()
 
         @testset "Powers of a negative number ($backend)" begin
             m = model(x -> x^2.0, backend)
-            @test NLPModels.obj(m, [-3.0]) ≈ 9.0
-            @test NLPModels.grad(m, [-3.0])[1] ≈ -6.0
+            @test NLPModels.obj(m, [-3.0]) ≈ 9.0 rtol = RTOL
+            @test NLPModels.grad(m, [-3.0])[1] ≈ -6.0 rtol = RTOL
 
             # The value is defined, and the derivative in the exponent is not.
             m = power_model(backend)
-            @test NLPModels.obj(m, [-1.0, 2.0]) ≈ 1.0
+            @test NLPModels.obj(m, [-1.0, 2.0]) ≈ 1.0 rtol = RTOL
             g = NLPModels.grad(m, [-1.0, 2.0])
-            @test g[1] ≈ -2.0
+            @test g[1] ≈ -2.0 rtol = RTOL
             @test isnan(g[2])
 
             # Base gives these a value, and the wrapper must not change that.
