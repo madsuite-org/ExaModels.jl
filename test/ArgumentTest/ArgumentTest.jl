@@ -25,8 +25,9 @@ end
 Base.:(==)(x::_Mutable, y::_Mutable) = x.a == y.a
 
 # A stand-in for a device backend that runs on any machine. Like a GPU launch, its
-# `map!` refuses a function or an iterator holding a host `Array`. KernelAbstractions'
-# `CPU()` backend cannot play this part: a host array is what its kernels expect.
+# `map!` refuses a function or an iterator holding a host `Array`, and like a GPU
+# array its array cannot be iterated on the host. KernelAbstractions' `CPU()` backend
+# cannot play this part: a host array is what its kernels expect.
 struct _DeviceDouble end
 struct _DeviceArray{T, N} <: AbstractArray{T, N}
     data::Array{T, N}
@@ -35,6 +36,9 @@ const _DeviceVector{T} = _DeviceArray{T, 1}
 ExaModels.Adapt.adapt_storage(::_DeviceDouble, a::Array) = _DeviceArray(a)
 Base.size(a::_DeviceArray) = size(a.data)
 Base.getindex(a::_DeviceArray, i::Int...) = a.data[i...]
+Base.iterate(::_DeviceArray, state...) = throw(ArgumentError("host code iterated a device array"))
+Base.Array(a::_DeviceArray) = copy(a.data)
+ExaModels.Adapt.adapt_storage(::Type{Array}, a::_DeviceArray) = Array(a)
 Base.setindex!(a::_DeviceArray, v, i::Int...) = (a.data[i...] = v; a)
 Base.resize!(a::_DeviceVector, n::Integer) = (resize!(a.data, n); a)
 Base.similar(a::_DeviceArray, ::Type{T}, dims::Dims) where {T} = _DeviceArray(similar(a.data, T, dims))
@@ -50,8 +54,8 @@ end
 function Base.map!(f::F, dest::SubArray{T, 1, <:_DeviceVector}, src::AbstractArray) where {F, T}
     _refuse_host(f)
     _refuse_host(src)
-    for (i, v) in zip(eachindex(dest), src)
-        dest[i] = f(v)
+    for (i, j) in zip(eachindex(dest), eachindex(src))
+        dest[i] = f(src[j])
     end
     return dest
 end
@@ -394,7 +398,36 @@ function runtests()
                         array = typeof(ExaModels.convert_array(collect(1:4), backend))
                         @test m.objs[1].itr isa array
                         @test m.cons[1].itr isa array
-                        @test NLPModels.obj(m, m.meta.x0) ≈ 16
+                        # the double has no kernels: `obj` would run the host loop
+                        backend isa _DeviceDouble || @test NLPModels.obj(m, m.meta.x0) ≈ 16
+                    end
+
+                    @testset "merged family over iterators already on the device" begin
+                        rows = [(; i, w = 10.0 * i) for i in 1:4]
+                        function merged(a, b, backend)
+                            c = ExaModels.ExaCore(; backend = backend)
+                            ExaModels.@add_var(c, x, 4; start = 2.0)
+                            ExaModels.@add_con(c, x[r.i]^2 + r.w for r in a)
+                            ExaModels.@add_con(c, x[r.i]^2 + r.w for r in b)
+                            return ExaModels.ExaModel(c)
+                        end
+                        @testset "$(size(a)) and $(size(b))" for (a, b) in (
+                                (rows, rows),
+                                (reshape(rows, 2, 2), reshape(rows, 2, 2)),
+                                (reshape(rows, 2, 2), reshape(rows[1:2], 1, 2)),
+                            )
+                            dev(v) = ExaModels.convert_array(v, backend)
+                            m = merged(dev(a), dev(b), backend)
+                            @test length(m.cons) == 1
+                            @test m.cons[1].itr isa ExaModels.DeviceSegItr
+                            segments = ExaModels.expand_family(m.cons[1])
+                            @test host(segments[1].itr) == vec(a)
+                            @test host(segments[2].itr) == vec(b)
+                            if !(backend isa _DeviceDouble)
+                                ref = merged(a, b, nothing)
+                                @test host(NLPModels.cons(m, m.meta.x0)) ≈ NLPModels.cons(ref, ref.meta.x0)
+                            end
+                        end
                     end
                 end
             end
