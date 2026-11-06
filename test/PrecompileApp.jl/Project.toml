@@ -1,0 +1,7 @@
+name = "PrecompileApp"
+uuid = "6c3f5e0a-7d1b-4a55-9e0c-2b1f4f6c8d10"
+version = "0.1.0"
+
+[deps]
+ExaModels = "1037b233-b668-4ce9-9b63-f9f681f55dd2"
+PrecompileTools = "aea7be01-6a6a-4083-8856-8a6e6704d82a"

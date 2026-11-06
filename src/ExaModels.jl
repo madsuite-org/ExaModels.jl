@@ -45,6 +45,7 @@ import NLPModels:
     jprod_nln!
 import SolverCore
 import Printf
+import PrecompileTools
 
 include("templates.jl")
 include("argument.jl")
@@ -65,6 +66,7 @@ include("oracle.jl")
 include("utils.jl")
 include("tags.jl")
 include("two_stage.jl")
+include("precompile.jl")
 
 export ExaModel,
     ExaCore,
@@ -129,6 +131,8 @@ export ExaModel,
     get_lcon,
     set_lcon!,
     get_ucon,
-    set_ucon!
+    set_ucon!,
+    precompile_callbacks,
+    precompile_backend
 
 end # module ExaModels

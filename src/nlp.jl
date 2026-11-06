@@ -877,11 +877,16 @@ function Base.show(io::IO, c::AbstractExaModel{T, VT}) where {T, VT}
 end
 
 """
-    ExaModel(core)
+    ExaModel(core; prod = false, precompile = false)
 
 Returns an `ExaModel` object, which can be solved by nonlinear
 optimization solvers within `JuliaSmoothOptimizer` ecosystem, such as
 `NLPModelsIpopt` or `MadNLP`.
+
+With `precompile = true`, the callbacks are compiled before the model is returned, so that the
+first call a solver or a benchmark makes spends no time compiling. On the CPU nothing is
+evaluated. On a device kernels compile only when they launch, so each callback is evaluated
+once at the starting point (see [`precompile_callbacks`](@ref)).
 
 ## Example
 ```jldoctest
@@ -918,9 +923,11 @@ julia> result = ipopt(m; print_level=0)    # solve the problem
 ```
 """
 # No-oracle path: always returns ExaModel (type-stable for juliac --trim=safe).
-function ExaModel(c::ExaCore{T, VT, B, S, V, P, O, C, R, Tuple{}, Tuple{}, Tuple{}}; prod = false, kwargs...) where {T, VT, B, S, V, P, O, C, R}
+function ExaModel(c::ExaCore{T, VT, B, S, V, P, O, C, R, Tuple{}, Tuple{}, Tuple{}}; prod = false, precompile = false, kwargs...) where {T, VT, B, S, V, P, O, C, R}
     _recipe_check(c)
-    return _build_model(c, c.var, c.par, c.obj, c.cons, prod)
+    m = _build_model(c, c.var, c.par, c.obj, c.cons, prod)
+    precompile && _compile_callbacks(m, prod)
+    return m
 end
 
 # A tuple-storage core is already concrete: build directly, which keeps this path
@@ -979,9 +986,11 @@ function _model_from_core(c::ExaCore{T}, prod) where {T}
 end
 
 # Oracle path: always returns ExaModelWithOracle (type-stable for juliac --trim=safe).
-function ExaModel(c::ExaCore; prod = false, kwargs...)
+function ExaModel(c::ExaCore; prod = false, precompile = false, kwargs...)
     _recipe_check(c)
-    return _build_oracle_model(c, c.var, c.par, c.obj, c.cons; prod, kwargs...)
+    m = _build_oracle_model(c, c.var, c.par, c.obj, c.cons; prod, kwargs...)
+    precompile && _compile_callbacks(m, prod)
+    return m
 end
 
 # As `_build_model`: direct for tuple storage, behind `invokelatest` for `Vector{Any}`.
