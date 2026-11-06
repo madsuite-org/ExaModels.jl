@@ -193,7 +193,7 @@ macro register_bivariate(f, df1, df2, ddf11, ddf12, ddf22)
 
                 x1 = d1.x
                 x2 = d2.x
-                $ExaModels.AdjointNode2($f, $ExaModels._nan_outside($f)(x1, x2), $df1(x1, x2), $df2(x1, x2), d1, d2)
+                return $ExaModels.AdjointNode2($f, $ExaModels._nan_outside($f)(x1, x2), $df1(x1, x2), $df2(x1, x2), d1, d2)
             end
             @inline function $f(
                 d1::D1,
@@ -206,7 +206,7 @@ macro register_bivariate(f, df1, df2, ddf11, ddf12, ddf22)
                 x1 = d1.x
                 x2 = d2
 
-                $ExaModels.AdjointNode1($f, $ExaModels._nan_outside($f)(x1, x2), $df1(x1, x2), d1)
+                return $ExaModels.AdjointNode1($f, $ExaModels._nan_outside($f)(x1, x2), $df1(x1, x2), d1)
             end
             @inline function $f(
                 d1::D1,
@@ -218,7 +218,7 @@ macro register_bivariate(f, df1, df2, ddf11, ddf12, ddf22)
 
                 x1 = d1
                 x2 = d2.x
-                $ExaModels.AdjointNode1($f, $ExaModels._nan_outside($f)(x1, x2), $df2(x1, x2), d2)
+                return $ExaModels.AdjointNode1($f, $ExaModels._nan_outside($f)(x1, x2), $df2(x1, x2), d2)
             end
 
             @inline function $f(

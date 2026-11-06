@@ -48,7 +48,7 @@ function runtests()
         end
     end
 
-    @testset "An integer power of a negative number stays defined" begin
+    return @testset "An integer power of a negative number stays defined" begin
         m = model(x -> x^2.0)
         @test NLPModels.obj(m, [-3.0]) == 9.0
         @test NLPModels.grad(m, [-3.0])[1] == -6.0
