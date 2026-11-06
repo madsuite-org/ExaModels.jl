@@ -34,6 +34,7 @@ include("LongTupleTest/LongTupleTest.jl")
 # include("OptimalControlTest/OptimalControlTest.jl")
 include("OracleTest/OracleTest.jl")
 include("SubexprTest/SubexprTest.jl")
+include("ReductionTest/ReductionTest.jl")
 
 @testset verbose = true "ExaModels test" begin
     @info "Running Argument Test"
@@ -79,6 +80,9 @@ include("SubexprTest/SubexprTest.jl")
 
     @info "Running Oracle Test"
     OracleTest.runtests()
+
+    @info "Running Reduction Test"
+    ReductionTest.runtests()
 
     @info "Running Subexpr Test"
     SubexprTest.runtests(

@@ -2,7 +2,7 @@
 #
 # Every serial sweep of the CPU implementation becomes a segmented-scatter
 # kernel: program entries are sorted by destination at model build, segment
-# pointers are computed with the same (dstu, ptr) pattern as compress_to_dense,
+# pointers are computed with the same (dstu, ptr) pattern as the gradient reduction,
 # and each workitem owns one destination, so no atomics are needed (which also
 # keeps Float32-only backends viable).  Tree-evaluation kernels (stage sync,
 # stage Jacobian fills, stage Hessian replays) are plain per-element launches
@@ -16,23 +16,25 @@
 
 # ── segmented scatter programs ────────────────────────────────────────────────
 
-struct SegCopy{VI}
+# Each program carries a segment plan (see ExaModelsKASegmented.jl), so a destination
+# with a long segment does not serialize the launch.
+struct SegCopy{VI, VT}
     dstu::VI
-    ptr::VI
     src::VI
+    plan::SegPlan{VI, VT}
 end
-struct SegProd{VI}
+struct SegProd{VI, VT}
     dstu::VI
-    ptr::VI
     a::VI
     b::VI
+    plan::SegPlan{VI, VT}
 end
 struct SegProdC{VI, VT}
     dstu::VI
-    ptr::VI
     a::VI
     b::VI
     c::VT
+    plan::SegPlan{VI, VT}
 end
 
 # Sum-slot curvature μ·∇v∇vᵀ (see `SubexprHess`): one workitem per Hessian
@@ -40,9 +42,8 @@ end
 # every slot sharing that support.  Per-slot data stays shared with the host
 # layout, so device storage scales with the distinct supports, not with the
 # number of (slot, pair) contributions.
-struct SegRank1{VI}
-    dstu::VI
-    ptr::VI          # per destination: its table entries
+struct SegRank1{VI, VT}
+    dstu::VI         # per destination: its table entries are a segment of `plan`
     a::VI            # per table entry: positions within a slot's segment
     b::VI
     pat::VI          # per table entry: its support table
@@ -51,6 +52,7 @@ struct SegRank1{VI}
     rk_slot::VI
     rk_ptr::VI
     rk_res::VI
+    plan::SegPlan{VI, VT}
 end
 
 _seg_isempty(s) = isempty(s.dstu)
@@ -73,17 +75,21 @@ end
 _dev(x0, v::Vector{Int}) = copyto!(similar(x0, Int, length(v)), v)
 _dev(x0, v::Vector{T}) where {T <: AbstractFloat} = copyto!(similar(x0, length(v)), v)
 
+_dev_plan(x0, ptr::Vector{Int}) = _seg_table(v -> _dev(x0, v), x0, ptr)
+
 function _seg_copy(x0, dst::Vector{Int}, src::Vector{Int})
     p, dstu, ptr = _segment_perm(dst)
-    return SegCopy(_dev(x0, dstu), _dev(x0, ptr), _dev(x0, src[p]))
+    return SegCopy(_dev(x0, dstu), _dev(x0, src[p]), _dev_plan(x0, ptr))
 end
 function _seg_prod(x0, dst::Vector{Int}, a::Vector{Int}, b::Vector{Int})
     p, dstu, ptr = _segment_perm(dst)
-    return SegProd(_dev(x0, dstu), _dev(x0, ptr), _dev(x0, a[p]), _dev(x0, b[p]))
+    return SegProd(_dev(x0, dstu), _dev(x0, a[p]), _dev(x0, b[p]), _dev_plan(x0, ptr))
 end
 function _seg_prodc(x0, dst::Vector{Int}, a::Vector{Int}, b::Vector{Int}, c::Vector)
     p, dstu, ptr = _segment_perm(dst)
-    return SegProdC(_dev(x0, dstu), _dev(x0, ptr), _dev(x0, a[p]), _dev(x0, b[p]), _dev(x0, c[p]))
+    return SegProdC(
+        _dev(x0, dstu), _dev(x0, a[p]), _dev(x0, b[p]), _dev(x0, c[p]), _dev_plan(x0, ptr),
+    )
 end
 function _seg_rank1(x0, sh)
     npat = length(sh.pat_ptr) - 1
@@ -104,47 +110,27 @@ function _seg_rank1(x0, sh)
         fillp[q] += 1
     end
     return SegRank1(
-        _dev(x0, dstu), _dev(x0, ptr), _dev(x0, sh.pat_a[p]), _dev(x0, sh.pat_b[p]),
+        _dev(x0, dstu), _dev(x0, sh.pat_a[p]), _dev(x0, sh.pat_b[p]),
         _dev(x0, pat[p]), _dev(x0, pslot_ptr), _dev(x0, pslot),
         _dev(x0, sh.rk_slot), _dev(x0, sh.rk_ptr), _dev(x0, sh.rk_res),
+        _dev_plan(x0, ptr),
     )
 end
 
-@kernel function kseg_copy(y, @Const(dstu), @Const(ptr), @Const(src), @Const(S))
-    I = @index(Global)
-    acc = zero(eltype(y))
-    @inbounds for j in ptr[I]:(ptr[I + 1] - 1)
-        acc += S[src[j]]
-    end
-    @inbounds y[dstu[I]] += acc
-end
-@kernel function kseg_prod(y, @Const(dstu), @Const(ptr), @Const(a), @Const(b), @Const(A), @Const(B))
-    I = @index(Global)
-    acc = zero(eltype(y))
-    @inbounds for j in ptr[I]:(ptr[I + 1] - 1)
-        acc += A[a[j]] * B[b[j]]
-    end
-    @inbounds y[dstu[I]] += acc
-end
-@kernel function kseg_prodc(y, @Const(dstu), @Const(ptr), @Const(a), @Const(b), @Const(c), @Const(A), @Const(B))
-    I = @index(Global)
-    acc = zero(eltype(y))
-    @inbounds for j in ptr[I]:(ptr[I + 1] - 1)
-        acc += c[j] * A[a[j]] * B[b[j]]
-    end
-    @inbounds y[dstu[I]] += acc
-end
-@kernel function kseg_rank1(
-        y, @Const(dstu), @Const(ptr), @Const(a), @Const(b), @Const(pat),
-        @Const(pslot_ptr), @Const(pslot), @Const(rk_slot), @Const(rk_ptr), @Const(rk_res),
-        @Const(res), @Const(abuf2),
-    )
-    I = @index(Global)
-    acc = zero(eltype(y))
-    @inbounds for j in ptr[I]:(ptr[I + 1] - 1)
-        q = pat[j]
-        ea = a[j]
-        eb = b[j]
+# The programs as segmented reductions; `args` starts with the destinations.
+struct _SegCopyOp end                       # y[dstu[d]] += Σ S[src]
+@inline _segterm(::_SegCopyOp, l, (dstu, src, S)) = @inbounds S[src[l]]
+struct _SegProdOp end                       # y[dstu[d]] += Σ A[a] * B[b]
+@inline _segterm(::_SegProdOp, l, (dstu, a, b, A, B)) = @inbounds A[a[l]] * B[b[l]]
+struct _SegProdCOp end                      # y[dstu[d]] += Σ c * A[a] * B[b]
+@inline _segterm(::_SegProdCOp, l, (dstu, a, b, c, A, B)) = @inbounds c[l] * A[a[l]] * B[b[l]]
+struct _SegRank1Op end
+@inline function _segterm(::_SegRank1Op, l, (dstu, a, b, pat, pslot_ptr, pslot, rk_slot, rk_ptr, rk_res, res, abuf2))
+    acc = zero(eltype(res))
+    @inbounds begin
+        q = pat[l]
+        ea = a[l]
+        eb = b[l]
         for t in pslot_ptr[q]:(pslot_ptr[q + 1] - 1)
             k = pslot[t]
             μ = abuf2[rk_slot[k]]
@@ -153,21 +139,30 @@ end
             acc += ifelse(iszero(μ), zero(v), v)
         end
     end
-    @inbounds y[dstu[I]] += acc
+    return acc
 end
+const _ScatterOp = Union{_SegCopyOp, _SegProdOp, _SegProdCOp, _SegRank1Op}
+@inline _segput!(::_ScatterOp, y, s, ptr, acc, args) = @inbounds y[first(args)[s]] += acc
 
-_run!(backend, s::SegRank1, y, res, abuf2) =
-    _seg_isempty(s) || kseg_rank1(backend)(
-    y, s.dstu, s.ptr, s.a, s.b, s.pat, s.pslot_ptr, s.pslot, s.rk_slot, s.rk_ptr, s.rk_res,
-    res, abuf2; ndrange = length(s.dstu),
-)
-_run!(backend, s::SegCopy, y, S) =
-    _seg_isempty(s) || kseg_copy(backend)(y, s.dstu, s.ptr, s.src, S; ndrange = length(s.dstu))
-_run!(backend, s::SegProd, y, A, B) =
-    _seg_isempty(s) || kseg_prod(backend)(y, s.dstu, s.ptr, s.a, s.b, A, B; ndrange = length(s.dstu))
-_run!(backend, s::SegProdC, y, A, B) =
-    _seg_isempty(s) ||
-    kseg_prodc(backend)(y, s.dstu, s.ptr, s.a, s.b, s.c, A, B; ndrange = length(s.dstu))
+function _run!(backend, s::SegRank1, y, res, abuf2)
+    _seg_isempty(s) && return true
+    return _seg_reduce!(
+        backend, y, _SegRank1Op(), s.plan,
+        (s.dstu, s.a, s.b, s.pat, s.pslot_ptr, s.pslot, s.rk_slot, s.rk_ptr, s.rk_res, res, abuf2),
+    )
+end
+function _run!(backend, s::SegCopy, y, S)
+    _seg_isempty(s) && return true
+    return _seg_reduce!(backend, y, _SegCopyOp(), s.plan, (s.dstu, s.src, S))
+end
+function _run!(backend, s::SegProd, y, A, B)
+    _seg_isempty(s) && return true
+    return _seg_reduce!(backend, y, _SegProdOp(), s.plan, (s.dstu, s.a, s.b, A, B))
+end
+function _run!(backend, s::SegProdC, y, A, B)
+    _seg_isempty(s) && return true
+    return _seg_reduce!(backend, y, _SegProdCOp(), s.plan, (s.dstu, s.a, s.b, s.c, A, B))
+end
 
 # ── per-element stage kernels ─────────────────────────────────────────────────
 
@@ -176,18 +171,13 @@ _run!(backend, s::SegProdC, y, A, B) =
     @inbounds θ[off + I] = f(itr[I], x, θ)
 end
 
-# Sum-stage sync: one workitem per destination slot walks its CSR segment
-# (slots are exclusive per workitem, sources are strictly older θ slots or
-# variables — no atomics needed).
-@kernel function ksum_sync(θ, @Const(init), @Const(ptr), @Const(src), @Const(w), @Const(x), @Const(off))
-    J = @index(Global)
-    acc = init[J]
-    @inbounds for m in ptr[J]:(ptr[J + 1] - 1)
-        s = src[m]
-        acc += s > 0 ? w[m] * x[s] : w[m] * θ[-s]
-    end
-    @inbounds θ[off + J] = acc
+# Sum-stage sync: slot s is its initial value plus its CSR segment (sources are strictly
+# older θ slots or variables).
+struct _SumStageOp end
+@inline function _segterm(::_SumStageOp, m, (src, w, x, θ, init, off))
+    return @inbounds src[m] > 0 ? w[m] * x[src[m]] : w[m] * θ[-src[m]]
 end
+@inline _segput!(::_SumStageOp, θ, s, ptr, acc, (src, w, x, θo, init, off)) = @inbounds θ[off + s] = init[s] + acc
 
 @kernel function kstagej(y1, @Const(f), @Const(itr), @Const(x), @Const(θ), @Const(o1base))
     I = @index(Global)
@@ -340,26 +330,28 @@ struct SubexprKA{T, VT <: AbstractVector{T}, VI}
     o1base::Vector{Int}
     o2base::Vector{Int}
     # segmented programs
-    grad_scatter::SegCopy{VI}              # gradbuffer → y_ext (shifted targets)
-    grad_chain::Vector{SegProd{VI}}        # per level: y_ext += y_ext[nvar+row]·stage_ext
-    lam_obj::SegCopy{VI}                   # gradbuffer (weighted) → abuf
-    lam_con::SegCopy{VI}                   # cons_ext (y-weighted jrpass) → abuf
-    lam_chain::Vector{SegProd{VI}}         # per level: abuf += abuf[row]·stage_ext
-    mu_cons::SegCopy{VI}                   # consumer dead slots → abuf2
-    mu_stage::Vector{SegCopy{VI}}          # per level: stage dead slots → abuf2
-    res_copy::Vector{SegCopy{VI}}          # per stage, oldest-first execution
-    res_prod::Vector{SegProd{VI}}
-    jac_copy::SegCopy{VI}
-    jac_prod::SegProd{VI}
-    ccopy::Vector{SegCopy{VI}}             # per level (newest-first)
-    cmul1::Vector{SegProd{VI}}             # rank-2 phase
-    cmul2::Vector{SegProd{VI}}             # rank-1 phase
+    grad_scatter::SegCopy{VI, VT}              # gradbuffer → y_ext (shifted targets)
+    grad_chain::Vector{SegProd{VI, VT}}        # per level: y_ext += y_ext[nvar+row]·stage_ext
+    lam_obj::SegCopy{VI, VT}                   # gradbuffer (weighted) → abuf
+    lam_con::SegCopy{VI, VT}                   # cons_ext (y-weighted jrpass) → abuf
+    lam_chain::Vector{SegProd{VI, VT}}         # per level: abuf += abuf[row]·stage_ext
+    mu_cons::SegCopy{VI, VT}                   # consumer dead slots → abuf2
+    mu_stage::Vector{SegCopy{VI, VT}}          # per level: stage dead slots → abuf2
+    res_copy::Vector{SegCopy{VI, VT}}          # per stage, oldest-first execution
+    res_prod::Vector{SegProd{VI, VT}}
+    jac_copy::SegCopy{VI, VT}
+    jac_prod::SegProd{VI, VT}
+    ccopy::Vector{SegCopy{VI, VT}}             # per level (newest-first)
+    cmul1::Vector{SegProd{VI, VT}}             # rank-2 phase
+    cmul2::Vector{SegProd{VI, VT}}             # rank-1 phase
     amul::Vector{SegProdC{VI, VT}}
     hmul::Vector{SegProdC{VI, VT}}
-    rank1::SegRank1{VI}                    # hess += μ·∇v∇vᵀ of sum slots (after the sweep)
-    hess_copy::SegCopy{VI}
+    rank1::SegRank1{VI, VT}                    # hess += μ·∇v∇vᵀ of sum slots (after the sweep)
+    hess_copy::SegCopy{VI, VT}
     hess_vals::VT                          # composed Hessian values (hprod scratch)
-    hprod::SegProd{VI}                     # Hv += hess_vals·v over the symmetric COO
+    hprod::SegProd{VI, VT}                     # Hv += hess_vals·v over the symmetric COO
+    # per stage (aligned with the stage tuple): the chunk plan of a sum stage's slots
+    sumplans::Vector{SegPlan{VI, VT}}
 end
 
 function ExaModels.build_subexpr_ka(
@@ -518,40 +510,46 @@ function ExaModels.build_subexpr_ka(
         _seg_copy(x0, lc_dst, lc_src),
         [_seg_prod(x0, lch_dst[l], lch_a[l], lch_b[l]) for l in nlv:-1:1],
         _seg_copy(x0, mu_cons_dst, mu_cons_src),
-        SegCopy{VI}[mu_stage[l] for l in nlv:-1:1],
-        SegCopy{VI}[seg_res_copy...],
-        SegProd{VI}[seg_res_prod...],
+        SegCopy{VI, VT}[mu_stage[l] for l in nlv:-1:1],
+        SegCopy{VI, VT}[seg_res_copy...],
+        SegProd{VI, VT}[seg_res_prod...],
         _seg_copy(x0, sjac.jac_copy_dst, sjac.jac_copy_src),
         _seg_prod(x0, sjac.jac_prod_dst, sjac.jac_prod_a, sjac.jac_prod_b),
-        SegCopy{VI}[seg_ccopy...],
-        SegProd{VI}[seg_cmul1...],
-        SegProd{VI}[seg_cmul2...],
+        SegCopy{VI, VT}[seg_ccopy...],
+        SegProd{VI, VT}[seg_cmul1...],
+        SegProd{VI, VT}[seg_cmul2...],
         SegProdC{VI, typeof(similar(x0, 0))}[seg_amul...],
         SegProdC{VI, typeof(similar(x0, 0))}[seg_hmul...],
         _seg_rank1(x0, shess),
         _seg_copy(x0, shess.hess_copy_dst, shess.hess_copy_src),
         similar(x0, length(shess.rows)),
         _seg_prod(x0, hp_dst, hp_a, hp_b),
+        SegPlan{VI, VT}[_sum_plan(x0, s) for s in reverse(ordered)],
     )
+end
+
+_sum_plan(x0, s) = _dev_plan(x0, [1])
+function _sum_plan(x0, s::ExaModels.SubexprSumStage)
+    return _dev_plan(x0, collect(s.ptr))
 end
 
 # ── drivers ───────────────────────────────────────────────────────────────────
 
-_sync_ka!(backend, ::Tuple{}, θoff, i, x, θ) = nothing
-function _sync_ka!(backend, stages::Tuple, θoff, i, x, θ)
-    _sync_ka!(backend, Base.tail(stages), θoff, i + 1, x, θ)
-    _sync_ka_stage!(backend, first(stages), θoff[i], x, θ)
+_sync_ka!(backend, ::Tuple{}, ska, i, x, θ) = nothing
+function _sync_ka!(backend, stages::Tuple, ska, i, x, θ)
+    _sync_ka!(backend, Base.tail(stages), ska, i + 1, x, θ)
+    _sync_ka_stage!(backend, first(stages), ska.θoff[i], ska.sumplans[i], x, θ)
     return nothing
 end
-function _sync_ka_stage!(backend, s::ExaModels.SubexprStage, off, x, θ)
+function _sync_ka_stage!(backend, s::ExaModels.SubexprStage, off, plan, x, θ)
     if !isempty(s.itr)
         ksync(backend)(θ, s.f, s.itr, x, off; ndrange = length(s.itr))
     end
     return nothing
 end
-function _sync_ka_stage!(backend, s::ExaModels.SubexprSumStage, off, x, θ)
+function _sync_ka_stage!(backend, s::ExaModels.SubexprSumStage, off, plan::SegPlan, x, θ)
     if s.n > 0
-        ksum_sync(backend)(θ, s.init, s.ptr, s.src, s.w, x, off; ndrange = s.n)
+        _seg_reduce!(backend, θ, _SumStageOp(), plan, (s.src, s.w, x, θ, s.init, off))
     end
     return nothing
 end
@@ -578,33 +576,19 @@ end
 
 function _sync_point_ka!(backend, m, x)
     ska = m.ska
-    _sync_ka!(backend, m.subexprs, ska.θoff, 1, x, m.θ)
+    _sync_ka!(backend, m.subexprs, ska, 1, x, m.θ)
     return nothing
 end
 
 function _obj_buffered(m, x)
     _sync_point_ka!(m.ext.backend, m, x)
-    if !isempty(m.ext.objbuffer)
-        _obj(m.ext.backend, m.ext.objbuffer, m.objs, x, m.θ)
-        return ExaModels.sum(m.ext.objbuffer)
-    else
-        return zero(eltype(x))
-    end
+    return _obj_sum(m, x)
 end
 
 function _cons_buffered!(m, x, y)
     _sync_point_ka!(m.ext.backend, m, x)
     _cons_nln!(m.ext.backend, y, m.cons, x, m.θ)
-    _conaugs!(m.ext.backend, m.ext.conbuffer, m.cons, x, m.θ)
-    if length(m.ext.conaugptr) > 1
-        compress_to_dense(m.ext.backend)(
-            y,
-            m.ext.conbuffer,
-            m.ext.conaugptr,
-            m.ext.conaugsparsity;
-            ndrange = length(m.ext.conaugptr) - 1,
-        )
-    end
+    _conaugs_fused!(m.ext.backend, y, m.ext.augplan, m.cons, x, m.θ)
     return y
 end
 
