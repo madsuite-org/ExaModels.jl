@@ -71,12 +71,12 @@ const _UNIVARIATES = [
 @inline _in_domain(::typeof(acosh), x) = !(x < 1)
 @inline _in_domain(::typeof(atanh), x) = !(abs(x) > 1)
 @inline _in_domain(::typeof(acoth), x) = !(abs(x) < 1)
-@inline _in_domain(::typeof(^), x1, x2) = !(x1 < 0 && !isinteger(x2))
+@inline _in_domain(::typeof(^), x1, x2) = !(x1 < 0 && isfinite(x2) && !isinteger(x2))
 
 const _RESTRICTED_UNIVARIATES = (:sqrt, :log, :log2, :log10, :log1p, :asin, :acos, :acosh, :atanh, :acoth)
 
 @inline _nan_like(x) = oftype(float(x), NaN)
-@inline _nan_like(x1, x2) = _nan_like(float(x1) + float(x2))
+@inline _nan_like(x1, x2) = _nan_like(x1 + x2)
 
 struct _NaNOutside{F, G}
     f::F # the function that defines the domain
@@ -111,7 +111,7 @@ const _BIVARIATES = [
     (:-, (x1, x2) -> one(x1), (x1, x2) -> -one(x1), (x1, x2) -> zero(x1), (x1, x2) -> zero(x1), (x1, x2) -> zero(x1)),
     (:*, (x1, x2) -> x2, (x1, x2) -> x1, (x1, x2) -> zero(x1), (x1, x2) -> one(x1), (x1, x2) -> zero(x1)),
     (:/, (x1, x2) -> 1 / x2, (x1, x2) -> (-x1) / (x2^2), (x1, x2) -> zero(x1), (x1, x2) -> -1 / (x2^2), (x1, x2) -> (2x1) / (x2^3)),
-    (:^, (x1, x2) -> x2 * (x1^(-1 + x2)), (x1, x2) -> log(x1) * (x1^x2), (x1, x2) -> (-1 + x2) * x2 * (x1^(-2 + x2)), (x1, x2) -> x1^(-1 + x2) + x2 * (x1^(-1 + x2)) * log(x1), (x1, x2) -> (log(x1)^2) * (x1^x2)),
+    (:^, (x1, x2) -> x2 * (x1^(-1 + x2)), (x1, x2) -> _nan_outside(log)(x1) * (x1^x2), (x1, x2) -> (-1 + x2) * x2 * (x1^(-2 + x2)), (x1, x2) -> x1^(-1 + x2) + x2 * (x1^(-1 + x2)) * _nan_outside(log)(x1), (x1, x2) -> (_nan_outside(log)(x1)^2) * (x1^x2)),
     (:atan, (x1, x2) -> x2 / (x1^2 + x2^2), (x1, x2) -> (-x1) / (x1^2 + x2^2), (x1, x2) -> (-2x1 * x2) / ((x1^2 + x2^2)^2), (x1, x2) -> (x1^2 - (x2^2)) / (x1^4 + 2(x1^2) * (x2^2) + x2^4), (x1, x2) -> (2x1 * x2) / ((x1^2 + x2^2)^2)),
     (:hypot, (x1, x2) -> x1 / hypot(x1, x2), (x1, x2) -> x2 / hypot(x1, x2), (x1, x2) -> (-(x1^2) + hypot(x1, x2)^2) / (hypot(x1, x2)^3), (x1, x2) -> (-x1 * x2) / (hypot(x1, x2)^3), (x1, x2) -> (-(x2^2) + hypot(x1, x2)^2) / (hypot(x1, x2)^3)),
     (:max, (x1, x2) -> ifelse(x1 > x2, one(x1), zero(x1)), (x1, x2) -> ifelse(x1 > x2, zero(x1), one(x1)), (x1, x2) -> zero(x1), (x1, x2) -> zero(x1), (x1, x2) -> zero(x1)),
