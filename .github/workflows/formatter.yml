@@ -63,7 +63,7 @@ jobs:
             exit 0
           fi
 
-          DIFF=$(julia --project=@runic -e "using Runic; exit(Runic.main(ARGS))" -- --diff $FILES)
+          DIFF=$(julia --project=@runic -e "using Runic; exit(Runic.main(ARGS))" -- --check --diff $FILES)
           EXIT_CODE=$?
 
           echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT

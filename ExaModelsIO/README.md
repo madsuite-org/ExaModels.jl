@@ -19,6 +19,7 @@ using ExaModels, ExaModelsIO
 write_model("model.h5", m)                     # m::ExaModel
 m2 = read_model("model.h5")                    # a new ExaModel
 m3 = read_model("model.h5"; backend = CUDABackend())
+m4 = read_model("model.h5"; backend = CUDABackend(), prod = true)  # as ExaModel(c; prod = true)
 
 write_model("model.h5", m; solution = result)  # also store a solver result
 read_solution("model.h5")                      # (solution = ..., multipliers = ..., ...)
