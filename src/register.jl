@@ -1,4 +1,14 @@
 """
+    _nan_outside(f)
+
+The function ExaModels calls to evaluate `f` on numbers. For a function whose real domain
+is restricted, this returns NaN outside the domain instead of throwing `DomainError`, which
+is what the same call does in a GPU kernel. A solver can then reject a trial point that
+leaves the domain. Any other function is returned unchanged.
+"""
+@inline _nan_outside(f) = f
+
+"""
     _needs_overload(f, types)
 
 Return `true` when ExaModels should add a method for `f` with the given
@@ -63,17 +73,17 @@ macro register_univariate(f, df, ddf)
             @inline $f(n::$ExaModels.Constant{I}) where {I} = $ExaModels.Constant($f(I))
 
             @inline $f(d::D) where {D<:$ExaModels.AbstractAdjointNode} =
-                $ExaModels.AdjointNode1($f, $f(d.x), $df(d.x), d)
+                $ExaModels.AdjointNode1($f, $ExaModels._nan_outside($f)(d.x), $df(d.x), d)
             @inline $f(t::T) where {T<:$ExaModels.AbstractSecondAdjointNode} =
-                $ExaModels.SecondAdjointNode1($f, $f(t.x), $df(t.x), $ddf(t.x), t)
+                $ExaModels.SecondAdjointNode1($f, $ExaModels._nan_outside($f)(t.x), $df(t.x), $ddf(t.x), t)
 
             @inline (n::$ExaModels.Node1{typeof($f),I})(i, x, θ) where {I} =
-                $f(n.inner(i, x, θ))
+                $ExaModels._nan_outside($f)(n.inner(i, x, θ))
             # structure-pass twin (θ is a NaNSource only in structure passes: the add-time
             # sparsity probe and the device structure kernels, which run once): not
             # inlined, so the probe each add_con compiles stays small; evaluation inlines the tree
             (n::$ExaModels.Node1{typeof($f),I})(i, x, θ::$ExaModels.NaNSource) where {I} =
-                $f(n.inner(i, x, θ))
+                $ExaModels._nan_outside($f)(n.inner(i, x, θ))
         end,
     )
 end
@@ -183,7 +193,7 @@ macro register_bivariate(f, df1, df2, ddf11, ddf12, ddf22)
 
                 x1 = d1.x
                 x2 = d2.x
-                $ExaModels.AdjointNode2($f, $f(x1, x2), $df1(x1, x2), $df2(x1, x2), d1, d2)
+                $ExaModels.AdjointNode2($f, $ExaModels._nan_outside($f)(x1, x2), $df1(x1, x2), $df2(x1, x2), d1, d2)
             end
             @inline function $f(
                 d1::D1,
@@ -196,7 +206,7 @@ macro register_bivariate(f, df1, df2, ddf11, ddf12, ddf22)
                 x1 = d1.x
                 x2 = d2
 
-                $ExaModels.AdjointNode1($f, $f(x1, x2), $df1(x1, x2), d1)
+                $ExaModels.AdjointNode1($f, $ExaModels._nan_outside($f)(x1, x2), $df1(x1, x2), d1)
             end
             @inline function $f(
                 d1::D1,
@@ -208,7 +218,7 @@ macro register_bivariate(f, df1, df2, ddf11, ddf12, ddf22)
 
                 x1 = d1
                 x2 = d2.x
-                $ExaModels.AdjointNode1($f, $f(x1, x2), $df2(x1, x2), d2)
+                $ExaModels.AdjointNode1($f, $ExaModels._nan_outside($f)(x1, x2), $df2(x1, x2), d2)
             end
 
             @inline function $f(
@@ -223,7 +233,7 @@ macro register_bivariate(f, df1, df2, ddf11, ddf12, ddf22)
                 x2 = t2.x
                 $ExaModels.SecondAdjointNode2(
                     $f,
-                    $f(x1, x2),
+                    $ExaModels._nan_outside($f)(x1, x2),
                     $df1(x1, x2),
                     $df2(x1, x2),
                     $ddf11(x1, x2),
@@ -245,7 +255,7 @@ macro register_bivariate(f, df1, df2, ddf11, ddf12, ddf22)
                 x2 = t2
                 $ExaModels.SecondAdjointNode1(
                     $ExaModels.SecondFixed($f),
-                    $f(x1, x2),
+                    $ExaModels._nan_outside($f)(x1, x2),
                     $df1(x1, x2),
                     $ddf11(x1, x2),
                     t1,
@@ -263,7 +273,7 @@ macro register_bivariate(f, df1, df2, ddf11, ddf12, ddf22)
                 x2 = t2.x
                 $ExaModels.SecondAdjointNode1(
                     $ExaModels.FirstFixed($f),
-                    $f(x1, x2),
+                    $ExaModels._nan_outside($f)(x1, x2),
                     $df2(x1, x2),
                     $ddf22(x1, x2),
                     t2,
@@ -271,18 +281,18 @@ macro register_bivariate(f, df1, df2, ddf11, ddf12, ddf22)
             end
 
             @inline (n::$ExaModels.Node2{typeof($f),I1,I2})(i, x, θ) where {I1,I2} =
-                $f(n.inner1(i, x, θ), n.inner2(i, x, θ))
+                $ExaModels._nan_outside($f)(n.inner1(i, x, θ), n.inner2(i, x, θ))
             @inline (n::$ExaModels.Node2{typeof($f),I1,I2})(i, x, θ) where {I1<:Real,I2} =
-                $f(n.inner1, n.inner2(i, x, θ))
+                $ExaModels._nan_outside($f)(n.inner1, n.inner2(i, x, θ))
             @inline (n::$ExaModels.Node2{typeof($f),I1,I2})(i, x, θ) where {I1,I2<:Real} =
-                $f(n.inner1(i, x, θ), n.inner2)
+                $ExaModels._nan_outside($f)(n.inner1(i, x, θ), n.inner2)
             # sparsity-probe twins, as for Node1 above
             (n::$ExaModels.Node2{typeof($f),I1,I2})(i, x, θ::$ExaModels.NaNSource) where {I1,I2} =
-                $f(n.inner1(i, x, θ), n.inner2(i, x, θ))
+                $ExaModels._nan_outside($f)(n.inner1(i, x, θ), n.inner2(i, x, θ))
             (n::$ExaModels.Node2{typeof($f),I1,I2})(i, x, θ::$ExaModels.NaNSource) where {I1<:Real,I2} =
-                $f(n.inner1, n.inner2(i, x, θ))
+                $ExaModels._nan_outside($f)(n.inner1, n.inner2(i, x, θ))
             (n::$ExaModels.Node2{typeof($f),I1,I2})(i, x, θ::$ExaModels.NaNSource) where {I1,I2<:Real} =
-                $f(n.inner1(i, x, θ), n.inner2)
+                $ExaModels._nan_outside($f)(n.inner1(i, x, θ), n.inner2)
         end,
     )
 end

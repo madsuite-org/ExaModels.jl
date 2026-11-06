@@ -59,7 +59,45 @@ const _UNIVARIATES = [
     (:acoth, x -> abs(x) < one(x) ? oftype(x, eltype(x)(NaN)) : inv(1 - x^2), x -> abs(x) < one(x) ? oftype(x, eltype(x)(NaN)) : (-abs2(inv(1 - x^2))) * (-2x)),
 ]
 
+# Functions whose real domain is restricted: `_in_domain` is false where Base throws
+# `DomainError`. Evaluation and derivatives return NaN there (see `_nan_outside`).
+@inline _in_domain(::typeof(sqrt), x) = !(x < 0)
+@inline _in_domain(::typeof(log), x) = !(x < 0)
+@inline _in_domain(::typeof(log2), x) = !(x < 0)
+@inline _in_domain(::typeof(log10), x) = !(x < 0)
+@inline _in_domain(::typeof(log1p), x) = !(x < -1)
+@inline _in_domain(::typeof(asin), x) = !(abs(x) > 1)
+@inline _in_domain(::typeof(acos), x) = !(abs(x) > 1)
+@inline _in_domain(::typeof(acosh), x) = !(x < 1)
+@inline _in_domain(::typeof(atanh), x) = !(abs(x) > 1)
+@inline _in_domain(::typeof(acoth), x) = !(abs(x) < 1)
+@inline _in_domain(::typeof(^), x1, x2) = !(x1 < 0 && !isinteger(x2))
+
+const _RESTRICTED_UNIVARIATES = (:sqrt, :log, :log2, :log10, :log1p, :asin, :acos, :acosh, :atanh, :acoth)
+
+@inline _nan_like(x) = oftype(float(x), NaN)
+@inline _nan_like(x1, x2) = _nan_like(float(x1) + float(x2))
+
+struct _NaNOutside{F, G}
+    f::F # the function that defines the domain
+    g::G # what to evaluate inside it
+end
+# AD passes evaluate the same nodes on adjoint nodes, which `g` handles; the domain is a
+# question about numbers only.
+@inline (h::_NaNOutside)(x) = h.g(x)
+@inline (h::_NaNOutside)(x1, x2) = h.g(x1, x2)
+@inline (h::_NaNOutside)(x::Real) = _in_domain(h.f, x) ? h.g(x) : _nan_like(x)
+@inline (h::_NaNOutside)(x1::Real, x2::Real) = _in_domain(h.f, x1, x2) ? h.g(x1, x2) : _nan_like(x1, x2)
+
+for fname in _RESTRICTED_UNIVARIATES
+    @eval @inline _nan_outside(::typeof(Base.$fname)) = _NaNOutside(Base.$fname, Base.$fname)
+end
+@inline _nan_outside(::typeof(^)) = _NaNOutside(^, ^)
+
 for (fname, df, ddf) in _UNIVARIATES
+    if fname in _RESTRICTED_UNIVARIATES
+        df, ddf = _NaNOutside(getfield(Base, fname), df), _NaNOutside(getfield(Base, fname), ddf)
+    end
     @eval @register_univariate(Base.$fname, $df, $ddf)
 end
 
@@ -82,6 +120,9 @@ const _BIVARIATES = [
 ]
 
 for (fname, df1, df2, ddf11, ddf12, ddf22) in _BIVARIATES
+    if fname === :^
+        df1, df2, ddf11, ddf12, ddf22 = map(g -> _NaNOutside(^, g), (df1, df2, ddf11, ddf12, ddf22))
+    end
     @eval @register_bivariate(Base.$fname, $df1, $df2, $ddf11, $ddf12, $ddf22)
 end
 
