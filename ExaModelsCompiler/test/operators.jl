@@ -17,6 +17,17 @@ import ExaModels: instantiate, ArgSource
         @test repr(1:arg.N) == "(1:arg.N)"
     end
 
+    @testset "expression over a placeholder range, indexed symbolically" begin
+        # A placeholder range indexes by its own elements, so `s[i]` substitutes
+        # `i` directly (no lookup), as for a concrete `1:n`.
+        c = ExaModels.ExaCore(concrete = Val(true))
+        ExaModels.@add_var(c, y, arg.N; start = arg.v)
+        ExaModels.@add_expr(c, s, 2 * y[k] for k in 1:arg.N)
+        ExaModels.@add_obj(c, s[i]^2 for i in 1:arg.N)
+        m = ExaModels.ExaModel(c, (N = 3, v = [1.0, 2.0, 3.0]))
+        @test ExaModels.obj(m, m.meta.x0) == 56.0     # 4 + 16 + 36
+    end
+
     @testset "building a model against arg" begin
         # The stated use case: sizes and starting values supplied later.
         c = ExaModels.ExaCore(concrete = Val(true))

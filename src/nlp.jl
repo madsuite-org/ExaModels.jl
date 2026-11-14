@@ -1188,8 +1188,21 @@ end
 @inline _elements_are_indices(ns::Tuple) =
     _index_axis(first(ns)) isa Val{true} ? _elements_are_indices(Base.tail(ns)) : Val(false)
 @inline _index_axis(::AbstractUnitRange) = Val(true)
-@inline _index_axis(::AbstractArgNode) = Val(true)
+@inline _index_axis(n::AbstractArgNode) = _placeholder_axis(n)
 @inline _index_axis(::Integer) = Val(false)
+# A placeholder axis is what `_infer_subexpr_dims` makes of a placeholder iterator,
+# `length(collect(itr))`.  A placeholder range (`1:arg.N`) indexes by its own
+# elements like a concrete range; any other placeholder iterator would need a
+# lookup into data that does not exist until instantiation.
+@inline _placeholder_axis(n::ArgNode1{typeof(length), <:ArgNode1{typeof(collect)}}) =
+    _placeholder_axis(getfield(getfield(n, :inner), :inner))
+@inline _placeholder_axis(::ArgNode2{Colon}) = Val(true)
+@inline _placeholder_axis(n) = throw(
+    ArgumentError(
+        "an expression over a placeholder iterator that is not a range cannot be " *
+            "indexed with a symbolic index yet",
+    ),
+)
 @inline _index_axis(n) = throw(
     ArgumentError(
         "an expression over an iterator with axis $(typeof(n)) cannot be indexed " *
@@ -1203,10 +1216,10 @@ end
 # `add_obj(c, i * y[i] for i in 1:3)` with `y` built over `p` runs over
 # `[(1, p[1]), (2, p[2]), (3, p[3])]` with body `d[1] * x[d[2]]`.  A body without
 # lookups is returned untouched, and the check is decided at compile time.
-@inline function _body_and_iter(gen)
-    body = gen.f(DataSource())
-    _has_lookup(typeof(body)) || return body, gen.iter
-    return _hoist_lookups(body, gen.iter)
+@inline _body_and_iter(gen) = _body_and_iter(gen.f(DataSource()), gen.iter)
+@inline function _body_and_iter(body, iter)
+    _has_lookup(typeof(body)) || return body, iter
+    return _hoist_lookups(body, iter)
 end
 function _hoist_lookups(body, iter)
     iter isa AbstractArgNode && throw(
@@ -1807,9 +1820,10 @@ Prefer the generator form (`add_obj(core, gen)`) for typical use; this form
 is intended for code that builds expression trees programmatically.
 """
 function add_obj(c::C, expr::N, pars = 1:1; name = nothing) where {T, C <: ExaCore{T}, N <: AbstractNode}
-    f = _block_simdfunction(c.obj, T, expr, c.nobj, c.nnzg, c.nnzh)
+    body, pars = _body_and_iter(expr, _adapt_iter(pars))
+    f = _block_simdfunction(c.obj, T, body, c.nobj, c.nnzg, c.nnzh)
 
-    return _add_obj_route(c.obj, c, f, _adapt_iter(pars), name)
+    return _add_obj_route(c.obj, c, f, pars, name)
 end
 
 # as for constraints (see `_add_con_route`): specialized in concrete storage,
@@ -1941,8 +1955,8 @@ function _get_function_and_iter(::Type{T}, gen::Base.Generator, c) where {T}
     return f, pars
 end
 function _get_function_and_iter(::Type{T}, gen::Tuple{E, I}, c) where {T, E <: AbstractNode, I}
-    f = _block_simdfunction(c.cons, T, gen[1], c.ncon, c.nnzj, c.nnzh)
-    pars = gen[2]
+    body, pars = _body_and_iter(gen[1], gen[2])
+    f = _block_simdfunction(c.cons, T, body, c.ncon, c.nnzj, c.nnzh)
     return f, pars
 end
 

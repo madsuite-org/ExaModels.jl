@@ -511,6 +511,26 @@ function test_subexpr_looked_up_elements(backend)
     c, ya = add_expr(c, x[k] for k in [3, 1, 2])
     @test_throws ArgumentError add_obj(c, ya[i + n] for i in 1:2)
 
+    # an expression over a placeholder array cannot be looked up before
+    # instantiation, so a symbolic index into it is refused
+    c, a = ExaCore(nargs = Val(1))
+    c, x = add_var(c, 3)
+    c, yp = add_expr(c, x[k] for k in a.p)
+    @test_throws ArgumentError add_obj(c, yp[i] for i in 1:2)
+
+    # the pre-built `(node, iter)` forms hoist lookups like the generator forms
+    c = ExaCore()
+    c, x = add_var(c, 3; start = [1.0, 2.0, 3.0])
+    c, yb = add_expr(c, x[k] for k in [3, 1, 2])
+    c, _ = add_obj(c, yb[ExaModels.DataSource()], 1:3)
+    c, _ = add_con(c, yb[ExaModels.DataSource()], 1:2)
+    m = ExaModel(c)
+    # no lookup is left for a kernel (on the host one would still evaluate)
+    @test !ExaModels._has_lookup(typeof(first(m.objs).f.f))
+    @test !ExaModels._has_lookup(typeof(first(m.cons).f.f))
+    @test NLPModels.obj(m, m.meta.x0) ≈ 6.0
+    @test NLPModels.cons(m, m.meta.x0) ≈ [3.0, 1.0]
+
     # the example from #293
     c = ExaCore(; backend, concrete = Val(true))
     p, x0 = [3, 1, 2], [1.0, 2.0, 3.0]
