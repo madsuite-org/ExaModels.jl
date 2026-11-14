@@ -463,7 +463,7 @@ function _dense_hess(m, x, y)
     NLPModels.hess_structure!(m, rows, cols)
     rows, cols = Array(rows), Array(cols)
     vals = Array(NLPModels.hess_coord(m, x, y))
-    H = zeros(m.meta.nvar, m.meta.nvar)
+    H = zeros(eltype(vals), m.meta.nvar, m.meta.nvar)
     for (r, c, v) in zip(rows, cols, vals)
         H[r, c] += v
         r == c || (H[c, r] += v)
@@ -474,8 +474,9 @@ function _dense_jac(m, x)
     rows, cols = similar(x, Int, m.meta.nnzj), similar(x, Int, m.meta.nnzj)
     NLPModels.jac_structure!(m, rows, cols)
     rows, cols = Array(rows), Array(cols)
-    J = zeros(m.meta.ncon, m.meta.nvar)
-    for (r, c, v) in zip(rows, cols, Array(NLPModels.jac_coord(m, x)))
+    vals = Array(NLPModels.jac_coord(m, x))
+    J = zeros(eltype(vals), m.meta.ncon, m.meta.nvar)
+    for (r, c, v) in zip(rows, cols, vals)
         J[r, c] += v
     end
     return J
