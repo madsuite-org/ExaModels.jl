@@ -424,6 +424,89 @@ end
 """
 Run all subexpression tests.
 """
+# An expression over an iterator whose elements are not their own indices: `y[i]`
+# must take the i-th element of the iterator (#293).  The reference writes the
+# same model with the looked-up values zipped into the generators' data.
+const _LOOKUP_X0 = [1.0, 2.0, 3.0, 0.5]
+const _LOOKUP_P = [3, 1, 2, 4]
+const _LOOKUP_Q = [(2, 1), (1, 2), (2, 2)]
+
+function _lookup_reference()
+    p, q = _LOOKUP_P, _LOOKUP_Q
+    c = ExaCore()
+    @add_var(c, x, 4; start = _LOOKUP_X0)
+    @add_obj(c, i * x[pi]^2 for (i, pi) in zip(1:4, p))
+    @add_con(c, g, sin(x[a]) * x[b] for (a, b) in zip(p[1:3], p[2:4]))
+    c, _ = add_con!(c, g, i => x[pn]^3 for (i, pn) in zip(1:3, p[2:4]))
+    @add_con(c, x[pp] * x[i] for (i, pp) in zip(1:4, p[p]))
+    @add_con(c, x[a]^2 * x[b] + a for (a, b) in q)
+    return ExaModel(c)
+end
+
+function _lookup_model(backend, concrete, buffered)
+    p, q = _LOOKUP_P, _LOOKUP_Q
+    c = ExaCore(; backend, concrete)
+    @add_var(c, x, 4; start = _LOOKUP_X0)
+    @add_expr(c, y, x[k] for k in p; buffered = buffered)
+    @add_obj(c, i * y[i]^2 for i in 1:4)
+    @add_con(c, g, sin(y[i]) * y[i + 1] for i in 1:3)
+    c, _ = add_con!(c, g, i => y[i + 1]^3 for i in 1:3)
+    @add_expr(c, z, y[k] for k in p)                   # nested: z[i] = x[p[p[i]]]
+    @add_con(c, z[i] * x[i] for i in 1:4)
+    @add_expr(c, w, x[a]^2 * x[b] + a for (a, b) in q)  # tuple elements
+    @add_con(c, w[i] for i in 1:3)
+    return ExaModel(c)
+end
+
+function _dense_hess(m, x, y)
+    rows, cols = similar(x, Int, m.meta.nnzh), similar(x, Int, m.meta.nnzh)
+    NLPModels.hess_structure!(m, rows, cols)
+    rows, cols = Array(rows), Array(cols)
+    vals = Array(NLPModels.hess_coord(m, x, y))
+    H = zeros(m.meta.nvar, m.meta.nvar)
+    for (r, c, v) in zip(rows, cols, vals)
+        H[r, c] += v
+        r == c || (H[c, r] += v)
+    end
+    return H
+end
+function _dense_jac(m, x)
+    rows, cols = similar(x, Int, m.meta.nnzj), similar(x, Int, m.meta.nnzj)
+    NLPModels.jac_structure!(m, rows, cols)
+    rows, cols = Array(rows), Array(cols)
+    J = zeros(m.meta.ncon, m.meta.nvar)
+    for (r, c, v) in zip(rows, cols, Array(NLPModels.jac_coord(m, x)))
+        J[r, c] += v
+    end
+    return J
+end
+
+function test_subexpr_looked_up_elements(backend)
+    r = _lookup_reference()
+    xr, yr = r.meta.x0, ones(r.meta.ncon)
+    for concrete in (Val(false), Val(true)), buffered in (false, true)
+        @testset "concrete = $concrete, buffered = $buffered" begin
+            m = _lookup_model(backend, concrete, buffered)
+            x = m.meta.x0
+            y = fill!(similar(x, m.meta.ncon), 1)
+            @test NLPModels.obj(m, x) ≈ NLPModels.obj(r, xr)
+            @test Array(NLPModels.cons(m, x)) ≈ NLPModels.cons(r, xr)
+            @test Array(NLPModels.grad(m, x)) ≈ NLPModels.grad(r, xr)
+            @test _dense_jac(m, x) ≈ _dense_jac(r, xr)
+            @test _dense_hess(m, x, y) ≈ _dense_hess(r, xr, yr)
+        end
+    end
+
+    # the example from #293
+    c = ExaCore(; backend, concrete = Val(true))
+    p, x0 = [3, 1, 2], [1.0, 2.0, 3.0]
+    c, x = add_var(c, 3; lvar = x0, uvar = x0)
+    c, y = add_expr(c, x[p_i] for p_i in p)
+    c, _ = add_obj(c, i * y[i] for i in 1:3)
+    m = ExaModel(c)
+    return @test NLPModels.obj(m, m.meta.lvar) ≈ sum(i * x0[p[i]] for i in 1:3)
+end
+
 function test_subexpr(backend)
     # @testset "Subexpr basic (lifted)" begin
     #     test_subexpr_basic(backend)
@@ -475,6 +558,10 @@ function test_subexpr(backend)
 
     @testset "Subexpr concrete index with constant term" begin
         test_subexpr_concrete_index_constant_term(backend)
+    end
+
+    @testset "Subexpr over looked-up elements" begin
+        test_subexpr_looked_up_elements(backend)
     end
 
 end

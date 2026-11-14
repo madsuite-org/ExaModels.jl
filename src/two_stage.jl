@@ -207,8 +207,8 @@ function add_con(
     gen = _get_generator(ns)
     dims = _get_con_dims(ns)
     gen = _adapt_gen(gen)
-    f = _block_simdfunction(c.cons, T, gen.f(DataSource()), c.ncon, c.nnzj, c.nnzh)
-    pars = gen.iter
+    body, pars = _body_and_iter(gen)
+    f = _block_simdfunction(c.cons, T, body, c.ncon, c.nnzj, c.nnzh)
 
     append!(c.backend, c.tag.con_scen, 0, length(pars))
     return _add_con_route(c.cons, c, f, pars, dims, start, lcon, ucon, name, FirstStageConstraintTag())
@@ -236,8 +236,8 @@ function add_con(
     gen = _get_generator(ns)
     dims = _get_con_dims(ns)
     gen = _adapt_gen(gen)
-    f = _block_simdfunction(c.cons, T, gen.f(DataSource()), c.ncon, c.nnzj, c.nnzh)
-    pars = gen.iter
+    body, pars = _body_and_iter(gen)
+    f = _block_simdfunction(c.cons, T, body, c.ncon, c.nnzj, c.nnzh)
 
     nscen = c.tag.nscen
     len = length(pars)

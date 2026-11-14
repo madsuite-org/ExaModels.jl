@@ -303,6 +303,38 @@ end
 # numbers — are their own re-indexing.
 @inline _reindex(x, i) = x
 
+"""
+    DataLookup{A, I} <: AbstractNode
+
+The element `arr[idx]` of a subexpression's iterator, where `idx` depends on the
+row data of the enclosing generator.  Indexing an [`Expression`](@ref) with a
+symbolic index produces this when the expression's iterator elements are not
+their own indices (`add_expr(c, x[k] for k in p)` with `p = [3, 1, 2]`).
+
+It exists only while a generator body is being built: the function that receives
+the body ([`add_obj`](@ref), [`add_con`](@ref), [`add_con!`](@ref)) evaluates
+`arr[idx]` for every row on the host, appends the results to that row's data,
+and replaces the node by a [`DataIndexed`](@ref) access (see `_hoist_lookups`).
+No kernel ever evaluates it.
+"""
+struct DataLookup{A, I} <: AbstractNode
+    arr::A
+    idx::I
+end
+
+# A concrete index resolves the lookup at once (`s[2]` on an expression whose
+# body indexes another expression); a symbolic one keeps it for hoisting.
+@inline function _reindex(n::DataLookup, i)
+    idx = _reindex(getfield(n, :idx), i)
+    return _lookup(getfield(n, :arr), idx)
+end
+@inline _lookup(arr, idx::Integer) = @inbounds arr[idx]
+@inline _lookup(arr, idx) = DataLookup(arr, idx)
+
+# Host evaluation, used only to compute the hoisted values (the index never
+# depends on `x` or `θ`).
+@inline (n::DataLookup)(i, x, θ) = getfield(n, :arr)[getfield(n, :idx)(i, x, θ)]
+
 struct FirstFixed{F}
     inner::F
 end
@@ -663,3 +695,72 @@ without perturbing any live path.
     p = a * b
     return ifelse(iszero(a), zero(p), p)
 end
+
+# ── Hoisting expression lookups into row data ────────────────────────────────
+#
+# `_hoist(n, acc)` rewrites a generator body for row data `(d, v₁, …, vₖ)`: the
+# body's own `DataSource` becomes element 1, and each `DataLookup` it meets is
+# appended to `acc` and becomes element `length(acc) + 1`.  It walks the same node
+# set as `_reindex`; the lookups are evaluated per row by `_hoist_lookups`.
+@inline _hoist(::DataSource, acc) = DataIndexed(DataSource(), 1), acc
+@inline _hoist(n::DataLookup, acc) = DataIndexed(DataSource(), length(acc) + 2), (acc..., n)
+@inline function _hoist(n::DataIndexed{I, J}, acc) where {I, J}
+    inner, acc = _hoist(getfield(n, :inner), acc)
+    return DataIndexed(inner, J), acc
+end
+@inline function _hoist(n::Var, acc)
+    i, acc = _hoist(getfield(n, :i), acc)
+    return Var(i), acc
+end
+@inline function _hoist(n::ParameterNode, acc)
+    i, acc = _hoist(getfield(n, :i), acc)
+    return ParameterNode(i), acc
+end
+@inline function _hoist(n::Node1{F}, acc) where {F}
+    inner, acc = _hoist(getfield(n, :inner), acc)
+    return Node1{F, typeof(inner)}(inner), acc
+end
+@inline function _hoist(n::Node2{F}, acc) where {F}
+    a, acc = _hoist(getfield(n, :inner1), acc)
+    b, acc = _hoist(getfield(n, :inner2), acc)
+    return Node2{F, typeof(a), typeof(b)}(a, b), acc
+end
+@inline function _hoist(n::SumNode, acc)
+    inners, acc = _hoist_all(getfield(n, :inners), acc)
+    return SumNode(inners), acc
+end
+@inline function _hoist(n::ProdNode, acc)
+    inners, acc = _hoist_all(getfield(n, :inners), acc)
+    return ProdNode(inners), acc
+end
+@inline function _hoist(p::Pair, acc)
+    a, acc = _hoist(p.first, acc)
+    b, acc = _hoist(p.second, acc)
+    return a => b, acc
+end
+@inline _hoist(x, acc) = x, acc
+@inline _hoist_all(::Tuple{}, acc) = (), acc
+@inline function _hoist_all(t::Tuple, acc)
+    a, acc = _hoist(first(t), acc)
+    rest, acc = _hoist_all(Base.tail(t), acc)
+    return (a, rest...), acc
+end
+
+# Whether a node type contains a `DataLookup` anywhere.  Decided on the type
+# alone and foldable, so a body without lookups — every body that does not index
+# such an expression — compiles no hoisting code at all (as `_niv` in merge.jl).
+Base.@assume_effects :foldable _has_lookup(::Type) = false
+Base.@assume_effects :foldable _has_lookup(::Type{<:DataLookup}) = true
+Base.@assume_effects :foldable _has_lookup(::Type{DataIndexed{I, J}}) where {I, J} = _has_lookup(I)
+Base.@assume_effects :foldable _has_lookup(::Type{Var{I}}) where {I} = _has_lookup(I)
+Base.@assume_effects :foldable _has_lookup(::Type{ParameterNode{I}}) where {I} = _has_lookup(I)
+Base.@assume_effects :foldable _has_lookup(::Type{Node1{F, I}}) where {F, I} = _has_lookup(I)
+Base.@assume_effects :foldable _has_lookup(::Type{Node2{F, I1, I2}}) where {F, I1, I2} =
+    _has_lookup(I1) || _has_lookup(I2)
+Base.@assume_effects :foldable _has_lookup(::Type{SumNode{I}}) where {I} = _has_lookup(I)
+Base.@assume_effects :foldable _has_lookup(::Type{ProdNode{I}}) where {I} = _has_lookup(I)
+Base.@assume_effects :foldable _has_lookup(::Type{Pair{A, B}}) where {A, B} =
+    _has_lookup(A) || _has_lookup(B)
+Base.@assume_effects :foldable _has_lookup(::Type{Tuple{}}) = false
+Base.@assume_effects :foldable _has_lookup(::Type{T}) where {T <: Tuple} =
+    _has_lookup(Base.tuple_type_head(T)) || _has_lookup(Base.tuple_type_tail(T))
