@@ -877,7 +877,7 @@ function Base.show(io::IO, c::AbstractExaModel{T, VT}) where {T, VT}
 end
 
 """
-    ExaModel(core; prod = false, precompile = false)
+    ExaModel(core; prod = false, precompile = false, variable_bounds_analysis = true, constraint_bounds_analysis = true)
 
 Returns an `ExaModel` object, which can be solved by nonlinear
 optimization solvers within `JuliaSmoothOptimizer` ecosystem, such as
@@ -887,6 +887,17 @@ With `precompile = true`, the callbacks are compiled before the model is returne
 first call a solver or a benchmark makes spends no time compiling. On the CPU nothing is
 evaluated. On a device kernels compile only when they launch, so each callback is evaluated
 once at the starting point (see [`precompile_callbacks`](@ref)).
+
+`variable_bounds_analysis` and `constraint_bounds_analysis` are passed to
+`NLPModels.NLPModelMeta`. When `true` (the default), the model's meta holds the index sets
+`ifix`, `ilow`, `iupp`, `irng`, `ifree`, `iinf` (variables) and `jfix`, `jlow`, `jupp`,
+`jrng`, `jfree`, `jinf` (constraints). Setting them to `false` skips computing these sets,
+which avoids the `findall` calls on device arrays when the model lives on a GPU. Leave them
+`true` if anything reads those sets: `NLPModelsModifiers.SlackModel`, for example, reads
+`jlow`, `jupp` and `jrng` directly, and `show` reports their sizes. With
+`constraint_bounds_analysis = false`, NLPModels answers `equality_constrained`,
+`inequality_constrained` and `has_equalities` by iterating over `lcon` and `ucon` element by
+element, which fails on a GPU array when scalar indexing is disallowed.
 
 ## Example
 ```jldoctest
@@ -923,9 +934,19 @@ julia> result = ipopt(m; print_level=0)    # solve the problem
 ```
 """
 # No-oracle path: always returns ExaModel (type-stable for juliac --trim=safe).
-function ExaModel(c::ExaCore{T, VT, B, S, V, P, O, C, R, Tuple{}, Tuple{}, Tuple{}}; prod = false, precompile = false, kwargs...) where {T, VT, B, S, V, P, O, C, R}
+function ExaModel(
+        c::ExaCore{T, VT, B, S, V, P, O, C, R, Tuple{}, Tuple{}, Tuple{}};
+        prod = false,
+        precompile = false,
+        variable_bounds_analysis::Bool = true,
+        constraint_bounds_analysis::Bool = true,
+        kwargs...,
+    ) where {T, VT, B, S, V, P, O, C, R}
     _recipe_check(c)
-    m = _build_model(c, c.var, c.par, c.obj, c.cons, prod)
+    m = _build_model(
+        c, c.var, c.par, c.obj, c.cons, prod;
+        variable_bounds_analysis, constraint_bounds_analysis,
+    )
     precompile && _compile_callbacks(m, prod)
     return m
 end
@@ -935,12 +956,19 @@ end
 # inferable, so build behind `invokelatest`: `_model_from_core` is then compiled for the
 # concrete core only, and nothing here has a backedge to an abstractly inferred copy
 # that packages loaded later could invalidate.
-_build_model(c, ::Tuple, ::Tuple, ::Tuple, ::Tuple, prod) = _model_from_core(c, prod)
-_build_model(c, var, par, obj, cons, prod) = Base.invokelatest(_model_from_dynamic_core, c, prod)
-_model_from_dynamic_core(c, prod) =
-    Base.invokelatest(_model_from_core, Base.invokelatest(_concretize, c), prod)
+_build_model(c, ::Tuple, ::Tuple, ::Tuple, ::Tuple, prod; kwargs...) =
+    _model_from_core(c, prod; kwargs...)
+_build_model(c, var, par, obj, cons, prod; kwargs...) =
+    Base.invokelatest(_model_from_dynamic_core, c, prod; kwargs...)
+_model_from_dynamic_core(c, prod; kwargs...) =
+    Base.invokelatest(_model_from_core, Base.invokelatest(_concretize, c), prod; kwargs...)
 
-function _model_from_core(c::ExaCore{T}, prod) where {T}
+function _model_from_core(
+        c::ExaCore{T},
+        prod;
+        variable_bounds_analysis::Bool = true,
+        constraint_bounds_analysis::Bool = true,
+    ) where {T}
     c = _finalize_merged(c)
     prod && !isempty(c.subexprs) && error(
         "ExaModel(c; prod = true) is not yet supported with buffered subexpressions",
@@ -966,7 +994,9 @@ function _model_from_core(c::ExaCore{T}, prod) where {T}
         # would set it on all.
         copy(c.θ),
         NLPModels.NLPModelMeta(
-            c.nvar,
+            c.nvar;
+            variable_bounds_analysis,
+            constraint_bounds_analysis,
             ncon = c.ncon,
             nnzj = sjac === nothing ? c.nnzj : length(sjac.rows),
             nnzh = shess === nothing ? c.nnzh : length(shess.rows),
