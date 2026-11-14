@@ -79,6 +79,11 @@ function _print_tree(io::IO, node::DataIndexed{I, n}, indent::Int) where {I, n}
         print(io, ".", n)
     end
 end
+function _print_tree(io::IO, node::DataLookup, indent::Int)
+    print(io, " "^indent, "iter[")
+    _print_tree(io, getfield(node, :idx), 0)
+    return print(io, "]")
+end
 function _print_tree(io::IO, node::VarSource, indent::Int)
     return print(io, " "^indent, "x")
 end
@@ -251,6 +256,10 @@ function Base.show(io::IO, node::DataIndexed{I, n}) where {I, n}
     return print(io, _expr_string(node))
 end
 
+function Base.show(io::IO, node::DataLookup)
+    return print(io, _expr_string(node))
+end
+
 function Base.show(io::IO, node::Node1{F, I}) where {F, I}
     return print(io, _expr_string(node))
 end
@@ -358,6 +367,7 @@ _short_type(::ParameterSource) = "ParameterSource"
 _short_type(::ParameterNode) = "ParameterNode"
 _short_type(::DataSource) = "DataSource"
 _short_type(::DataIndexed) = "DataIndexed"
+_short_type(::DataLookup) = "DataLookup"
 _short_type(::ArgLeaf) = "ArgLeaf"
 _short_type(::Constant{T}) where {T} = "Constant{$T}"
 _short_type(::Node1{F}) where {F} = "Node1{$(_opname(F))}"

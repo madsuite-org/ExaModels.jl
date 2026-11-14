@@ -279,6 +279,12 @@ end
 # Unwrap to the inner Pair when SIMDFunction does type-conversion on literals.
 # After this, SIMDFunction.f is a plain Pair — no new offset0 dispatches needed.
 @inline replace_T(t, cap::ConAugPair) = replace_T(t, cap.pair)
+Base.@assume_effects :foldable _contains_node(::Type{ConAugPair{C, P}}, ::Type{X}) where {C, P, X} =
+    _contains_node(P, X)
+@inline function _hoist(cap::ConAugPair, acc)
+    pair, acc = _hoist(cap.pair, acc)
+    return ConAugPair(cap.con, pair), acc
+end
 
 # For 1D constraints: single index, adjusted for the range start (always
 # computes i - (s-1) for a uniform return type regardless of start value).
@@ -1154,11 +1160,7 @@ end
     idx = i - _start(s.size[1]) + 1
     return _reindex(s.f, s.iter[idx])
 end
-@inline function Base.getindex(s::Expression, i)
-    # Symbolic index case - the symbolic index IS the iterator element
-    # No adjustment needed; the index is used directly in expression building
-    return _reindex(s.f, i)
-end
+@inline Base.getindex(s::Expression, i) = _reindex(s.f, _symbolic_element(s, (i,)))
 @inline function Base.getindex(s::Expression, is::Vararg{I, N}) where {I <: Integer, N}
     @assert(length(is) == length(s.size), "Expression index dimension error")
     _bound_check(s.size, is)
@@ -1166,10 +1168,78 @@ end
     return _reindex(s.f, s.iter[idx])
 end
 @inline function _getindex(s::Expression, is, ::Val{false})
-    # Symbolic indices case - the symbolic indices ARE the iterator elements
-    # No adjustment needed; the indices are used directly in expression building
     @assert(length(is) == length(s.size), "Expression index dimension error")
-    return _reindex(s.f, is)
+    return _reindex(s.f, _symbolic_element(s, is))
+end
+
+# The iterator element at a symbolic index.  Over unit ranges (`1:n`, `0:T`, a
+# product of them, or placeholder ranges of a recipe) the element at an index is
+# the index itself, so the index is substituted directly.  Otherwise the element
+# is looked up: `add_expr(c, x[k] for k in p)` indexed as `s[i]` must give
+# `x[p[i]]`, not `x[i]`.  The lookup becomes a `DataLookup`, which the function
+# receiving the body hoists into its row data (see `_body_and_iter`).
+@inline _symbolic_element(s::Expression, is) = _symbolic_element(s, is, _elements_are_indices(s.size))
+@inline _symbolic_element(s, is::Tuple{Any}, ::Val{true}) = is[1]
+@inline _symbolic_element(s, is, ::Val{true}) = is
+@inline _symbolic_element(s, is, ::Val{false}) =
+    DataLookup(s.iter, idxx(is .- (_start.(s.size) .- 1), _length.(s.size)))
+
+@inline _elements_are_indices(::Tuple{}) = Val(true)
+@inline _elements_are_indices(ns::Tuple) =
+    _index_axis(first(ns)) isa Val{true} ? _elements_are_indices(Base.tail(ns)) : Val(false)
+@inline _index_axis(::AbstractUnitRange) = Val(true)
+@inline _index_axis(n::AbstractArgNode) = _placeholder_axis(n)
+@inline _index_axis(::Integer) = Val(false)
+# A placeholder axis is what `_infer_subexpr_dims` makes of a placeholder iterator,
+# `length(collect(itr))`.  A placeholder range (`1:arg.N`) indexes by its own
+# elements like a concrete range; any other placeholder iterator would need a
+# lookup into data that does not exist until instantiation.
+@inline _placeholder_axis(n::ArgNode1{typeof(length), <:ArgNode1{typeof(collect)}}) =
+    _placeholder_axis(getfield(getfield(n, :inner), :inner))
+@inline _placeholder_axis(::ArgNode2{Colon}) = Val(true)
+@inline _placeholder_axis(n) = throw(
+    ArgumentError(
+        "an expression over a placeholder iterator that is not a range cannot be " *
+            "indexed with a symbolic index yet",
+    ),
+)
+@inline _index_axis(n) = throw(
+    ArgumentError(
+        "an expression over an iterator with axis $(typeof(n)) cannot be indexed " *
+            "with a symbolic index; collect the iterator into an array",
+    ),
+)
+
+# The body of a generator, and the data it runs over.  When the body indexes an
+# expression whose elements are looked up (see `_symbolic_element`), each lookup
+# is evaluated per row here, on the host, and appended to the row's data:
+# `add_obj(c, i * y[i] for i in 1:3)` with `y` built over `p` runs over
+# `[(1, p[1]), (2, p[2]), (3, p[3])]` with body `d[1] * x[d[2]]`.  A body without
+# lookups is returned untouched, and the check is decided at compile time.
+@inline _body_and_iter(gen) = _body_and_iter(gen.f(DataSource()), gen.iter)
+@inline function _body_and_iter(body, iter)
+    _has_lookup(typeof(body)) || return body, iter
+    return _hoist_lookups(body, iter)
+end
+function _hoist_lookups(body, iter)
+    iter isa AbstractArgNode && throw(
+        ArgumentError(
+            "an expression indexed through a looked-up element cannot be used " *
+                "over a placeholder iterator yet",
+        ),
+    )
+    hbody, lookups = _hoist(body, ())
+    _has_lookup(typeof(hbody)) && error("ExaModels internal error: a DataLookup was not hoisted")
+    # an argument placeholder in a lookup's index (`y[i + arg.n]`) cannot be
+    # evaluated on the host until the recipe is instantiated
+    _contains_node(typeof(lookups), Union{ArgLeaf, AbstractArgNode}) && throw(
+        ArgumentError(
+            "an expression indexed through a looked-up element cannot be used " *
+                "with a placeholder in the index yet",
+        ),
+    )
+    data = map(d -> (d, map(l -> l(d, nothing, nothing), lookups)...), collect(iter))
+    return hbody, data
 end
 
 # BufferedExpression indexing - resolves to the θ slot holding the element's
@@ -1731,8 +1801,8 @@ Objective
 """
 function add_obj(c::C, gen; name = nothing) where {T, C <: ExaCore{T}}
     gen = _adapt_gen(gen)
-    f = _block_simdfunction(c.obj, T, gen.f(DataSource()), c.nobj, c.nnzg, c.nnzh)
-    pars = gen.iter
+    body, pars = _body_and_iter(gen)
+    f = _block_simdfunction(c.obj, T, body, c.nobj, c.nnzg, c.nnzh)
 
     return _add_obj_route(c.obj, c, f, pars, name)
 end
@@ -1750,9 +1820,10 @@ Prefer the generator form (`add_obj(core, gen)`) for typical use; this form
 is intended for code that builds expression trees programmatically.
 """
 function add_obj(c::C, expr::N, pars = 1:1; name = nothing) where {T, C <: ExaCore{T}, N <: AbstractNode}
-    f = _block_simdfunction(c.obj, T, expr, c.nobj, c.nnzg, c.nnzh)
+    body, pars = _body_and_iter(expr, _adapt_iter(pars))
+    f = _block_simdfunction(c.obj, T, body, c.nobj, c.nnzg, c.nnzh)
 
-    return _add_obj_route(c.obj, c, f, _adapt_iter(pars), name)
+    return _add_obj_route(c.obj, c, f, pars, name)
 end
 
 # as for constraints (see `_add_con_route`): specialized in concrete storage,
@@ -1879,13 +1950,13 @@ _empty_con_itr(ns::Tuple) = collect(Iterators.product(map(n -> 1:_length(n), ns)
 
 # Extract simd function and iterator from a generator
 function _get_function_and_iter(::Type{T}, gen::Base.Generator, c) where {T}
-    f = _block_simdfunction(c.cons, T, gen.f(DataSource()), c.ncon, c.nnzj, c.nnzh)
-    pars = gen.iter
+    body, pars = _body_and_iter(gen)
+    f = _block_simdfunction(c.cons, T, body, c.ncon, c.nnzj, c.nnzh)
     return f, pars
 end
 function _get_function_and_iter(::Type{T}, gen::Tuple{E, I}, c) where {T, E <: AbstractNode, I}
-    f = _block_simdfunction(c.cons, T, gen[1], c.ncon, c.nnzj, c.nnzh)
-    pars = gen[2]
+    body, pars = _body_and_iter(gen[1], gen[2])
+    f = _block_simdfunction(c.cons, T, body, c.ncon, c.nnzj, c.nnzh)
     return f, pars
 end
 
@@ -1999,8 +2070,8 @@ add_con!(c, bus, gen.bus => -pg[gen.i] for gen in data.gen)            # subtrac
 function add_con!(c::C, c1, gen::Base.Generator; tag = nothing) where {T, C <: ExaCore{T}}
 
     gen = _adapt_gen(gen)
-    f = _block_simdfunction(c.cons, T, gen.f(DataSource()), offset0(c1, 0), c.nnzj, c.nnzh)
-    pars = gen.iter
+    body, pars = _body_and_iter(gen)
+    f = _block_simdfunction(c.cons, T, body, offset0(c1, 0), c.nnzj, c.nnzh)
 
     return _add_aug_route(c.cons, c, f, pars, _constraint_dims(c1), tag)
 end
@@ -2165,8 +2236,9 @@ end
     n = length(gen.iter)
 
     o = c.npar
-    f = _stage_simdfunction(T, gen)
-    stage = SubexprStage(f, convert_array(collect(gen.iter), c.backend), o)
+    body, data = _body_and_iter(gen)
+    f = _stage_simdfunction(T, body)
+    stage = SubexprStage(f, convert_array(collect(data), c.backend), o)
     θ = append!(c.backend, c.θ, zero(T), n)
     ex = BufferedExpression(ns, n, o, gen.f, tag)
     return (
