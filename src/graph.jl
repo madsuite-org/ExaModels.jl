@@ -326,7 +326,7 @@ end
     idx = _reindex(getfield(n, :idx), i)
     return _lookup(getfield(n, :arr), idx)
 end
-@inline _lookup(arr, idx::Integer) = @inbounds arr[idx]
+@inline _lookup(arr, idx::Integer) = arr[idx]
 @inline _lookup(arr, idx) = DataLookup(arr, idx)
 
 # Host evaluation, used only to compute the hoisted values (the index never
@@ -747,18 +747,29 @@ end
 # Whether a node type contains a `DataLookup` anywhere.  Decided on the type
 # alone and foldable, so a body without lookups — every body that does not index
 # such an expression — compiles no hoisting code at all (as `_niv` in merge.jl).
-Base.@assume_effects :foldable _has_lookup(::Type) = false
-Base.@assume_effects :foldable _has_lookup(::Type{<:DataLookup}) = true
-Base.@assume_effects :foldable _has_lookup(::Type{DataIndexed{I, J}}) where {I, J} = _has_lookup(I)
-Base.@assume_effects :foldable _has_lookup(::Type{Var{I}}) where {I} = _has_lookup(I)
-Base.@assume_effects :foldable _has_lookup(::Type{ParameterNode{I}}) where {I} = _has_lookup(I)
-Base.@assume_effects :foldable _has_lookup(::Type{Node1{F, I}}) where {F, I} = _has_lookup(I)
-Base.@assume_effects :foldable _has_lookup(::Type{Node2{F, I1, I2}}) where {F, I1, I2} =
-    _has_lookup(I1) || _has_lookup(I2)
-Base.@assume_effects :foldable _has_lookup(::Type{SumNode{I}}) where {I} = _has_lookup(I)
-Base.@assume_effects :foldable _has_lookup(::Type{ProdNode{I}}) where {I} = _has_lookup(I)
-Base.@assume_effects :foldable _has_lookup(::Type{Pair{A, B}}) where {A, B} =
-    _has_lookup(A) || _has_lookup(B)
-Base.@assume_effects :foldable _has_lookup(::Type{Tuple{}}) = false
-Base.@assume_effects :foldable _has_lookup(::Type{T}) where {T <: Tuple} =
-    _has_lookup(Base.tuple_type_head(T)) || _has_lookup(Base.tuple_type_tail(T))
+@inline _has_lookup(::Type{T}) where {T} = _contains_node(T, DataLookup)
+
+# Whether a node type contains a node of type `X` anywhere (walking the node set of
+# `_reindex`), decided on types alone.
+Base.@assume_effects :foldable _contains_node(::Type{T}, ::Type{X}) where {T, X} = T <: X
+Base.@assume_effects :foldable _contains_node(::Type{DataLookup{A, I}}, ::Type{X}) where {A, I, X} =
+    DataLookup{A, I} <: X || A <: X || _contains_node(I, X)
+Base.@assume_effects :foldable _contains_node(::Type{DataIndexed{I, J}}, ::Type{X}) where {I, J, X} =
+    DataIndexed{I, J} <: X || _contains_node(I, X)
+Base.@assume_effects :foldable _contains_node(::Type{Var{I}}, ::Type{X}) where {I, X} =
+    Var{I} <: X || _contains_node(I, X)
+Base.@assume_effects :foldable _contains_node(::Type{ParameterNode{I}}, ::Type{X}) where {I, X} =
+    ParameterNode{I} <: X || _contains_node(I, X)
+Base.@assume_effects :foldable _contains_node(::Type{Node1{F, I}}, ::Type{X}) where {F, I, X} =
+    Node1{F, I} <: X || _contains_node(I, X)
+Base.@assume_effects :foldable _contains_node(::Type{Node2{F, I1, I2}}, ::Type{X}) where {F, I1, I2, X} =
+    Node2{F, I1, I2} <: X || _contains_node(I1, X) || _contains_node(I2, X)
+Base.@assume_effects :foldable _contains_node(::Type{SumNode{I}}, ::Type{X}) where {I, X} =
+    SumNode{I} <: X || _contains_node(I, X)
+Base.@assume_effects :foldable _contains_node(::Type{ProdNode{I}}, ::Type{X}) where {I, X} =
+    ProdNode{I} <: X || _contains_node(I, X)
+Base.@assume_effects :foldable _contains_node(::Type{Pair{A, B}}, ::Type{X}) where {A, B, X} =
+    _contains_node(A, X) || _contains_node(B, X)
+Base.@assume_effects :foldable _contains_node(::Type{Tuple{}}, ::Type{X}) where {X} = false
+Base.@assume_effects :foldable _contains_node(::Type{T}, ::Type{X}) where {T <: Tuple, X} =
+    _contains_node(Base.tuple_type_head(T), X) || _contains_node(Base.tuple_type_tail(T), X)

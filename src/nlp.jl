@@ -279,7 +279,8 @@ end
 # Unwrap to the inner Pair when SIMDFunction does type-conversion on literals.
 # After this, SIMDFunction.f is a plain Pair — no new offset0 dispatches needed.
 @inline replace_T(t, cap::ConAugPair) = replace_T(t, cap.pair)
-Base.@assume_effects :foldable _has_lookup(::Type{ConAugPair{C, P}}) where {C, P} = _has_lookup(P)
+Base.@assume_effects :foldable _contains_node(::Type{ConAugPair{C, P}}, ::Type{X}) where {C, P, X} =
+    _contains_node(P, X)
 @inline function _hoist(cap::ConAugPair, acc)
     pair, acc = _hoist(cap.pair, acc)
     return ConAugPair(cap.con, pair), acc
@@ -1216,6 +1217,14 @@ function _hoist_lookups(body, iter)
     )
     hbody, lookups = _hoist(body, ())
     _has_lookup(typeof(hbody)) && error("ExaModels internal error: a DataLookup was not hoisted")
+    # an argument placeholder in a lookup's index (`y[i + arg.n]`) cannot be
+    # evaluated on the host until the recipe is instantiated
+    _contains_node(typeof(lookups), Union{ArgLeaf, AbstractArgNode}) && throw(
+        ArgumentError(
+            "an expression indexed through a looked-up element cannot be used " *
+                "with a placeholder in the index yet",
+        ),
+    )
     data = map(d -> (d, map(l -> l(d, nothing, nothing), lookups)...), collect(iter))
     return hbody, data
 end

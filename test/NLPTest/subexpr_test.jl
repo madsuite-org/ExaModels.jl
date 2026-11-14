@@ -497,6 +497,20 @@ function test_subexpr_looked_up_elements(backend)
         end
     end
 
+    # a concrete index resolves a nested lookup at once, with bounds checked
+    c = ExaCore()
+    c, x = add_var(c, 3)
+    c, yq = add_expr(c, x[k] for k in [1, 2])
+    c, zq = add_expr(c, yq[k] for k in [3, 1, 2])
+    @test_throws BoundsError zq[1]
+    @test occursin("x[iter[", sprint(show, zq))
+
+    # a placeholder in the index of a lookup is refused with a clear message
+    c, n = ExaCore(nargs = Val(1))
+    c, x = add_var(c, 3)
+    c, ya = add_expr(c, x[k] for k in [3, 1, 2])
+    @test_throws ArgumentError add_obj(c, ya[i + n] for i in 1:2)
+
     # the example from #293
     c = ExaCore(; backend, concrete = Val(true))
     p, x0 = [3, 1, 2], [1.0, 2.0, 3.0]

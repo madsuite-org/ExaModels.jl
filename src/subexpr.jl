@@ -27,7 +27,8 @@ end
 # of the body's `DataSource`, so substituting the use-site index must reach it, or
 # `e2[k + 1]` with `e2 = 2 * e[k]`, `e` buffered, reads slot k rather than k + 1.
 @inline _reindex(n::SubexprNode, i) = SubexprNode(_reindex(getfield(n, :i), i))
-Base.@assume_effects :foldable _has_lookup(::Type{SubexprNode{I}}) where {I} = _has_lookup(I)
+Base.@assume_effects :foldable _contains_node(::Type{SubexprNode{I}}, ::Type{X}) where {I, X} =
+    SubexprNode{I} <: X || _contains_node(I, X)
 @inline function _hoist(n::SubexprNode, acc)
     i, acc = _hoist(getfield(n, :i), acc)
     return SubexprNode(i), acc
