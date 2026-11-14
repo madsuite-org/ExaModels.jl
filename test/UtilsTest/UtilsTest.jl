@@ -38,7 +38,84 @@ _intprod(n::ExaModels.Node2) = _intprod(n.inner1) || _intprod(n.inner2)
 _intprod(n::ExaModels.Node1) = _intprod(n.inner)
 _intprod(::Any) = false
 
+function _bounds_core()
+    c = ExaModels.ExaCore()
+    # x1 lower-bounded, x2 upper-bounded, x3 free, x4 fixed
+    c, x = ExaModels.add_var(
+        c, 4; lvar = [0.0, -Inf, -Inf, 1.0], uvar = [Inf, 2.0, Inf, 1.0],
+        start = [0.5, 0.5, 0.5, 1.0],
+    )
+    c, _ = ExaModels.add_obj(c, (x[i] - 0.5)^2 for i in 1:4)
+    c, _ = ExaModels.add_con(c, x[1] + x[2]; lcon = 1.0, ucon = 1.0)   # equality
+    c, _ = ExaModels.add_con(c, x[1] - x[3]; lcon = -1.0, ucon = Inf)  # lower
+    c, _ = ExaModels.add_con(c, x[2] + x[3]; lcon = -Inf, ucon = 3.0)  # upper
+    return c
+end
+
+function _bounds_oracle_core()
+    c = _bounds_core()
+    o = ExaModels.VectorNonlinearOracle(
+        nvar = 4, ncon = 1, nnzj = 1, nnzh = 0,
+        jac_rows = [1], jac_cols = [3],
+        lcon = [0.0], ucon = [0.0],
+        f! = (cv, xv) -> (cv[1] = xv[3]; nothing),
+        jac! = (vv, xv) -> (vv[1] = 1.0; nothing),
+    )
+    return ExaModels.constraint(c, o)
+end
+
+function test_bounds_analysis()
+    return @testset "bounds analysis keywords" begin
+        for (name, core, jfix) in (
+                ("simd", _bounds_core, [1]),
+                ("oracle", _bounds_oracle_core, [1, 4]),
+            )
+            @testset "$name" begin
+                # default: the index sets are computed, as before
+                m = ExaModels.ExaModel(core())
+                @test m.meta.ifix == [4]
+                @test m.meta.ilow == [1]
+                @test m.meta.iupp == [2]
+                @test m.meta.ifree == [3]
+                @test m.meta.jfix == jfix
+                @test m.meta.jlow == [2]
+                @test m.meta.jupp == [3]
+                @test m.meta.variable_bounds_analysis
+                @test m.meta.constraint_bounds_analysis
+
+                m0 = ExaModels.ExaModel(
+                    core(); variable_bounds_analysis = false,
+                    constraint_bounds_analysis = false,
+                )
+                @test !m0.meta.variable_bounds_analysis
+                @test !m0.meta.constraint_bounds_analysis
+                @test isempty(m0.meta.ifix) && isempty(m0.meta.ifree)
+                @test isempty(m0.meta.jfix) && isempty(m0.meta.jlow)
+                # the predicates fall back to reading the bounds
+                @test ExaModels.NLPModels.has_bounds(m0)
+                @test ExaModels.NLPModels.has_equalities(m0)
+                @test ExaModels.NLPModels.has_inequalities(m0)
+
+                # each keyword controls only its own sets
+                mv = ExaModels.ExaModel(core(); variable_bounds_analysis = false)
+                @test isempty(mv.meta.ifix)
+                @test mv.meta.jfix == jfix
+                mc = ExaModels.ExaModel(core(); constraint_bounds_analysis = false)
+                @test mc.meta.ifix == [4]
+                @test isempty(mc.meta.jfix)
+
+                if name == "simd"
+                    r = NLPModelsIpopt.ipopt(m; print_level = 0)
+                    r0 = NLPModelsIpopt.ipopt(m0; print_level = 0)
+                    @test r0.solution ≈ r.solution atol = 1.0e-8
+                end
+            end
+        end
+    end
+end
+
 function runtests()
+    test_bounds_analysis()
     @testset "Utils tests" begin
         @testset "multi-dimensional index" begin
             for (sz, is) in [((3, 4, 5), (2, 3, 4)), ((2:4, 0:3), (3, 1)), ((5,), (4,)),
