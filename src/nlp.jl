@@ -932,13 +932,13 @@ julia> result = ipopt(m; print_level=0)    # solve the problem
 """
 # No-oracle path: always returns ExaModel (type-stable for juliac --trim=safe).
 function ExaModel(
-    c::ExaCore{T, VT, B, S, V, P, O, C, R, Tuple{}, Tuple{}, Tuple{}};
-    prod = false,
-    precompile = false,
-    variable_bounds_analysis::Bool = true,
-    constraint_bounds_analysis::Bool = true,
-    kwargs...,
-) where {T, VT, B, S, V, P, O, C, R}
+        c::ExaCore{T, VT, B, S, V, P, O, C, R, Tuple{}, Tuple{}, Tuple{}};
+        prod = false,
+        precompile = false,
+        variable_bounds_analysis::Bool = true,
+        constraint_bounds_analysis::Bool = true,
+        kwargs...,
+    ) where {T, VT, B, S, V, P, O, C, R}
     _recipe_check(c)
     m = _build_model(
         c, c.var, c.par, c.obj, c.cons, prod;
@@ -961,11 +961,11 @@ _model_from_dynamic_core(c, prod; kwargs...) =
     Base.invokelatest(_model_from_core, Base.invokelatest(_concretize, c), prod; kwargs...)
 
 function _model_from_core(
-    c::ExaCore{T},
-    prod;
-    variable_bounds_analysis::Bool = true,
-    constraint_bounds_analysis::Bool = true,
-) where {T}
+        c::ExaCore{T},
+        prod;
+        variable_bounds_analysis::Bool = true,
+        constraint_bounds_analysis::Bool = true,
+    ) where {T}
     c = _finalize_merged(c)
     prod && !isempty(c.subexprs) && error(
         "ExaModel(c; prod = true) is not yet supported with buffered subexpressions",

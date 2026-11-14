@@ -116,10 +116,12 @@ end
 
 function runtests()
     test_bounds_analysis()
-    @testset "Utils tests" begin
+    return @testset "Utils tests" begin
         @testset "multi-dimensional index" begin
-            for (sz, is) in [((3, 4, 5), (2, 3, 4)), ((2:4, 0:3), (3, 1)), ((5,), (4,)),
-                    ((1:2, 3:5, -1:1), (2, 4, 0))]
+            for (sz, is) in [
+                    ((3, 4, 5), (2, 3, 4)), ((2:4, 0:3), (3, 1)), ((5,), (4,)),
+                    ((1:2, 3:5, -1:1), (2, 4, 0)),
+                ]
                 st = ExaModels._start.(sz)
                 ln = ExaModels._length.(sz)
                 @test ExaModels._lin_index(7, is, st, ln) == 7 + ExaModels.idxx(is .- (st .- 1), ln)
@@ -152,7 +154,7 @@ function runtests()
                 for field in FIELDS
                     @testset "$field" begin
                         @test getfield(util_result, field) ≈ getfield(result, field) atol =
-                            1e-6
+                            1.0e-6
                     end
                 end
             end
@@ -187,10 +189,14 @@ function runtests()
             @test b32.name === :b1
 
             # Nested struct + array field
-            net = _RFTestNetwork(100.0,
-                [_RFTestBus{Float64}(1, 1.1, 0.9, :b1),
-                 _RFTestBus{Float64}(2, 1.2, 0.8, :b2)],
-                (0.1, 0.2, 0.3))
+            net = _RFTestNetwork(
+                100.0,
+                [
+                    _RFTestBus{Float64}(1, 1.1, 0.9, :b1),
+                    _RFTestBus{Float64}(2, 1.2, 0.8, :b2),
+                ],
+                (0.1, 0.2, 0.3)
+            )
             net32 = ExaModels.replace_float_64_by_32(net)
             @test net32 isa _RFTestNetwork{Float32}
             @test net32.baseMVA === 100.0f0
