@@ -3,6 +3,7 @@ module UtilsTest
 using Test
 import ExaModels, NLPModelsIpopt
 import ..NLPTest: _exa_luksan_vlcek_model
+import ..BACKENDS
 
 UTIL_MODELS = [ExaModels.TimedNLPModel, ExaModels.CompressedNLPModel]
 
@@ -38,8 +39,8 @@ _intprod(n::ExaModels.Node2) = _intprod(n.inner1) || _intprod(n.inner2)
 _intprod(n::ExaModels.Node1) = _intprod(n.inner)
 _intprod(::Any) = false
 
-function _bounds_core()
-    c = ExaModels.ExaCore()
+function _bounds_core(backend = nothing)
+    c = ExaModels.ExaCore(; backend)
     # x1 lower-bounded, x2 upper-bounded, x3 free, x4 fixed
     c, x = ExaModels.add_var(
         c, 4; lvar = [0.0, -Inf, -Inf, 1.0], uvar = [Inf, 2.0, Inf, 1.0],
@@ -109,6 +110,21 @@ function test_bounds_analysis()
                     r0 = NLPModelsIpopt.ipopt(m0; print_level = 0)
                     @test r0.solution ≈ r.solution atol = 1.0e-8
                 end
+            end
+        end
+        # on each backend, including devices: the sets are computed on request and skipped
+        # otherwise, and `has_bounds` still answers from the bounds
+        for backend in BACKENDS
+            @testset "backend $backend" begin
+                m = ExaModels.ExaModel(_bounds_core(backend))
+                @test m.meta.ifix == [4]
+                @test m.meta.jfix == [1]
+                m0 = ExaModels.ExaModel(
+                    _bounds_core(backend); variable_bounds_analysis = false,
+                    constraint_bounds_analysis = false,
+                )
+                @test isempty(m0.meta.ifix) && isempty(m0.meta.jfix)
+                @test ExaModels.NLPModels.has_bounds(m0)
             end
         end
     end

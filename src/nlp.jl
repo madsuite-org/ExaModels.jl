@@ -894,7 +894,10 @@ once at the starting point (see [`precompile_callbacks`](@ref)).
 `jrng`, `jfree`, `jinf` (constraints). Setting them to `false` skips computing these sets,
 which avoids the `findall` calls on device arrays when the model lives on a GPU. Leave them
 `true` if anything reads those sets: `NLPModelsModifiers.SlackModel`, for example, reads
-`jlow`, `jupp` and `jrng` directly, and `show` reports their sizes.
+`jlow`, `jupp` and `jrng` directly, and `show` reports their sizes. With
+`constraint_bounds_analysis = false`, NLPModels answers `equality_constrained`,
+`inequality_constrained` and `has_equalities` by iterating over `lcon` and `ucon` element by
+element, which fails on a GPU array when scalar indexing is disallowed.
 
 ## Example
 ```jldoctest
