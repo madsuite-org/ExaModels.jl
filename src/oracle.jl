@@ -731,7 +731,12 @@ end
 
 # ── Internal constructor ───────────────────────────────────────────────────────
 
-function _build_with_oracle(c::ExaCore{T}; kwargs...) where {T}
+function _build_with_oracle(
+        c::ExaCore{T};
+        variable_bounds_analysis::Bool = true,
+        constraint_bounds_analysis::Bool = true,
+        kwargs...,
+    ) where {T}
     oracles = c.oracles                          # Tuple of VectorNonlinearOracle
     s_oracles = c.scalar_oracles                 # Tuple of ScalarNonlinearOracle
     evaluators = c.evals                         # Tuple of OracleEvaluator
@@ -785,7 +790,9 @@ function _build_with_oracle(c::ExaCore{T}; kwargs...) where {T}
     eval_hess_off = n_simd_nnzh + total_oracle_nnzh
 
     meta = NLPModels.NLPModelMeta(
-        c.nvar,
+        c.nvar;
+        variable_bounds_analysis,
+        constraint_bounds_analysis,
         ncon = total_ncon,
         nnzj = total_nnzj,
         nnzh = total_nnzh,
@@ -835,13 +842,13 @@ function _build_with_oracle(c::ExaCore{T}; kwargs...) where {T}
     scalar_hess_cursor = hess_off
     scalar_oracle_caches = [
         begin
-            cache = _adapt_scalar_cache(
-                _build_scalar_oracle_cache(T, s_oracles[i], scalar_hess_cursor),
-                c.backend,
-            )
-            scalar_hess_cursor += s_oracles[i].nnzh
-            cache
-        end
+                cache = _adapt_scalar_cache(
+                    _build_scalar_oracle_cache(T, s_oracles[i], scalar_hess_cursor),
+                    c.backend,
+                )
+                scalar_hess_cursor += s_oracles[i].nnzh
+                cache
+            end
             for i in eachindex(s_oracles)
     ]
 

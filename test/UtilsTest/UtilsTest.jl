@@ -3,6 +3,7 @@ module UtilsTest
 using Test
 import ExaModels, NLPModelsIpopt
 import ..NLPTest: _exa_luksan_vlcek_model
+import ..BACKENDS
 
 UTIL_MODELS = [ExaModels.TimedNLPModel, ExaModels.CompressedNLPModel]
 
@@ -38,11 +39,105 @@ _intprod(n::ExaModels.Node2) = _intprod(n.inner1) || _intprod(n.inner2)
 _intprod(n::ExaModels.Node1) = _intprod(n.inner)
 _intprod(::Any) = false
 
+function _bounds_core(backend = nothing)
+    c = ExaModels.ExaCore(; backend)
+    # x1 lower-bounded, x2 upper-bounded, x3 free, x4 fixed
+    c, x = ExaModels.add_var(
+        c, 4; lvar = [0.0, -Inf, -Inf, 1.0], uvar = [Inf, 2.0, Inf, 1.0],
+        start = [0.5, 0.5, 0.5, 1.0],
+    )
+    c, _ = ExaModels.add_obj(c, (x[i] - 0.5)^2 for i in 1:4)
+    c, _ = ExaModels.add_con(c, x[1] + x[2]; lcon = 1.0, ucon = 1.0)   # equality
+    c, _ = ExaModels.add_con(c, x[1] - x[3]; lcon = -1.0, ucon = Inf)  # lower
+    c, _ = ExaModels.add_con(c, x[2] + x[3]; lcon = -Inf, ucon = 3.0)  # upper
+    return c
+end
+
+function _bounds_oracle_core()
+    c = _bounds_core()
+    o = ExaModels.VectorNonlinearOracle(
+        nvar = 4, ncon = 1, nnzj = 1, nnzh = 0,
+        jac_rows = [1], jac_cols = [3],
+        lcon = [0.0], ucon = [0.0],
+        f! = (cv, xv) -> (cv[1] = xv[3]; nothing),
+        jac! = (vv, xv) -> (vv[1] = 1.0; nothing),
+    )
+    return ExaModels.constraint(c, o)
+end
+
+function test_bounds_analysis()
+    return @testset "bounds analysis keywords" begin
+        for (name, core, jfix) in (
+                ("simd", _bounds_core, [1]),
+                ("oracle", _bounds_oracle_core, [1, 4]),
+            )
+            @testset "$name" begin
+                # default: the index sets are computed, as before
+                m = ExaModels.ExaModel(core())
+                @test m.meta.ifix == [4]
+                @test m.meta.ilow == [1]
+                @test m.meta.iupp == [2]
+                @test m.meta.ifree == [3]
+                @test m.meta.jfix == jfix
+                @test m.meta.jlow == [2]
+                @test m.meta.jupp == [3]
+                @test m.meta.variable_bounds_analysis
+                @test m.meta.constraint_bounds_analysis
+
+                m0 = ExaModels.ExaModel(
+                    core(); variable_bounds_analysis = false,
+                    constraint_bounds_analysis = false,
+                )
+                @test !m0.meta.variable_bounds_analysis
+                @test !m0.meta.constraint_bounds_analysis
+                @test isempty(m0.meta.ifix) && isempty(m0.meta.ifree)
+                @test isempty(m0.meta.jfix) && isempty(m0.meta.jlow)
+                # the predicates fall back to reading the bounds
+                @test ExaModels.NLPModels.has_bounds(m0)
+                @test ExaModels.NLPModels.has_equalities(m0)
+                @test ExaModels.NLPModels.has_inequalities(m0)
+
+                # each keyword controls only its own sets
+                mv = ExaModels.ExaModel(core(); variable_bounds_analysis = false)
+                @test isempty(mv.meta.ifix)
+                @test mv.meta.jfix == jfix
+                mc = ExaModels.ExaModel(core(); constraint_bounds_analysis = false)
+                @test mc.meta.ifix == [4]
+                @test isempty(mc.meta.jfix)
+
+                if name == "simd"
+                    r = NLPModelsIpopt.ipopt(m; print_level = 0)
+                    r0 = NLPModelsIpopt.ipopt(m0; print_level = 0)
+                    @test r0.solution ≈ r.solution atol = 1.0e-8
+                end
+            end
+        end
+        # on each backend, including devices: the sets are computed on request and skipped
+        # otherwise, and `has_bounds` still answers from the bounds
+        for backend in BACKENDS
+            @testset "backend $backend" begin
+                m = ExaModels.ExaModel(_bounds_core(backend))
+                @test m.meta.ifix == [4]
+                @test m.meta.jfix == [1]
+                m0 = ExaModels.ExaModel(
+                    _bounds_core(backend); variable_bounds_analysis = false,
+                    constraint_bounds_analysis = false,
+                )
+                @test isempty(m0.meta.ifix) && isempty(m0.meta.jfix)
+                @test ExaModels.NLPModels.has_bounds(m0)
+            end
+        end
+    end
+end
+
 function runtests()
-    @testset "Utils tests" begin
+    test_bounds_analysis()
+    return @testset "Utils tests" begin
         @testset "multi-dimensional index" begin
-            for (sz, is) in [((3, 4, 5), (2, 3, 4)), ((2:4, 0:3), (3, 1)), ((5,), (4,)),
-                    ((1:2, 3:5, -1:1), (2, 4, 0))]
+            for (sz, is) in [
+                    ((3, 4, 5), (2, 3, 4)), ((2:4, 0:3), (3, 1)), ((5,), (4,)),
+                    ((1:2, 3:5, -1:1), (2, 4, 0)),
+                ]
                 st = ExaModels._start.(sz)
                 ln = ExaModels._length.(sz)
                 @test ExaModels._lin_index(7, is, st, ln) == 7 + ExaModels.idxx(is .- (st .- 1), ln)
@@ -75,7 +170,7 @@ function runtests()
                 for field in FIELDS
                     @testset "$field" begin
                         @test getfield(util_result, field) ≈ getfield(result, field) atol =
-                            1e-6
+                            1.0e-6
                     end
                 end
             end
@@ -110,10 +205,14 @@ function runtests()
             @test b32.name === :b1
 
             # Nested struct + array field
-            net = _RFTestNetwork(100.0,
-                [_RFTestBus{Float64}(1, 1.1, 0.9, :b1),
-                 _RFTestBus{Float64}(2, 1.2, 0.8, :b2)],
-                (0.1, 0.2, 0.3))
+            net = _RFTestNetwork(
+                100.0,
+                [
+                    _RFTestBus{Float64}(1, 1.1, 0.9, :b1),
+                    _RFTestBus{Float64}(2, 1.2, 0.8, :b2),
+                ],
+                (0.1, 0.2, 0.3)
+            )
             net32 = ExaModels.replace_float_64_by_32(net)
             @test net32 isa _RFTestNetwork{Float32}
             @test net32.baseMVA === 100.0f0
