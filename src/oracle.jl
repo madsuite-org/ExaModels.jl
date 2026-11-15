@@ -808,13 +808,13 @@ function _build_with_oracle(
     # Precompute index caches for zero-allocation NLPModels evaluations.
     oracle_caches = [
         _adapt_cache(
-                _build_oracle_index_cache(
-                    T,
-                    oracles[i], oracle_con_offsets[i],
-                    oracle_jac_offsets[i], oracle_hess_offsets[i],
-                ),
-                c.backend,
-            )
+            _build_oracle_index_cache(
+                T,
+                oracles[i], oracle_con_offsets[i],
+                oracle_jac_offsets[i], oracle_hess_offsets[i],
+            ),
+            c.backend,
+        )
             for i in eachindex(oracles)
     ]
 
@@ -823,14 +823,14 @@ function _build_with_oracle(
     eval_hess_cursor = eval_hess_off
     eval_caches = [
         begin
-                cache = _adapt_eval_cache(
-                    _build_eval_index_cache(T, evaluators[i], eval_jac_cursor, eval_hess_cursor),
-                    c.backend,
-                )
-                eval_jac_cursor += evaluators[i].nnzj
-                eval_hess_cursor += evaluators[i].nnzh
-                cache
-            end
+            cache = _adapt_eval_cache(
+                _build_eval_index_cache(T, evaluators[i], eval_jac_cursor, eval_hess_cursor),
+                c.backend,
+            )
+            eval_jac_cursor += evaluators[i].nnzj
+            eval_hess_cursor += evaluators[i].nnzh
+            cache
+        end
             for i in eachindex(evaluators)
     ]
 
@@ -842,13 +842,13 @@ function _build_with_oracle(
     scalar_hess_cursor = hess_off
     scalar_oracle_caches = [
         begin
-                cache = _adapt_scalar_cache(
-                    _build_scalar_oracle_cache(T, s_oracles[i], scalar_hess_cursor),
-                    c.backend,
-                )
-                scalar_hess_cursor += s_oracles[i].nnzh
-                cache
-            end
+            cache = _adapt_scalar_cache(
+                _build_scalar_oracle_cache(T, s_oracles[i], scalar_hess_cursor),
+                c.backend,
+            )
+            scalar_hess_cursor += s_oracles[i].nnzh
+            cache
+        end
             for i in eachindex(s_oracles)
     ]
 

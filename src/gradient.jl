@@ -8,21 +8,21 @@ Performs dense gradient evaluation via the reverse pass on the computation (sub)
 - `y`: result vector
 - `adj`: adjoint propagated up to the current node
 """
-@inline function drpass(d::D, y, adj) where {D<:Union{Real,AdjointNull}}
-    nothing
+@inline function drpass(d::D, y, adj) where {D <: Union{Real, AdjointNull}}
+    return nothing
 end
-@inline function drpass(d::D, y, adj) where {D<:AdjointNode1}
+@inline function drpass(d::D, y, adj) where {D <: AdjointNode1}
     offset = drpass(d.inner, y, _amul(adj, d.y))
-    nothing
+    return nothing
 end
-@inline function drpass(d::D, y, adj) where {D<:AdjointNode2}
+@inline function drpass(d::D, y, adj) where {D <: AdjointNode2}
     offset = drpass(d.inner1, y, _amul(adj, d.y1))
     offset = drpass(d.inner2, y, _amul(adj, d.y2))
-    nothing
+    return nothing
 end
-@inline function drpass(d::D, y, adj) where {D<:AdjointNodeVar}
+@inline function drpass(d::D, y, adj) where {D <: AdjointNodeVar}
     @inbounds y[d.i] += adj
-    nothing
+    return nothing
 end
 
 """
@@ -62,26 +62,26 @@ Performs dsparse gradient evaluation via the reverse pass on the computation (su
 - `adj`: adjoint propagated up to the current node
     """
 @inline function grpass(
-    d::D,
-    comp,
-    y,
-    o1,
-    cnt,
-    adj,
+        d::D,
+        comp,
+        y,
+        o1,
+        cnt,
+        adj,
     ) where {D <: Union{AdjointNull, DataIndexed, Real}}
     return cnt
 end
-@probe_twin @inline function grpass(d::D, comp, y, o1, cnt, adj) where {D<:AdjointNode1}
+@probe_twin @inline function grpass(d::D, comp, y, o1, cnt, adj) where {D <: AdjointNode1}
     cnt = grpass(d.inner, comp, y, o1, cnt, _amul(adj, d.y))
     return cnt
 end
-@probe_twin @inline function grpass(d::D, comp, y, o1, cnt, adj) where {D<:AdjointNode2}
+@probe_twin @inline function grpass(d::D, comp, y, o1, cnt, adj) where {D <: AdjointNode2}
     cnt = grpass(d.inner1, comp, y, o1, cnt, _amul(adj, d.y1))
     cnt = grpass(d.inner2, comp, y, o1, cnt, _amul(adj, d.y2))
     return cnt
 end
-@inline function grpass(d::D, comp, y, o1, cnt, adj) where {D<:AdjointNodeVar}
-    @inbounds y[o1+comp(cnt+=1)] += adj
+@inline function grpass(d::D, comp, y, o1, cnt, adj) where {D <: AdjointNodeVar}
+    @inbounds y[o1 + comp(cnt += 1)] += adj
     return cnt
 end
 function grpass(d::AdjointNodeVar, comp::Nothing, y, o1, cnt::Vector, adj)
@@ -98,44 +98,44 @@ end
 end
 
 @inline function grpass(
-    d::D,
-    comp::Nothing,
-    y,
-    o1,
-    cnt::Tuple{<:Tuple, <:Tuple},
-    adj,
+        d::D,
+        comp::Nothing,
+        y,
+        o1,
+        cnt::Tuple{<:Tuple, <:Tuple},
+        adj,
     ) where {D <: Union{AdjointNull, DataIndexed, Real}}
     return cnt
 end
 @inline function grpass(
-    d::D,
-    comp::Nothing,
-    y,
-    o1,
-    cnt::Tuple{<:Tuple,<:Tuple},
-    adj,
-) where {D<:AdjointNode1}
+        d::D,
+        comp::Nothing,
+        y,
+        o1,
+        cnt::Tuple{<:Tuple, <:Tuple},
+        adj,
+    ) where {D <: AdjointNode1}
     return grpass(d.inner, nothing, y, o1, cnt, _amul(adj, d.y))
 end
 @inline function grpass(
-    d::D,
-    comp::Nothing,
-    y,
-    o1,
-    cnt::Tuple{<:Tuple,<:Tuple},
-    adj,
-) where {D<:AdjointNode2}
+        d::D,
+        comp::Nothing,
+        y,
+        o1,
+        cnt::Tuple{<:Tuple, <:Tuple},
+        adj,
+    ) where {D <: AdjointNode2}
     cnt = grpass(d.inner1, nothing, y, o1, cnt, _amul(adj, d.y1))
     return grpass(d.inner2, nothing, y, o1, cnt, _amul(adj, d.y2))
 end
 @inline function grpass(
-    d::D,
-    comp::Nothing,
-    y,
-    o1,
-    cnt::Tuple{<:Tuple,<:Tuple},
-    adj,
-) where {D<:AdjointNodeVar}
+        d::D,
+        comp::Nothing,
+        y,
+        o1,
+        cnt::Tuple{<:Tuple, <:Tuple},
+        adj,
+    ) where {D <: AdjointNodeVar}
     mapping, uniques = cnt
     idx = _grpass_find_ident(d.i, uniques, 1)
     if idx === 0
@@ -145,13 +145,13 @@ end
     end
 end
 @inline function grpass(
-    d::D,
-    comp,
-    y::V,
-    o1,
-    cnt,
-    adj,
-) where {D<:AdjointNodeVar,V<:AbstractVector{Tuple{Int,Int}}}
+        d::D,
+        comp,
+        y::V,
+        o1,
+        cnt,
+        adj,
+    ) where {D <: AdjointNodeVar, V <: AbstractVector{Tuple{Int, Int}}}
     ind = o1 + comp(cnt += 1)
     @inbounds y[ind] = (d.i, ind)
     return cnt

@@ -2,7 +2,7 @@ module ExaModelsMetal
 
 import ExaModels, Metal
 
-ExaModels.sort!(array::A; lt = isless) where {A<:Metal.MtlArray} =
+ExaModels.sort!(array::A; lt = isless) where {A <: Metal.MtlArray} =
     copyto!(array, sort!(Array(array); lt = lt))
 
 ExaModels.convert_array(v::Metal.MtlArray, ::Metal.MetalBackend) = v

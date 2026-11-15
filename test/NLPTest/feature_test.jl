@@ -5,7 +5,7 @@ import NLPModels
 # Tests for Constant{T}, add_var(gen), and named variable/constraint access
 
 function test_const(backend)
-    @testset "Constant basic usage" begin
+    return @testset "Constant basic usage" begin
         c = ExaCore(; backend, concrete = Val(true))
         N = 5
         @add_var(c, x, N; start = 1.0)
@@ -23,7 +23,7 @@ function test_const(backend)
 end
 
 function test_add_var_gen(backend)
-    @testset "add_var with generator (equality constraints)" begin
+    return @testset "add_var with generator (equality constraints)" begin
         N = 4
         targets = [2.0, 3.0, 4.0, 5.0]
         pars = collect(enumerate(targets))
@@ -63,7 +63,7 @@ function test_named_var_access(backend)
     @testset "Named constraint access via model.name" begin
         c = ExaCore(; backend, concrete = Val(true))
         @add_var(c, x, 4; start = 0.0)
-        @add_con(c, g, x[i] + x[i+1] for i in 1:3)
+        @add_con(c, g, x[i] + x[i + 1] for i in 1:3)
 
         m = ExaModel(c)
 
@@ -71,7 +71,7 @@ function test_named_var_access(backend)
         @test m.g isa ExaModels.Constraint
     end
 
-    @testset "Named objective access via model.name" begin
+    return @testset "Named objective access via model.name" begin
         c = ExaCore(; backend, concrete = Val(true))
         @add_var(c, x, 3; start = 1.0)
         @add_obj(c, f, x[i]^2 for i in 1:3)
@@ -135,8 +135,10 @@ function test_add_par_dims(backend)
         c = ExaCore(; backend, concrete = Val(true))
         c, x = add_var(c, 4; start = 1.0)
         nodes = [(1, 0.5), (2, 1.5), (3, 2.5)]
-        c, s = add_con(c, x[t[1]] - t[2] for t in nodes, j in 1:2;
-                       lcon = -10.0, ucon = 10.0, name = Val(:dax))
+        c, s = add_con(
+            c, x[t[1]] - t[2] for t in nodes, j in 1:2;
+            lcon = -10.0, ucon = 10.0, name = Val(:dax)
+        )
         m = ExaModel(c)
         b = get_cons(m, :dax)
         @test ExaModels.size(b.size) == (3, 2)
@@ -147,15 +149,17 @@ function test_add_par_dims(backend)
         # measured by its length) rather than per-type.
         c2 = ExaCore(; backend, concrete = Val(true))
         c2, y = add_var(c2, 6; start = 0.0)
-        c2, z = add_con(c2, y[i] - v for (i, v) in zip(2:4, [5.0, 45.0, 0.0]);
-                        lcon = 0.0, ucon = 0.0, name = Val(:zax))
+        c2, z = add_con(
+            c2, y[i] - v for (i, v) in zip(2:4, [5.0, 45.0, 0.0]);
+            lcon = 0.0, ucon = 0.0, name = Val(:zax)
+        )
         m2 = ExaModel(c2)
         b2 = get_cons(m2, :zax)
         @test ExaModels.size(b2.size) == (3,)
         @test ExaModels.total(b2.size) == 3
     end
 
-    @testset "set_value! with range-sized parameter" begin
+    return @testset "set_value! with range-sized parameter" begin
         c = ExaCore(; backend, concrete = Val(true))
         c, θ = add_par(c, 2:4; value = ones(3))
         set_value!(c, θ, [5.0, 6.0, 7.0])
@@ -181,7 +185,7 @@ function test_nonunit_expr(backend)
         @test g_vals ≈ [4.0, 9.0, 16.0]
     end
 
-    @testset "Expression with ProductIterator non-unit ranges" begin
+    return @testset "Expression with ProductIterator non-unit ranges" begin
         c = ExaCore(; backend, concrete = Val(true))
         c, x = add_var(c, 3, 4)
         c, s = add_expr(c, x[i, j]^2 for (i, j) in Iterators.product(1:3, 2:4))
@@ -191,15 +195,15 @@ function test_nonunit_expr(backend)
         x0 = ExaModels.convert_array(collect(Float64, 1:12), backend)
         g_vals = Array(NLPModels.cons(m, x0))
         # x[i,j] = (j-1)*3 + i, s[i,j] = x[i,j]^2
-        expected = [Float64((j-1)*3 + i)^2 for j in 2:4, i in 1:3][:]  # product order: i fast, j slow
+        expected = [Float64((j - 1) * 3 + i)^2 for j in 2:4, i in 1:3][:]  # product order: i fast, j slow
         # ProductIterator iterates i first, j second → column-major
-        expected = [Float64((j-1)*3 + i)^2 for i in 1:3 for j in 2:4]
+        expected = [Float64((j - 1) * 3 + i)^2 for i in 1:3 for j in 2:4]
         @test length(g_vals) == 9
     end
 end
 
 function test_colon_index(backend)
-    @testset "Colon expands to the tuple of entries along an axis" begin
+    return @testset "Colon expands to the tuple of entries along an axis" begin
         N, K = 4, 3
         itr = [(i, k, exp10(i / N)) for i in 1:N, k in 1:K]
         f(x...) = -x[1] * 2 + x[2] * x[3] - x[4] + x[5]
@@ -213,14 +217,14 @@ function test_colon_index(backend)
         end
         m = build(
             (c, z, θ) ->
-                add_con(c, -hi * (f(z[:, i, k]...) + g(z[:, i, k], θ[:])) for (i, k, hi) in itr),
+            add_con(c, -hi * (f(z[:, i, k]...) + g(z[:, i, k], θ[:])) for (i, k, hi) in itr),
         )
         mref = build(
             (c, z, θ) -> add_con(
                 c,
                 -hi * (
                     f(z[1, i, k], z[2, i, k], z[3, i, k], z[4, i, k], z[5, i, k]) +
-                    g((z[1, i, k], z[2, i, k], z[3, i, k], z[4, i, k], z[5, i, k]), (θ[1], θ[2]))
+                        g((z[1, i, k], z[2, i, k], z[3, i, k], z[4, i, k], z[5, i, k]), (θ[1], θ[2]))
                 ) for (i, k, hi) in itr
             ),
         )
@@ -242,7 +246,7 @@ function test_colon_index(backend)
 end
 
 function test_generator_free_constr(backend)
-    @testset "add_con(core, expr, itr)" begin
+    return @testset "add_con(core, expr, itr)" begin
         c = ExaCore(; backend, concrete = Val(true))
         @add_var(c, x, 2)
         gen = (sin(x[i]) for i in 1:2)
@@ -271,7 +275,7 @@ function test_features(backend)
     @testset "Colon indexing" begin
         test_colon_index(backend)
     end
-    @testset "Generator-free constraint" begin
+    return @testset "Generator-free constraint" begin
         test_generator_free_constr(backend)
     end
 end

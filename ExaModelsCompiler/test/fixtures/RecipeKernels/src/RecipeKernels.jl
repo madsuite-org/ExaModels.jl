@@ -53,15 +53,19 @@ datant(n) = (
 
 "A solution writer for the writer surface: records what it was handed, so the
 test can check every argument crossed the boundary."
-function summary_writer(out::AbstractString, arg, model, x, y, zl, zu;
-                        objective::Float64 = NaN, status::AbstractString = "")
+function summary_writer(
+        out::AbstractString, arg, model, x, y, zl, zu;
+        objective::Float64 = NaN, status::AbstractString = ""
+    )
     # `open(f, path, mode)` splats its arguments, which `--trim=safe` refuses.
     io = open(out, "w")
     try
         # One string: a long `println` argument list is a `Vararg` call trim cannot resolve.
-        words = (string(arg), string(model.meta.nvar), string(length(x)), string(sum(x)),
-                 string(length(y)), string(sum(y)), string(sum(zl)), string(sum(zu)),
-                 string(objective), String(status))
+        words = (
+            string(arg), string(model.meta.nvar), string(length(x)), string(sum(x)),
+            string(length(y)), string(sum(y)), string(sum(zl)), string(sum(zu)),
+            string(objective), String(status),
+        )
         println(io, join(words, ' '))
     finally
         close(io)

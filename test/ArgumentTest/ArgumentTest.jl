@@ -332,7 +332,7 @@ function runtests()
                 backend === nothing && continue
                 c, N = ExaModels.ExaCore(; backend = backend, nargs = Val(1))
                 ExaModels.@add_var(c, x, N; start = 1.0)
-                ExaModels.@add_con(c, x[i] * x[i+1] - 1 for i in ExaModels.ArgNode1(idx, N))
+                ExaModels.@add_con(c, x[i] * x[i + 1] - 1 for i in ExaModels.ArgNode1(idx, N))
                 ExaModels.@add_obj(c, x[i]^2 for i in ExaModels.ArgNode1(idx, N))
                 m = ExaModels.ExaModel(c, 10)
                 host = ExaModels.convert_array(idx(10), backend)
@@ -340,8 +340,8 @@ function runtests()
                     @test typeof(m.cons[1].itr) == typeof(host)
                     @test typeof(m.objs[1].itr) == typeof(host)
                     x0 = ExaModels.convert_array(collect(1.0:10.0), backend)
-                    @test Array(NLPModels.cons(m, x0)) ≈ [i * (i + 1) - 1 for i = 1:2:9]
-                    @test NLPModels.obj(m, x0) ≈ sum(i^2 for i = 1:2:9)
+                    @test Array(NLPModels.cons(m, x0)) ≈ [i * (i + 1) - 1 for i in 1:2:9]
+                    @test NLPModels.obj(m, x0) ≈ sum(i^2 for i in 1:2:9)
                 end
             end
         end

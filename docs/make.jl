@@ -62,7 +62,7 @@ bib = CitationBibliography(joinpath(@__DIR__, "src", "refs.bib"))
 
 # if _LATEX
 #     makedocs(
-#         bib, 
+#         bib,
 #         sitename = "ExaModels",
 #         authors = "Sungho Shin",
 #         format = Documenter.LaTeX(),

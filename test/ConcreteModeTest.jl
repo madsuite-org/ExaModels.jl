@@ -11,14 +11,14 @@ function _build(; concrete)
     c, x = add_var(c, n; lvar = -1.0, uvar = 1.0, start = 0.5)
     c, θ = add_par(c, ones(n))
     c, s = add_expr(c, θ[i] * x[i]^2 for i in 1:n)
-    c, g = add_con(c, x[i] + x[i+1] for i in 1:n-1; lcon = -1.0, ucon = 1.0)
-    c, _ = add_con!(c, g, i => sin(x[i+1]) for i in 1:n-1)
+    c, g = add_con(c, x[i] + x[i + 1] for i in 1:(n - 1); lcon = -1.0, ucon = 1.0)
+    c, _ = add_con!(c, g, i => sin(x[i + 1]) for i in 1:(n - 1))
     c, _ = add_obj(c, s[i] for i in 1:n)
     return c
 end
 
 function runtests()
-    @testset "Concrete mode" begin
+    return @testset "Concrete mode" begin
         @testset "default is type-erased storage" begin
             c = ExaCore()
             @test c.var isa Vector{Any}
@@ -72,9 +72,11 @@ function runtests()
             m2 = ExaModel(_build(; concrete = Val(false)))
             @test typeof(m1.cons) === typeof(m2.cons)
             @test typeof(m1.objs) === typeof(m2.objs)
-            @test all(((a, b),) -> a.f.o1step == b.f.o1step && a.f.o2step == b.f.o2step &&
-                a.f.comp1.inner == b.f.comp1.inner && a.f.comp2.inner == b.f.comp2.inner,
-                zip(m1.cons, m2.cons))
+            @test all(
+                ((a, b),) -> a.f.o1step == b.f.o1step && a.f.o2step == b.f.o2step &&
+                    a.f.comp1.inner == b.f.comp1.inner && a.f.comp2.inner == b.f.comp2.inner,
+                zip(m1.cons, m2.cons)
+            )
         end
 
         @testset "erased handles build the same model" begin

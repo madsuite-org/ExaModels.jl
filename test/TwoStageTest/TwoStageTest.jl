@@ -20,8 +20,10 @@ function runtests()
             core, θ = add_par(core, θ_vals)
 
             obj_data = [(i, j, (i - 1) * nv + j, (i - 1) * nθ) for i in 1:ns for j in 1:nv]
-            @add_obj(core, θ[θ_off + 1] * v[v_idx]^2 + θ[θ_off + 2] * d[1] * v[v_idx]
-                for (i, j, v_idx, θ_off) in obj_data)
+            @add_obj(
+                core, θ[θ_off + 1] * v[v_idx]^2 + θ[θ_off + 2] * d[1] * v[v_idx]
+                    for (i, j, v_idx, θ_off) in obj_data
+            )
 
             con_data = [(i, j, (i - 1) * nv + j) for i in 1:ns for j in 1:nv]
             @add_con(core, EachScenario(), (v[v_idx] + d[1] for (i, j, v_idx) in con_data))
@@ -219,7 +221,8 @@ function runtests()
             @add_obj(core, d[1]^2)
             @add_obj(core, weight * (v[i] - θ[i])^2 for i in 1:ns)
 
-            @add_con(core,
+            @add_con(
+                core,
                 EachScenario(),
                 (v[i] - d[1] for i in 1:ns);
                 lcon = 0.0,
@@ -235,9 +238,9 @@ function runtests()
             θ_bar = sum(θ_vals) / ns
             d_expected = θ_bar / 2
 
-            @test x_sol[findall(==(0), vtags)][1] ≈ d_expected atol = 1e-5
+            @test x_sol[findall(==(0), vtags)][1] ≈ d_expected atol = 1.0e-5
             for i in 1:ns
-                @test x_sol[findall(==(i), vtags)][1] ≈ d_expected atol = 1e-5
+                @test x_sol[findall(==(i), vtags)][1] ≈ d_expected atol = 1.0e-5
             end
         end
 
@@ -257,7 +260,8 @@ function runtests()
             @add_obj(core, (v[v_idx] - θ[θ_idx])^2 for (i, j, v_idx, θ_idx) in obj_data)
 
             con_data = [(i, (i - 1) * nv + 1, (i - 1) * nv + 2) for i in 1:ns]
-            @add_con(core,
+            @add_con(
+                core,
                 EachScenario(),
                 (v[v1] + v[v2] - d[1] - d[2] for (i, v1, v2) in con_data);
                 lcon = 0.0, ucon = 0.0,
@@ -270,12 +274,12 @@ function runtests()
 
             x_sol = result.solution
             vtags = get_var_scen(model)
-            d_sol  = x_sol[findall(==(0), vtags)]
+            d_sol = x_sol[findall(==(0), vtags)]
             v1_sol = x_sol[findall(==(1), vtags)]
             v2_sol = x_sol[findall(==(2), vtags)]
 
-            @test v1_sol[1] + v1_sol[2] ≈ d_sol[1] + d_sol[2] atol = 1e-5
-            @test v2_sol[1] + v2_sol[2] ≈ d_sol[1] + d_sol[2] atol = 1e-5
+            @test v1_sol[1] + v1_sol[2] ≈ d_sol[1] + d_sol[2] atol = 1.0e-5
+            @test v2_sol[1] + v2_sol[2] ≈ d_sol[1] + d_sol[2] atol = 1.0e-5
         end
 
         @testset "Ipopt solver — equality d-v coupling" begin
@@ -292,7 +296,8 @@ function runtests()
             @add_obj(core, d[1]^2)
             @add_obj(core, v[i]^2 for i in 1:ns)
 
-            @add_con(core,
+            @add_con(
+                core,
                 EachScenario(),
                 (2 * v[i] + d[1] - θ[i] for i in 1:ns);
                 lcon = 0.0, ucon = 0.0,
@@ -307,11 +312,11 @@ function runtests()
             vtags = get_var_scen(model)
             d_expected = sum(θ_vals) / (4 + ns)
 
-            @test x_sol[findall(==(0), vtags)][1] ≈ d_expected atol = 1e-5
+            @test x_sol[findall(==(0), vtags)][1] ≈ d_expected atol = 1.0e-5
 
             for (i, θ) in enumerate(θ_vals)
                 v_expected = (θ - d_expected) / 2
-                @test x_sol[findall(==(i), vtags)][1] ≈ v_expected atol = 1e-5
+                @test x_sol[findall(==(i), vtags)][1] ≈ v_expected atol = 1.0e-5
             end
         end
 
@@ -319,16 +324,21 @@ function runtests()
             ns, nv, nd = 2, 2, 2
 
             core = TwoStageExaCore(ns)
-            v = @add_var(core, EachScenario(), nv;
-                start = [0.1, 0.2, 0.3, 0.4], lvar = 0.0, uvar = 10.0)
-            core, d = add_var(core, nd;
-                start = [0.5, 0.8], lvar = 0.0, uvar = 1.0)
+            v = @add_var(
+                core, EachScenario(), nv;
+                start = [0.1, 0.2, 0.3, 0.4], lvar = 0.0, uvar = 10.0
+            )
+            core, d = add_var(
+                core, nd;
+                start = [0.5, 0.8], lvar = 0.0, uvar = 1.0
+            )
 
             obj_data = [(i, j, (i - 1) * nv + j) for i in 1:ns for j in 1:nv]
             @add_obj(core, v[v_idx]^2 + d[1]^2 + d[2]^2 for (i, j, v_idx) in obj_data)
 
             con_data = [(i, j, (i - 1) * nv + j) for i in 1:ns for j in 1:nv]
-            @add_con(core,
+            @add_con(
+                core,
                 EachScenario(),
                 (v[v_idx] + d[1] for (i, j, v_idx) in con_data);
                 lcon = 0.0, ucon = 100.0,
@@ -345,10 +355,10 @@ function runtests()
             lvar = model.meta.lvar
             uvar = model.meta.uvar
 
-            @test all(lvar[1:ns*nv] .== 0.0)
-            @test all(uvar[1:ns*nv] .== 10.0)
-            @test all(lvar[ns*nv+1:end] .== 0.0)
-            @test all(uvar[ns*nv+1:end] .== 1.0)
+            @test all(lvar[1:(ns * nv)] .== 0.0)
+            @test all(uvar[1:(ns * nv)] .== 10.0)
+            @test all(lvar[(ns * nv + 1):end] .== 0.0)
+            @test all(uvar[(ns * nv + 1):end] .== 1.0)
         end
 
     end
@@ -366,8 +376,8 @@ function runtests()
 
             tags = core.tag
             @test length(tags.var_scen) == ns * nv + nd
-            @test tags.var_scen[1:ns*nv] == [k for k in 1:ns for _ in 1:nv]
-            @test tags.var_scen[ns*nv+1:end] == zeros(Int, nd)
+            @test tags.var_scen[1:(ns * nv)] == [k for k in 1:ns for _ in 1:nv]
+            @test tags.var_scen[(ns * nv + 1):end] == zeros(Int, nd)
         end
 
         @testset "Constraint creation with EachScenario" begin
@@ -394,9 +404,10 @@ function runtests()
             core, θ = add_par(core, θ_vals)
 
             @add_obj(core, d[1]^2)
-            @add_obj(core, v[i]^2 for i in 1:ns*nv)
+            @add_obj(core, v[i]^2 for i in 1:(ns * nv))
 
-            @add_con(core,
+            @add_con(
+                core,
                 EachScenario(),
                 (2 * v[i] + d[1] - θ[i] for i in 1:ns);
                 lcon = 0.0, ucon = 0.0,
@@ -438,15 +449,17 @@ function runtests()
 
     end
 
-    @testset "Two-stage getters and setters" begin
+    return @testset "Two-stage getters and setters" begin
 
         ns, nv = 3, 2
         c = TwoStageExaCore(ns)
-        c, x  = add_var(c, EachScenario(), nv; lvar = -1.0, uvar = 2.0, start = 0.5)
+        c, x = add_var(c, EachScenario(), nv; lvar = -1.0, uvar = 2.0, start = 0.5)
         c, θs = add_par(c, EachScenario(), [10.0, 20.0])
         con_data = [(i, j, (i - 1) * nv + j) for i in 1:ns for j in 1:nv]
-        c, g  = add_con(c, EachScenario(), (x[v_idx] for (i, j, v_idx) in con_data);
-                        lcon = -1.0, ucon = 1.0, start = 0.1)
+        c, g = add_con(
+            c, EachScenario(), (x[v_idx] for (i, j, v_idx) in con_data);
+            lcon = -1.0, ucon = 1.0, start = 0.1
+        )
         m = ExaModel(c)
 
         @testset "get_value / set_value! — second-stage parameters (per scenario)" begin
@@ -465,8 +478,8 @@ function runtests()
         @testset "get_start / get_lvar / get_uvar — second-stage variable (per scenario)" begin
             @test length(get_start(m, x, 1)) == nv
             @test all(get_start(m, x, 2) .== 0.5)
-            @test all(get_lvar(m, x, 3)  .== -1.0)
-            @test all(get_uvar(m, x, 1)  .==  2.0)
+            @test all(get_lvar(m, x, 3) .== -1.0)
+            @test all(get_uvar(m, x, 1) .== 2.0)
         end
 
         @testset "set_start! / set_lvar! / set_uvar! — second-stage variable (per scenario)" begin
@@ -484,15 +497,15 @@ function runtests()
             @test get_uvar(m, x, 1) == [2.0, 2.0]
 
             @test_throws DimensionMismatch set_start!(m, x, 1, [1.0])
-            @test_throws DimensionMismatch set_lvar!(m, x, 1,  [1.0])
-            @test_throws DimensionMismatch set_uvar!(m, x, 1,  [1.0])
+            @test_throws DimensionMismatch set_lvar!(m, x, 1, [1.0])
+            @test_throws DimensionMismatch set_uvar!(m, x, 1, [1.0])
         end
 
         @testset "get_start / get_lcon / get_ucon — second-stage constraint (per scenario)" begin
             @test length(get_start(m, g, 1)) == nv
             @test all(get_start(m, g, 2) .== 0.1)
-            @test all(get_lcon(m, g, 3)  .== -1.0)
-            @test all(get_ucon(m, g, 1)  .==  1.0)
+            @test all(get_lcon(m, g, 3) .== -1.0)
+            @test all(get_ucon(m, g, 1) .== 1.0)
         end
 
         @testset "set_start! / set_lcon! / set_ucon! — second-stage constraint (per scenario)" begin
@@ -511,8 +524,8 @@ function runtests()
             @test all(get_ucon(m, g, 1) .== 1.0)
 
             @test_throws DimensionMismatch set_start!(m, g, 1, [1.0])
-            @test_throws DimensionMismatch set_lcon!(m, g, 1,  [1.0])
-            @test_throws DimensionMismatch set_ucon!(m, g, 1,  [1.0])
+            @test_throws DimensionMismatch set_lcon!(m, g, 1, [1.0])
+            @test_throws DimensionMismatch set_ucon!(m, g, 1, [1.0])
         end
 
     end

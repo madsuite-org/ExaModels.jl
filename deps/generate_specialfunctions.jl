@@ -152,7 +152,7 @@ end
 function main()
     content = generate()
 
-    if "--write" in ARGS
+    return if "--write" in ARGS
         outfile = joinpath(dirname(@__DIR__), "ext", "functionlist.jl")
         write(outfile, content)
         println("Wrote $(length(content)) bytes to $outfile")

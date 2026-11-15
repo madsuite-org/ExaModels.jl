@@ -84,8 +84,8 @@ end
 # the segment a block contributes: its own offsets, leaves, compressors, steps and shape
 @inline _mergedseg(::Type{T}, f, pars, dims, ivs::NTuple{K, Int}, fvt::NTuple{S, T}) where {K, S, T} =
     MergedSeg{K, S, T, typeof(pars), typeof(f.comp1), typeof(f.comp2)}(
-        pars, f.o0, f.o1, f.o2, ivs, fvt, f.comp1, f.comp2, f.o1step, f.o2step, dims
-    )
+    pars, f.o0, f.o1, f.o2, ivs, fvt, f.comp1, f.comp2, f.o1step, f.o2step, dims
+)
 
 """
     SegmentedItr{K, S, T, D, I, RF, C1, C2}
@@ -461,9 +461,9 @@ function _block_rows(::Type{T}, f, pars, dims, ivs::NTuple{K, Int}, fvt::NTuple{
     o0s = _row_o0s(f, pars, dims)
     return [
         MergedRow{T, NTuple{K, Int}, NTuple{S, T}, eltype(itrc), typeof(f.comp1), typeof(f.comp2)}(
-                o0s[r], f.o1 + f.o1step * (r - 1), f.o2 + f.o2step * (r - 1),
-                ivs, fvt, itrc[r], f.comp1, f.comp2
-            ) for r in eachindex(itrc)
+            o0s[r], f.o1 + f.o1step * (r - 1), f.o2 + f.o2step * (r - 1),
+            ivs, fvt, itrc[r], f.comp1, f.comp2
+        ) for r in eachindex(itrc)
     ]
 end
 
@@ -840,7 +840,7 @@ function _family_segments(s::DeviceSegItr)
         (
             h.seg_o0[j], h.seg_o1[j], h.seg_o2[j],
             Tuple(h.iv[((j - 1) * h.K + 1):(j * h.K)]), Tuple(h.fv[((j - 1) * h.S + 1):(j * h.S)]),
-            collect(h.d[(j == 1 ? 0 : h.offs[j - 1]) + 1:h.offs[j]]),
+            collect(h.d[((j == 1 ? 0 : h.offs[j - 1]) + 1):h.offs[j]]),
             _dims_decode(h.seg_dims[h.seg_dimptr[j]:(h.seg_dimptr[j + 1] - 1)]),
         )
             for j in eachindex(h.offs)
