@@ -16,15 +16,15 @@ model = Model(() -> ExaModels.Optimizer(NLPModelsIpopt.ipopt))
 @variable(model, x[i in 1:N], start = mod(i, 2) == 1 ? -1.2 : 1.0)
 @constraint(
     model,
-    [i in 1:(N-2)],
-    (3 * x[i+1]^3 + 2 * x[i+2] - 5) +
-    sin(x[i+1] - x[i+2]) * sin(x[i+1] + x[i+2]) +
-    4 * x[i+1] - x[i] * exp(x[i] - x[i+1]) - 3 == 0.0
+    [i in 1:(N - 2)],
+    (3 * x[i + 1]^3 + 2 * x[i + 2] - 5) +
+        sin(x[i + 1] - x[i + 2]) * sin(x[i + 1] + x[i + 2]) +
+        4 * x[i + 1] - x[i] * exp(x[i] - x[i + 1]) - 3 == 0.0
 )
 @objective(
     model,
     Min,
-    sum(100 * (x[i-1]^2 - x[i])^2 + (x[i-1] - 1)^2 for i in 2:N),
+    sum(100 * (x[i - 1]^2 - x[i])^2 + (x[i - 1] - 1)^2 for i in 2:N),
 )
 optimize!(model)
 

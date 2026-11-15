@@ -366,10 +366,18 @@ function runtests(; backends = Any[CPU()])
         # an Expression whose body holds a buffered reference (or an exa_sum),
         # used at a shifted index, must read the shifted element, in its value
         # and in its derivatives (the buffered slot also drives the scatter)
-        dense_jac(m, x) = (J = zeros(m.meta.ncon, m.meta.nvar);
-            for (r, c, v) in zip(NLPModels.jac_structure(m)..., NLPModels.jac_coord(m, x)); J[r, c] += v; end; J)
-        dense_hess(m, x, y) = (H = zeros(m.meta.nvar, m.meta.nvar);
-            for (r, c, v) in zip(NLPModels.hess_structure(m)..., NLPModels.hess_coord(m, x, y)); H[max(r, c), min(r, c)] += v; end; H)
+        dense_jac(m, x) = (
+            J = zeros(m.meta.ncon, m.meta.nvar);
+            for (r, c, v) in zip(NLPModels.jac_structure(m)..., NLPModels.jac_coord(m, x))
+                J[r, c] += v
+            end; J
+        )
+        dense_hess(m, x, y) = (
+            H = zeros(m.meta.nvar, m.meta.nvar);
+            for (r, c, v) in zip(NLPModels.hess_structure(m)..., NLPModels.hess_coord(m, x, y))
+                H[max(r, c), min(r, c)] += v
+            end; H
+        )
         cr = ExaCore()
         cr, xr = add_var(cr, 4; start = (Float64(i) for i in 1:4))
         cr, _ = add_con(cr, 2 * xr[k + 1]^2 for k in 1:3)
@@ -424,9 +432,9 @@ function runtests(; backends = Any[CPU()])
         h = 1.0e-6
         fd = [
             (
-                    NLPModels.obj(m1, [xv[j] + (j == k ? h : 0.0) for j in 1:10]) -
+                NLPModels.obj(m1, [xv[j] + (j == k ? h : 0.0) for j in 1:10]) -
                     NLPModels.obj(m1, [xv[j] - (j == k ? h : 0.0) for j in 1:10])
-                ) / 2h for k in 1:10
+            ) / 2h for k in 1:10
         ]
         @test d1 ≈ fd rtol = 1.0e-6
 

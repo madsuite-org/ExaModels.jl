@@ -18,13 +18,13 @@
 #      and are handled by the `AbstractNode * Real` dispatch in
 #      `register.jl`.
 
-const _EXA_SUM_REF  = GlobalRef(@__MODULE__, :exa_sum)
+const _EXA_SUM_REF = GlobalRef(@__MODULE__, :exa_sum)
 const _EXA_PROD_REF = GlobalRef(@__MODULE__, :exa_prod)
 
 # Collect all iterator variable names from the LHS of a for-clause.
 # Handles both simple symbols (`j`) and tuple destructuring (`(i, j)`).
 function _collect_iter_vars!(vars::Set{Symbol}, lhs)
-    if lhs isa Symbol
+    return if lhs isa Symbol
         push!(vars, lhs)
     elseif lhs isa Expr && lhs.head == :tuple
         for arg in lhs.args
@@ -67,7 +67,7 @@ function _process_generator(gen, outer_vars::Set{Symbol})
     # Accumulates (gensym => Val(range)) pairs that must be bound OUTSIDE the
     # generator closure so that juliac --trim=safe can resolve Val{N} concretely
     # via constant propagation at the call site.
-    hoisted = Pair{Symbol,Any}[]
+    hoisted = Pair{Symbol, Any}[]
 
     body = gen.args[1]
     if body isa Expr && body.head == :generator
@@ -105,8 +105,10 @@ end
 #   • Function names in call position
 #   • Array bases in indexing expressions  (`a` in `a[i]`)
 #   • Dot-access targets and quoted expressions
-function _wrap_free_symbols(expr, iter_vars::Set{Symbol},
-                            hoisted::Vector{Pair{Symbol,Any}} = Pair{Symbol,Any}[])
+function _wrap_free_symbols(
+        expr, iter_vars::Set{Symbol},
+        hoisted::Vector{Pair{Symbol, Any}} = Pair{Symbol, Any}[]
+    )
     if !(expr isa Expr)
         # Number literals, Symbols, LineNumberNodes — return as-is.
         # Numbers will be handled by the AbstractNode * Real dispatch at
@@ -122,20 +124,22 @@ function _wrap_free_symbols(expr, iter_vars::Set{Symbol},
         # hoisted Val(length(range)) binding.  Hoisting outside the generator closure
         # lets juliac --trim=safe resolve Val{N} concretely via constant propagation.
         if length(expr.args) == 2 &&
-           expr.args[2] isa Expr && expr.args[2].head == :generator &&
-           length(expr.args[2].args) == 2 &&   # body + exactly one for-spec
-           (fn === :sum || fn === :prod ||
-            fn isa GlobalRef && (fn.name === :sum || fn.name === :prod))
-            gen        = expr.args[2]
-            body       = gen.args[1]
-            spec       = gen.args[2]            # Expr(:(=), iter_var_lhs, range_expr)
-            iter_lhs   = spec.args[1]
+                expr.args[2] isa Expr && expr.args[2].head == :generator &&
+                length(expr.args[2].args) == 2 &&   # body + exactly one for-spec
+                (
+                fn === :sum || fn === :prod ||
+                    fn isa GlobalRef && (fn.name === :sum || fn.name === :prod)
+            )
+            gen = expr.args[2]
+            body = gen.args[1]
+            spec = gen.args[2]            # Expr(:(=), iter_var_lhs, range_expr)
+            iter_lhs = spec.args[1]
             range_expr = spec.args[2]
             nested_vars = copy(iter_vars)
             _collect_iter_vars!(nested_vars, iter_lhs)
             wrapped_body = _wrap_free_symbols(body, nested_vars, hoisted)
             ref = (fn === :sum || fn isa GlobalRef && fn.name === :sum) ?
-                  _EXA_SUM_REF : _EXA_PROD_REF
+                _EXA_SUM_REF : _EXA_PROD_REF
             # Hoist Val(range) outside the generator closure so juliac can
             # resolve the concrete type (e.g. Val{1:3}).
             val_sym = gensym(:exa_sum_val)
@@ -193,7 +197,7 @@ end
 @inline Base.literal_pow(::typeof(^), d1::AbstractNode, ::Val{P}) where {P} =
     _pow_val(d1, Val{P}())
 @inline Base.:^(d1::AbstractNode, d2::Integer) = Node2(^, d1, d2)
-@inline Base.:^(d1::AbstractNode, d2::Real)    = Node2(^, d1, d2)
+@inline Base.:^(d1::AbstractNode, d2::Real) = Node2(^, d1, d2)
 @inline _pow_val(d1::AbstractNode, ::Val{1}) = d1
 @inline _pow_val(d1::AbstractNode, ::Val{2}) = Node1(abs2, d1)
 @inline _pow_val(d1::AbstractNode, ::Val{V}) where {V} = Node2(^, d1, Val{V}())
@@ -280,10 +284,10 @@ See [`exa_sum`](@ref) for supported iterators and juliac usage notes.
 # resolve the concrete Val{UnitRange{Int64}(1,3)} type.
 # Users can also call this directly: `exa_sum(j -> x[j], Val(1:nc))`
 @inline function exa_sum(f, ::Val{r}) where {r}
-    _exa_sum_range(f, first(r), Val(length(r)))
+    return _exa_sum_range(f, first(r), Val(length(r)))
 end
 @inline function exa_prod(f, ::Val{r}) where {r}
-    _exa_prod_range(f, first(r), Val(length(r)))
+    return _exa_prod_range(f, first(r), Val(length(r)))
 end
 
 @inline _exa_sum_range(f, lo::Int, ::Val{N}) where {N} =
@@ -308,7 +312,7 @@ end
 # Int, Float64, Float32, and Float16 so that expressions written with any of
 # those literal types are simplified regardless of the calling context.
 
-for zero in (0, 0., Float32(0.), Float16(0.))
+for zero in (0, 0.0, Float32(0.0), Float16(0.0))
     @eval begin
         Base.:+(::Constant{$zero}, x::AbstractNode) = x           # 0 + x  →  x
         Base.:+(x::AbstractNode, ::Constant{$zero}) = x           # x + 0  →  x
@@ -321,7 +325,7 @@ for zero in (0, 0., Float32(0.), Float16(0.))
     end
 end
 
-for one in (1, 1., Float32(1.), Float16(1.))
+for one in (1, 1.0, Float32(1.0), Float16(1.0))
     @eval begin
         Base.:*(::Constant{$one}, x::AbstractNode) = x            # 1 * x  →  x
         Base.:*(x::AbstractNode, ::Constant{$one}) = x            # x * 1  →  x
@@ -332,9 +336,8 @@ for one in (1, 1., Float32(1.), Float16(1.))
     end
 end
 
-for two in (2, 2., Float32(2.), Float16(2.))
+for two in (2, 2.0, Float32(2.0), Float16(2.0))
     @eval begin
         Base.:^(x::AbstractNode, ::Constant{$two}) = abs2(x)      # x ^ 2  →  abs2(x)
     end
 end
-

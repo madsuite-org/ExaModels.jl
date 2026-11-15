@@ -183,17 +183,17 @@ julia> ExaModels.instantiate(x, (nh = 2,)) === x     # identity, no arg dependen
 true
 ```
 """
-@inline instantiate(x, a::Vararg{Any,N}) where {N} = x
-@inline instantiate(::ArgSource{K}, a::Vararg{Any,N}) where {K, N} = a[K]
-@inline instantiate(n::ArgIndexed{I, J}, a::Vararg{Any,N}) where {I, J, N} =
+@inline instantiate(x, a::Vararg{Any, N}) where {N} = x
+@inline instantiate(::ArgSource{K}, a::Vararg{Any, N}) where {K, N} = a[K]
+@inline instantiate(n::ArgIndexed{I, J}, a::Vararg{Any, N}) where {I, J, N} =
     _arg_access(instantiate(getfield(n, :inner), a...), J)
-@inline instantiate(n::ArgNode1, a::Vararg{Any,N}) where {N} =
+@inline instantiate(n::ArgNode1, a::Vararg{Any, N}) where {N} =
     getfield(n, :f)(instantiate(getfield(n, :inner), a...))
-@inline instantiate(n::ArgNode2, a::Vararg{Any,N}) where {N} = getfield(n, :f)(
+@inline instantiate(n::ArgNode2, a::Vararg{Any, N}) where {N} = getfield(n, :f)(
     instantiate(getfield(n, :inner1), a...),
     instantiate(getfield(n, :inner2), a...),
 )
-@inline instantiate(n::ArgCall, a::Vararg{Any,N}) where {N} =
+@inline instantiate(n::ArgCall, a::Vararg{Any, N}) where {N} =
     getfield(n, :f)(map(x -> instantiate(x, a...), getfield(n, :args))...)
 
 @inline _arg_access(x, j::Symbol) = getproperty(x, j)
@@ -228,11 +228,11 @@ true
 # reintroduces the widening; the ExaModelsCompiler suite's models are too small
 # and too homogeneous to see it — the COPS CI pin on this branch is the
 # regression gate for this class.
-@inline _instantiate_each(::Tuple{}, a::Vararg{Any,N}) where {N} = ()
-@inline _instantiate_each(t::Tuple, a::Vararg{Any,N}) where {N} =
+@inline _instantiate_each(::Tuple{}, a::Vararg{Any, N}) where {N} = ()
+@inline _instantiate_each(t::Tuple, a::Vararg{Any, N}) where {N} =
     (instantiate(first(t), a...), _instantiate_each(Base.tail(t), a...)...)
-@inline instantiate(t::Tuple, a::Vararg{Any,N}) where {N} = _instantiate_each(t, a...)
-@inline instantiate(t::NamedTuple{K}, a::Vararg{Any,N}) where {K, N} =
+@inline instantiate(t::Tuple, a::Vararg{Any, N}) where {N} = _instantiate_each(t, a...)
+@inline instantiate(t::NamedTuple{K}, a::Vararg{Any, N}) where {K, N} =
     NamedTuple{K}(_instantiate_each(Tuple(t), a...))
 
 """
@@ -283,11 +283,11 @@ end
 # Unary operations, and the queries that make sizes usable symbolically
 # (`length(arg.v)`, `size(arg.A, 2)` via the binary table below, …).
 for op in (
-    :+, :-, :abs, :abs2, :sqrt, :cbrt, :inv, :exp, :log, :log2, :log10,
-    :sin, :cos, :tan, :floor, :ceil, :round, :trunc, :sign,
-    :length, :size, :ndims, :eltype, :first, :last, :axes, :collect,
-    :sum, :prod, :maximum, :minimum, :zeros, :ones, :zero, :one, :transpose,
-)
+        :+, :-, :abs, :abs2, :sqrt, :cbrt, :inv, :exp, :log, :log2, :log10,
+        :sin, :cos, :tan, :floor, :ceil, :round, :trunc, :sign,
+        :length, :size, :ndims, :eltype, :first, :last, :axes, :collect,
+        :sum, :prod, :maximum, :minimum, :zeros, :ones, :zero, :one, :transpose,
+    )
     @eval @inline Base.$op(a::AbstractArgNode) = ArgNode1(Base.$op, a)
 end
 
@@ -326,9 +326,9 @@ end
 Base.broadcastable(::AbstractArgNode) = throw(
     ArgumentError(
         "cannot broadcast over an argument placeholder. Compute the array in " *
-        "the function that builds your arguments and pass it in — e.g. " *
-        "`myargs(N) = (; N = N, scaled = 2 .* v)`, then refer to `arg.scaled` " *
-        "— rather than writing the elementwise operation against `arg`.",
+            "the function that builds your arguments and pass it in — e.g. " *
+            "`myargs(N) = (; N = N, scaled = 2 .* v)`, then refer to `arg.scaled` " *
+            "— rather than writing the elementwise operation against `arg`.",
     ),
 )
 

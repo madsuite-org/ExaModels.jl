@@ -23,7 +23,7 @@ function test_subexpr_concrete_index_constant_term(backend)
     g = NLPModels.grad(m, m.meta.x0)
     gwant = [2 * (x0[2] + 1 + x0[i]) for i in 1:4]
     gwant[2] += sum(2 * (x0[2] + 1 + x0[i]) for i in 1:4)
-    @test Array(g) ≈ gwant
+    return @test Array(g) ≈ gwant
 end
 
 function test_subexpr_basic(backend)
@@ -64,7 +64,7 @@ function test_subexpr_basic(backend)
     x_vals = solution(result2, x2)
     return @test subexpr_vals ≈ x_vals .^ 2 atol = sol_tolerance(eltype(c1.x0)) rtol = sol_tolerance(eltype(c1.x0))
 end
- 
+
 """
 Test multi-dimensional subexpressions with automatic dimension inference.
 """
@@ -473,9 +473,8 @@ function test_subexpr(backend)
         test_subexpr_reduced_0based_nested(backend)
     end
 
-    @testset "Subexpr concrete index with constant term" begin
+    return @testset "Subexpr concrete index with constant term" begin
         test_subexpr_concrete_index_constant_term(backend)
     end
 
 end
-

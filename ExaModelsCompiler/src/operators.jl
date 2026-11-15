@@ -25,4 +25,3 @@ end
 @inline Base.:(:)(a::AbstractArgNode, b::AbstractArgNode) = ArgNode2(Colon(), a, b)
 @inline Base.:(:)(a::AbstractArgNode, b::Number) = ArgNode2(Colon(), a, b)
 @inline Base.:(:)(a::Number, b::AbstractArgNode) = ArgNode2(Colon(), a, b)
-

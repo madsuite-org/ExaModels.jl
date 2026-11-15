@@ -29,7 +29,7 @@ This struct represents `head(d) for d in data`
  2) `e::ExaModels.AbstractNode`: this means that the generator is part of a
     summation. This is used for the objective function.
 """
-struct Bin{E,P}
+struct Bin{E, P}
     head::E
     data::Vector{P}
 end
@@ -41,13 +41,13 @@ This function loops through the list of `bin` looking for a matching `head`. If
 found, it updates the bin in place. Othersise, it appends a new bin.
 """
 function update_bin!(
-    bins::Vector{Bin},
-    head::Union{
-        ExaModels.AbstractNode,
-        Pair{<:ExaModels.AbstractNode,<:ExaModels.AbstractNode},
-    },
-    data::Tuple,
-)
+        bins::Vector{Bin},
+        head::Union{
+            ExaModels.AbstractNode,
+            Pair{<:ExaModels.AbstractNode, <:ExaModels.AbstractNode},
+        },
+        data::Tuple,
+    )
     for bin in bins
         if _update_bin!(bin, head, data)
             return
@@ -59,7 +59,7 @@ end
 
 # The types match for `head(data)` to be appended to this bin. We check if the
 # head's match with `==`, otherwise we recurse to the next bin.
-function _update_bin!(bin::Bin{E,P}, head::E, data::P) where {E,P}
+function _update_bin!(bin::Bin{E, P}, head::E, data::P) where {E, P}
     if head == bin.head
         push!(bin.data, data)
         return true
@@ -79,7 +79,7 @@ end
 
 # A method for adding to a constraint. First convert the MOI function `f` into
 # an `ExaModels.AbstractNode`, then add that.
-function update_bin!(bins::Vector{Bin}, (row, f)::Pair{Int,F}) where {F}
+function update_bin!(bins::Vector{Bin}, (row, f)::Pair{Int, F}) where {F}
     head, data = _exafy(f, (), nothing)
     e = ExaModels.DataIndexed(ExaModels.DataSource(), length(data) + 1)
     return update_bin!(bins, e => head, (data..., row))
@@ -90,7 +90,7 @@ end
 abstract type AbstractBin end
 
 # This is an `expr`. It gets added to the objective.
-struct ObjectiveBin <:AbstractBin end
+struct ObjectiveBin <: AbstractBin end
 
 # Things are passed through unchanged.
 (::ObjectiveBin)(f) = f
@@ -108,20 +108,20 @@ end
 
 # VariableIndices are handled directly.
 function update_bin!(
-    bins::Vector{Bin},
-    fn::AbstractBin,
-    f::Union{Real,MOI.VariableIndex},
-)
+        bins::Vector{Bin},
+        fn::AbstractBin,
+        f::Union{Real, MOI.VariableIndex},
+    )
     return update_bin!(bins, fn(f))
 end
 
 # Add the additive terms separately, instead of creating a single +(args...)
 # expression.
 function update_bin!(
-    bins::Vector{Bin},
-    fn::AbstractBin,
-    f::MOI.ScalarAffineFunction,
-)
+        bins::Vector{Bin},
+        fn::AbstractBin,
+        f::MOI.ScalarAffineFunction,
+    )
     for term in f.terms
         update_bin!(bins, fn(term))
     end
@@ -134,10 +134,10 @@ end
 # Add the additive terms separately, instead of creating a single +(args...)
 # expression.
 function update_bin!(
-    bins::Vector{Bin},
-    fn::AbstractBin,
-    f::MOI.ScalarQuadraticFunction,
-)
+        bins::Vector{Bin},
+        fn::AbstractBin,
+        f::MOI.ScalarQuadraticFunction,
+    )
     for term in f.affine_terms
         update_bin!(bins, fn(term))
     end
@@ -155,10 +155,10 @@ _is_zero(x::Real) = iszero(x)
 _is_zero(::Any) = false
 
 function update_bin!(
-    bins::Vector{Bin},
-    fn::AbstractBin,
-    f::MOI.ScalarNonlinearFunction,
-)
+        bins::Vector{Bin},
+        fn::AbstractBin,
+        f::MOI.ScalarNonlinearFunction,
+    )
     if f.head == :- && length(f.args) == 2
         # Optimization: :(x - y) -> :(+(x, -y))
         # This allows additive terms in the left-hand side to be added
@@ -214,10 +214,10 @@ function _exafy(f::Real, data::Tuple, ::Any)
 end
 
 function _exafy(
-    f::MOI.VariableIndex,
-    data::Tuple,
-    var_to_data::Union{Nothing,Dict{Int,Int}},
-)
+        f::MOI.VariableIndex,
+        data::Tuple,
+        var_to_data::Union{Nothing, Dict{Int, Int}},
+    )
     if f.value > PARAMETER_INDEX_THRESHOLD
         e = ExaModels.DataIndexed(ExaModels.DataSource(), length(data) + 1)
         idx = f.value - PARAMETER_INDEX_THRESHOLD
@@ -243,10 +243,10 @@ function _exafy(
 end
 
 function _exafy(
-    f::MOI.ScalarAffineTerm,
-    data::Tuple,
-    var_to_data::Union{Nothing,Dict{Int,Int}},
-)
+        f::MOI.ScalarAffineTerm,
+        data::Tuple,
+        var_to_data::Union{Nothing, Dict{Int, Int}},
+    )
     x_head, data = _exafy(f.variable, data, var_to_data)
     c_head, data = _exafy(f.coefficient, data, var_to_data)
     return c_head * x_head, data
@@ -256,26 +256,28 @@ end
 # ScalarNonlinearFunction. For that reason we don't do anything clever with the
 # additive terms.
 function _exafy(
-    f::MOI.ScalarAffineFunction,
-    data::Tuple,
-    var_to_data::Union{Nothing,Dict{Int,Int}},
-)
+        f::MOI.ScalarAffineFunction,
+        data::Tuple,
+        var_to_data::Union{Nothing, Dict{Int, Int}},
+    )
     head, data = _exafy(f.constant, data, var_to_data)
     if !isempty(f.terms)
-        y = sum(begin
-            c1, data = _exafy(term, data, var_to_data)
-            c1
-        end for term in f.terms)
+        y = sum(
+            begin
+                c1, data = _exafy(term, data, var_to_data)
+                c1
+            end for term in f.terms
+        )
         head += y
     end
     return head, data
 end
 
 function _exafy(
-    f::MOI.ScalarQuadraticTerm,
-    data::Tuple,
-    var_to_data::Union{Nothing,Dict{Int,Int}},
-)
+        f::MOI.ScalarQuadraticTerm,
+        data::Tuple,
+        var_to_data::Union{Nothing, Dict{Int, Int}},
+    )
     if f.variable_1 == f.variable_2
         x_head, data = _exafy(f.variable_1, data, var_to_data)
         c_head, data = _exafy(f.coefficient / 2, data, var_to_data)
@@ -291,22 +293,26 @@ end
 # ScalarNonlinearFunction. For that reason we don't do anything clever with the
 # additive terms.
 function _exafy(
-    f::MOI.ScalarQuadraticFunction,
-    data::Tuple,
-    var_to_data::Union{Nothing,Dict{Int,Int}},
-)
+        f::MOI.ScalarQuadraticFunction,
+        data::Tuple,
+        var_to_data::Union{Nothing, Dict{Int, Int}},
+    )
     head, data = _exafy(f.constant, data, var_to_data)
     if !isempty(f.affine_terms)
-        head += sum(begin
-            c1, data = _exafy(term, data, var_to_data)
-            c1
-        end for term in f.affine_terms)
+        head += sum(
+            begin
+                c1, data = _exafy(term, data, var_to_data)
+                c1
+            end for term in f.affine_terms
+        )
     end
     if !isempty(f.quadratic_terms)
-        head += sum(begin
-            c1, data = _exafy(term, data, var_to_data)
-            c1
-        end for term in f.quadratic_terms)
+        head += sum(
+            begin
+                c1, data = _exafy(term, data, var_to_data)
+                c1
+            end for term in f.quadratic_terms
+        )
     end
     return head, data
 end
@@ -315,14 +321,14 @@ function _exafy(f::MOI.ScalarNonlinearFunction, data::Tuple, ::Nothing)
     # Replace the incoming `var_to_data === nothing` with a dictionary that maps
     # the variable index with the element in `data`. This is used when there are
     # repeated variable indices in `f`. See `_exafy(::VariableIndex, args...)`.
-    return _exafy(f, data, Dict{Int,Int}())
+    return _exafy(f, data, Dict{Int, Int}())
 end
 
 function _exafy(
-    f::MOI.ScalarNonlinearFunction,
-    data::Tuple,
-    var_to_data::Dict{Int,Int},
-)
+        f::MOI.ScalarNonlinearFunction,
+        data::Tuple,
+        var_to_data::Dict{Int, Int},
+    )
     # This assumes that we support only the default functions in `MOI.Nonlinear`
     op = getfield(MOI.Nonlinear, f.head)
     if length(f.args) == 1
@@ -354,11 +360,11 @@ end
 Convert `src` to an `ExaModel`.
 """
 function ExaModels.ExaModel(
-    src::MOI.ModelLike;
-    backend = nothing,
-    prod = false,
-    T = ExaModels.default_T(backend),
-)
+        src::MOI.ModelLike;
+        backend = nothing,
+        prod = false,
+        T = ExaModels.default_T(backend),
+    )
     dest = Optimizer{T}(nothing; backend)
     MOI.copy_to(dest, src)
     c, _ = to_exacore(dest, backend)
@@ -387,7 +393,7 @@ mutable struct Optimizer{T} <: MOI.AbstractOptimizer
     backend::Any
     result::Any
     solve_time::Float64
-    options::Dict{Symbol,Any}
+    options::Dict{Symbol, Any}
     # Problem cache
     sense::MOI.OptimizationSense
     lvar::Vector{T}
@@ -410,7 +416,7 @@ mutable struct Optimizer{T} <: MOI.AbstractOptimizer
             backend,
             nothing,
             0.0,
-            Dict{Symbol,Any}(kwargs...),
+            Dict{Symbol, Any}(kwargs...),
             # Problem cache
             MOI.FEASIBILITY_SENSE,
             T[],
@@ -456,9 +462,9 @@ end
 
 function MOI.is_empty(model::Optimizer)
     return isempty(model.lvar) &&
-           isempty(model.pstart) &&
-           isempty(model.cons) &&
-           isempty(model.objs)
+        isempty(model.pstart) &&
+        isempty(model.cons) &&
+        isempty(model.objs)
 end
 
 # MOI.ObjectiveSense
@@ -468,10 +474,10 @@ MOI.supports(::Optimizer, ::MOI.ObjectiveSense) = true
 MOI.get(model::Optimizer, ::MOI.ObjectiveSense) = model.sense
 
 function MOI.set(
-    model::Optimizer,
-    ::MOI.ObjectiveSense,
-    sense::MOI.OptimizationSense,
-)
+        model::Optimizer,
+        ::MOI.ObjectiveSense,
+        sense::MOI.OptimizationSense,
+    )
     model.sense = sense
     _invalidate!(model)
     if sense == MOI.FEASIBILITY_SENSE
@@ -483,33 +489,33 @@ end
 # MOI.ObjectiveFunction
 
 function MOI.supports(
-    ::Optimizer{T},
-    ::MOI.ObjectiveFunction{F},
-) where {
-    T,
-    F<:Union{
-        MOI.VariableIndex,
-        MOI.ScalarAffineFunction{T},
-        MOI.ScalarQuadraticFunction{T},
-        MOI.ScalarNonlinearFunction,
-    },
-}
+        ::Optimizer{T},
+        ::MOI.ObjectiveFunction{F},
+    ) where {
+        T,
+        F <: Union{
+            MOI.VariableIndex,
+            MOI.ScalarAffineFunction{T},
+            MOI.ScalarQuadraticFunction{T},
+            MOI.ScalarNonlinearFunction,
+        },
+    }
     return true
 end
 
 function MOI.set(
-    model::Optimizer{T},
-    ::MOI.ObjectiveFunction{F},
-    f::F,
-) where {
-    T,
-    F<:Union{
-        MOI.VariableIndex,
-        MOI.ScalarAffineFunction{T},
-        MOI.ScalarQuadraticFunction{T},
-        MOI.ScalarNonlinearFunction,
-    },
-}
+        model::Optimizer{T},
+        ::MOI.ObjectiveFunction{F},
+        f::F,
+    ) where {
+        T,
+        F <: Union{
+            MOI.VariableIndex,
+            MOI.ScalarAffineFunction{T},
+            MOI.ScalarQuadraticFunction{T},
+            MOI.ScalarNonlinearFunction,
+        },
+    }
     empty!(model.objs)
     update_bin!(model.objs, ObjectiveBin(), f)
     _invalidate!(model)
@@ -529,20 +535,20 @@ end
 # MOI.add_constrained_variable
 
 function MOI.supports_add_constrained_variable(
-    ::Optimizer{T},
-    ::Type{MOI.Parameter{T}},
-) where {T}
+        ::Optimizer{T},
+        ::Type{MOI.Parameter{T}},
+    ) where {T}
     return true
 end
 
 function MOI.add_constrained_variable(
-    model::Optimizer{T},
-    set::MOI.Parameter{T},
-) where {T}
+        model::Optimizer{T},
+        set::MOI.Parameter{T},
+    ) where {T}
     push!(model.pstart, set.value)
     _invalidate!(model)
     index = PARAMETER_INDEX_THRESHOLD + length(model.pstart)
-    ci = MOI.ConstraintIndex{MOI.VariableIndex,typeof(set)}(index)
+    ci = MOI.ConstraintIndex{MOI.VariableIndex, typeof(set)}(index)
     return MOI.VariableIndex(index), ci
 end
 
@@ -550,34 +556,34 @@ end
 # the next `optimize!` writes it into the cached model instead of rebuilding.
 
 function MOI.is_valid(
-    model::Optimizer{T},
-    ci::MOI.ConstraintIndex{MOI.VariableIndex,MOI.Parameter{T}},
-) where {T}
+        model::Optimizer{T},
+        ci::MOI.ConstraintIndex{MOI.VariableIndex, MOI.Parameter{T}},
+    ) where {T}
     return 1 <= ci.value - PARAMETER_INDEX_THRESHOLD <= length(model.pstart)
 end
 
 function MOI.supports(
-    ::Optimizer{T},
-    ::MOI.ConstraintSet,
-    ::Type{MOI.ConstraintIndex{MOI.VariableIndex,MOI.Parameter{T}}},
-) where {T}
+        ::Optimizer{T},
+        ::MOI.ConstraintSet,
+        ::Type{MOI.ConstraintIndex{MOI.VariableIndex, MOI.Parameter{T}}},
+    ) where {T}
     return true
 end
 
 function MOI.get(
-    model::Optimizer{T},
-    ::MOI.ConstraintSet,
-    ci::MOI.ConstraintIndex{MOI.VariableIndex,MOI.Parameter{T}},
-) where {T}
+        model::Optimizer{T},
+        ::MOI.ConstraintSet,
+        ci::MOI.ConstraintIndex{MOI.VariableIndex, MOI.Parameter{T}},
+    ) where {T}
     return MOI.Parameter(model.pstart[ci.value - PARAMETER_INDEX_THRESHOLD])
 end
 
 function MOI.set(
-    model::Optimizer{T},
-    ::MOI.ConstraintSet,
-    ci::MOI.ConstraintIndex{MOI.VariableIndex,MOI.Parameter{T}},
-    set::MOI.Parameter{T},
-) where {T}
+        model::Optimizer{T},
+        ::MOI.ConstraintSet,
+        ci::MOI.ConstraintIndex{MOI.VariableIndex, MOI.Parameter{T}},
+        set::MOI.Parameter{T},
+    ) where {T}
     model.pstart[ci.value - PARAMETER_INDEX_THRESHOLD] = set.value
     return
 end
@@ -585,18 +591,18 @@ end
 # VariableIndex-in-Set constraints
 
 function MOI.supports_constraint(
-    ::Optimizer{T},
-    ::Type{MOI.VariableIndex},
-    ::Type{S},
-) where {
-    T,
-    S<:Union{
-        MOI.GreaterThan{T},
-        MOI.LessThan{T},
-        MOI.EqualTo{T},
-        MOI.Interval{T},
-    },
-}
+        ::Optimizer{T},
+        ::Type{MOI.VariableIndex},
+        ::Type{S},
+    ) where {
+        T,
+        S <: Union{
+            MOI.GreaterThan{T},
+            MOI.LessThan{T},
+            MOI.EqualTo{T},
+            MOI.Interval{T},
+        },
+    }
     return true
 end
 
@@ -621,37 +627,37 @@ function _update_bound(model::Optimizer, col::Int, set::MOI.Interval)
 end
 
 function MOI.add_constraint(
-    model::Optimizer{T},
-    f::MOI.VariableIndex,
-    s::Union{
-        MOI.GreaterThan{T},
-        MOI.LessThan{T},
-        MOI.EqualTo{T},
-        MOI.Interval{T},
-    },
-) where {T}
+        model::Optimizer{T},
+        f::MOI.VariableIndex,
+        s::Union{
+            MOI.GreaterThan{T},
+            MOI.LessThan{T},
+            MOI.EqualTo{T},
+            MOI.Interval{T},
+        },
+    ) where {T}
     @assert f.value < PARAMETER_INDEX_THRESHOLD
     _update_bound(model, f.value, s)
     _invalidate!(model)
-    return MOI.ConstraintIndex{typeof(f),typeof(s)}(f.value)
+    return MOI.ConstraintIndex{typeof(f), typeof(s)}(f.value)
 end
 
 # MOI.VariablePrimalStart
 
 function MOI.supports(
-    ::Optimizer,
-    ::MOI.VariablePrimalStart,
-    ::Type{MOI.VariableIndex},
-)
+        ::Optimizer,
+        ::MOI.VariablePrimalStart,
+        ::Type{MOI.VariableIndex},
+    )
     return true
 end
 
 function MOI.set(
-    model::Optimizer{T},
-    ::MOI.VariablePrimalStart,
-    x::MOI.VariableIndex,
-    value::Union{Nothing,T},
-) where {T}
+        model::Optimizer{T},
+        ::MOI.VariablePrimalStart,
+        x::MOI.VariableIndex,
+        value::Union{Nothing, T},
+    ) where {T}
     @assert x.value < PARAMETER_INDEX_THRESHOLD
     model.startvar[x.value] = something(value, zero(T))
     _invalidate!(model)
@@ -661,23 +667,23 @@ end
 # Function-in-Set constraints
 
 function MOI.supports_constraint(
-    ::Optimizer{T},
-    ::Type{F},
-    ::Type{S},
-) where {
-    T,
-    F<:Union{
-        MOI.ScalarAffineFunction{T},
-        MOI.ScalarQuadraticFunction{T},
-        MOI.ScalarNonlinearFunction,
-    },
-    S<:Union{
-        MOI.GreaterThan{T},
-        MOI.LessThan{T},
-        MOI.EqualTo{T},
-        MOI.Interval{T},
-    },
-}
+        ::Optimizer{T},
+        ::Type{F},
+        ::Type{S},
+    ) where {
+        T,
+        F <: Union{
+            MOI.ScalarAffineFunction{T},
+            MOI.ScalarQuadraticFunction{T},
+            MOI.ScalarNonlinearFunction,
+        },
+        S <: Union{
+            MOI.GreaterThan{T},
+            MOI.LessThan{T},
+            MOI.EqualTo{T},
+            MOI.Interval{T},
+        },
+    }
     return true
 end
 
@@ -690,26 +696,26 @@ _bounds(s::MOI.GreaterThan{T}) where {T} = (s.lower, typemax(T))
 _bounds(s::MOI.LessThan{T}) where {T} = (typemin(T), s.upper)
 
 function MOI.add_constraint(
-    model::Optimizer{T},
-    f::Union{
-        MOI.ScalarAffineFunction{T},
-        MOI.ScalarQuadraticFunction{T},
-        MOI.ScalarNonlinearFunction,
-    },
-    s::Union{
-        MOI.GreaterThan{T},
-        MOI.LessThan{T},
-        MOI.EqualTo{T},
-        MOI.Interval{T},
-    },
-) where {T}
+        model::Optimizer{T},
+        f::Union{
+            MOI.ScalarAffineFunction{T},
+            MOI.ScalarQuadraticFunction{T},
+            MOI.ScalarNonlinearFunction,
+        },
+        s::Union{
+            MOI.GreaterThan{T},
+            MOI.LessThan{T},
+            MOI.EqualTo{T},
+            MOI.Interval{T},
+        },
+    ) where {T}
     row = length(model.lcon) + 1
     update_bin!(model.cons, ConstraintBin(row), f)
     l, u = _bounds(s)
     push!(model.lcon, l)
     push!(model.ucon, u)
     _invalidate!(model)
-    return MOI.ConstraintIndex{typeof(f),typeof(s)}(row)
+    return MOI.ConstraintIndex{typeof(f), typeof(s)}(row)
 end
 
 function to_exacore(model::Optimizer{T}, backend) where {T}
@@ -837,7 +843,7 @@ const _RESULT_STATUS_CODES = Dict{Symbol, MOI.ResultStatusCode}(
     :INFEASIBLE_PROBLEM_DETECTED => MOI.INFEASIBLE_POINT,
 )
 
-function MOI.get(model::Optimizer, attr::Union{MOI.PrimalStatus,MOI.DualStatus})
+function MOI.get(model::Optimizer, attr::Union{MOI.PrimalStatus, MOI.DualStatus})
     if model.result === nothing || attr.result_index != 1
         return MOI.NO_SOLUTION
     end
@@ -851,13 +857,13 @@ end
 # MOI.VariablePrimal
 
 function MOI.get(
-    model::Optimizer,
-    attr::MOI.VariablePrimal,
-    vi::MOI.VariableIndex,
-)
+        model::Optimizer,
+        attr::MOI.VariablePrimal,
+        vi::MOI.VariableIndex,
+    )
     MOI.check_result_index_bounds(model, attr)
     if vi.value > PARAMETER_INDEX_THRESHOLD
-        return model.pstart[vi.value-PARAMETER_INDEX_THRESHOLD]
+        return model.pstart[vi.value - PARAMETER_INDEX_THRESHOLD]
     end
     return model.result.solution[vi.value]
 end
@@ -869,10 +875,10 @@ function _scale(model::Optimizer{T}) where {T}
 end
 
 function MOI.get(
-    model::Optimizer,
-    attr::MOI.ConstraintDual,
-    ci::MOI.ConstraintIndex,
-)
+        model::Optimizer,
+        attr::MOI.ConstraintDual,
+        ci::MOI.ConstraintIndex,
+    )
     MOI.check_result_index_bounds(model, attr)
     return -_scale(model) * model.result.multipliers[ci.value]
 end
@@ -881,30 +887,30 @@ function _reduced_cost(model, col)
     return model.result.multipliers_L[col] - model.result.multipliers_U[col]
 end
 function MOI.get(
-    model::Optimizer{T},
-    attr::MOI.ConstraintDual,
-    ci::MOI.ConstraintIndex{MOI.VariableIndex,MOI.LessThan{T}},
-) where {T}
+        model::Optimizer{T},
+        attr::MOI.ConstraintDual,
+        ci::MOI.ConstraintIndex{MOI.VariableIndex, MOI.LessThan{T}},
+    ) where {T}
     MOI.check_result_index_bounds(model, attr)
     rc = _reduced_cost(model, ci.value)
     return min(zero(rc), _scale(model) * rc)
 end
 
 function MOI.get(
-    model::Optimizer,
-    attr::MOI.ConstraintDual,
-    ci::MOI.ConstraintIndex{MOI.VariableIndex,MOI.GreaterThan{T}},
-) where {T}
+        model::Optimizer,
+        attr::MOI.ConstraintDual,
+        ci::MOI.ConstraintIndex{MOI.VariableIndex, MOI.GreaterThan{T}},
+    ) where {T}
     MOI.check_result_index_bounds(model, attr)
     rc = _reduced_cost(model, ci.value)
     return max(zero(rc), _scale(model) * rc)
 end
 
 function MOI.get(
-    model::Optimizer{T},
-    attr::MOI.ConstraintDual,
-    ci::MOI.ConstraintIndex{MOI.VariableIndex,S},
-) where {T,S<:Union{MOI.Interval{T},MOI.EqualTo{T}}}
+        model::Optimizer{T},
+        attr::MOI.ConstraintDual,
+        ci::MOI.ConstraintIndex{MOI.VariableIndex, S},
+    ) where {T, S <: Union{MOI.Interval{T}, MOI.EqualTo{T}}}
     MOI.check_result_index_bounds(model, attr)
     return _scale(model) * _reduced_cost(model, ci.value)
 end

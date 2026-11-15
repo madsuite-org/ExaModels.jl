@@ -338,7 +338,7 @@ function runtests()
                 real_reinterp2 = reinterpret(Float64, complex_vec2)
                 result4 = dot(real_reinterp1, real_reinterp2)
                 @test result4 isa Real
-                @test result4 ≈ 1*5 + 2*6 + 3*7 + 4*8
+                @test result4 ≈ 1 * 5 + 2 * 6 + 3 * 7 + 4 * 8
 
                 result5 = dot(v1_view, v2_reshaped)
                 @test result5 isa Real
@@ -634,14 +634,14 @@ function runtests()
 
             @testset "ExaCore variable arrays" begin
                 c = ExaModels.ExaCore(concrete = Val(true))
-                @add_var(c, xvar, 2, 0:10, lvar=0, uvar=1)
+                @add_var(c, xvar, 2, 0:10, lvar = 0, uvar = 1)
 
                 v = [xvar[i, 1] for i in 1:2]
                 @test length(v) == 2
                 @test v isa Vector
                 @test v[1] isa ExaModels.AbstractNode
 
-                A = [xvar[i, j] for (i, j) ∈ Base.product(1:2, 0:3)]
+                A = [xvar[i, j] for (i, j) in Base.product(1:2, 0:3)]
                 @test size(A) == (2, 4)
                 @test A isa Matrix
                 @test A[1, 1] isa ExaModels.AbstractNode
@@ -670,7 +670,7 @@ function runtests()
                 @test length(result6) == 2
                 @test result6[1] isa ExaModels.AbstractNode
 
-                A_square = [xvar[i, j] for (i, j) ∈ Base.product(1:2, 1:2)]
+                A_square = [xvar[i, j] for (i, j) in Base.product(1:2, 1:2)]
                 @test size(A_square) == (2, 2)
 
                 result7 = det(A_square)
@@ -1013,21 +1013,21 @@ function runtests()
                     mat_nodes = [x y; z w]
 
                     result1 = mat_nodes + [0 0; 0 0]
-                    @test result1[1,1].value == x.value
-                    @test result1[1,2].value == y.value
-                    @test result1[2,1].value == z.value
-                    @test result1[2,2].value == w.value
+                    @test result1[1, 1].value == x.value
+                    @test result1[1, 2].value == y.value
+                    @test result1[2, 1].value == z.value
+                    @test result1[2, 2].value == w.value
                     @test result1 isa Matrix{<:ExaModels.AbstractNode}
 
                     result2 = [0.0 0.0; 0.0 0.0] + mat_nodes
-                    @test result2[1,1].value == x.value
-                    @test result2[1,2].value == y.value
+                    @test result2[1, 1].value == x.value
+                    @test result2[1, 2].value == y.value
 
                     result3 = mat_nodes + [0 1.0; 0 0]
-                    @test result3[1,1].value == x.value
-                    @test result3[1,2].value == y.value + 1.0
-                    @test result3[2,1].value == z.value
-                    @test result3[2,2].value == w.value
+                    @test result3[1, 1].value == x.value
+                    @test result3[1, 2].value == y.value + 1.0
+                    @test result3[2, 1].value == z.value
+                    @test result3[2, 2].value == w.value
                 end
             end
 
@@ -1059,17 +1059,17 @@ function runtests()
                     mat_nodes = [x y; z w]
 
                     result1 = mat_nodes - [0 0; 0 0]
-                    @test result1[1,1].value == x.value
-                    @test result1[1,2].value == y.value
-                    @test result1[2,1].value == z.value
-                    @test result1[2,2].value == w.value
+                    @test result1[1, 1].value == x.value
+                    @test result1[1, 2].value == y.value
+                    @test result1[2, 1].value == z.value
+                    @test result1[2, 2].value == w.value
                     @test result1 isa Matrix{<:ExaModels.AbstractNode}
 
                     result2 = mat_nodes - [0 1.0; 0 0]
-                    @test result2[1,1].value == x.value
-                    @test result2[1,2].value == y.value - 1.0
-                    @test result2[2,1].value == z.value
-                    @test result2[2,2].value == w.value
+                    @test result2[1, 1].value == x.value
+                    @test result2[1, 2].value == y.value - 1.0
+                    @test result2[2, 1].value == z.value
+                    @test result2[2, 2].value == w.value
                 end
             end
 
