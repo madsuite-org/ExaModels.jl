@@ -120,6 +120,8 @@ function _probe(julia, env, args...)
             active = true
         elseif startswith(line, "END ")
             active = false
+        elseif startswith(line, "THREADTEAMS ")
+            regions["meta"] = (threadteams = split(line)[2] == "true",)
         elseif startswith(line, "RESULT ")
             _, name, ns, k = split(line)
             regions[name] = (trace = copy(trace), ns = parse(UInt64, ns), kernels = parse(Int, k))
@@ -158,7 +160,17 @@ end
 function _test_stored_ka(r)
     # GPUCompiler keeps its cache in the session on Julia 1.10, so nothing is stored there.
     if VERSION >= v"1.11"
-        @test !any(contains("ExaModels"), r["stored_ka"].trace)
+        if r["meta"].threadteams
+            # With KernelAbstractions ≥ 0.10.6 the POCL launch goes through ThreadTeams,
+            # whose `new_job_closure` builds an opaque closure. A call to it cannot be
+            # verified when the image loads, so the cached POCL launches and, through
+            # them, ExaModels' model build for this backend are compiled again (about
+            # 4 s instead of 0.1 s on Julia 1.13). This passes again once that is fixed
+            # upstream.
+            @test_broken !any(contains("ExaModels"), r["stored_ka"].trace)
+        else
+            @test !any(contains("ExaModels"), r["stored_ka"].trace)
+        end
         @test !any(contains("PrecompileAppKA"), r["stored_ka"].trace)
     end
     @test_broken r["stored_ka"].trace == String[]

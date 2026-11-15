@@ -25,6 +25,14 @@ Base.cumulative_compile_timing(true)
 compile_ns() = sum(Base.cumulative_compile_time_ns())
 
 report(line) = (println(stderr, line); flush(stderr))
+
+# KernelAbstractions 0.10.6 and later launch POCL kernels through ThreadTeams, whose
+# opaque closure (`new_job_closure`) cannot be verified when a package image loads, so
+# every cached caller up to the fixture's model build is compiled again (see
+# PrecompileTest.jl, `_test_stored_ka`). The line is built before it is written, so that
+# no compiler trace line lands inside it.
+report("THREADTEAMS " * string(any(m -> nameof(m) === :ThreadTeams, values(Base.loaded_modules))))
+
 function begin_region(name)
     report("BEGIN $name")
     return compile_ns(), kernels()
