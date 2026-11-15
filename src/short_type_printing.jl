@@ -16,7 +16,7 @@
 
 const _SHORT_TYPE_PRINTING_CODE = quote
     function Base.show(io::IO, t::Type{<:Constant})
-        if t isa DataType && !isempty(t.parameters)
+        return if t isa DataType && !isempty(t.parameters)
             print(io, "Constant{", t.parameters[1], "}")
         else
             print(io, "Constant")
@@ -24,7 +24,7 @@ const _SHORT_TYPE_PRINTING_CODE = quote
     end
 
     function Base.show(io::IO, t::Type{<:Null})
-        if t isa DataType && !isempty(t.parameters)
+        return if t isa DataType && !isempty(t.parameters)
             T = t.parameters[1]
             T === Nothing ? print(io, "Null") : print(io, "Null{", T, "}")
         else
@@ -33,7 +33,7 @@ const _SHORT_TYPE_PRINTING_CODE = quote
     end
 
     function Base.show(io::IO, t::Type{<:Var})
-        if get(io, :fulltype, _FULLTYPE_DISPLAY[]) && t isa DataType && !isempty(t.parameters)
+        return if get(io, :fulltype, _FULLTYPE_DISPLAY[]) && t isa DataType && !isempty(t.parameters)
             print(io, "Var{", t.parameters[1], "}")
         else
             print(io, "Var{…}")
@@ -41,7 +41,7 @@ const _SHORT_TYPE_PRINTING_CODE = quote
     end
 
     function Base.show(io::IO, t::Type{<:ParameterNode})
-        if get(io, :fulltype, _FULLTYPE_DISPLAY[]) && t isa DataType && !isempty(t.parameters)
+        return if get(io, :fulltype, _FULLTYPE_DISPLAY[]) && t isa DataType && !isempty(t.parameters)
             print(io, "ParameterNode{", t.parameters[1], "}")
         else
             print(io, "ParameterNode{…}")
@@ -49,11 +49,15 @@ const _SHORT_TYPE_PRINTING_CODE = quote
     end
 
     function Base.show(io::IO, ::Type{<:DataIndexed})
-        print(io, "DataIndexed{…}")
+        return print(io, "DataIndexed{…}")
+    end
+
+    function Base.show(io::IO, ::Type{<:DataLookup})
+        return print(io, "DataLookup{…}")
     end
 
     function Base.show(io::IO, t::Type{<:Node1})
-        if t isa DataType && !isempty(t.parameters)
+        return if t isa DataType && !isempty(t.parameters)
             F = t.parameters[1]
             if get(io, :fulltype, _FULLTYPE_DISPLAY[]) && length(t.parameters) >= 2
                 print(io, "Node1{", F, ",", t.parameters[2], "}")
@@ -66,7 +70,7 @@ const _SHORT_TYPE_PRINTING_CODE = quote
     end
 
     function Base.show(io::IO, t::Type{<:Node2})
-        if t isa DataType && !isempty(t.parameters)
+        return if t isa DataType && !isempty(t.parameters)
             F = t.parameters[1]
             if get(io, :fulltype, _FULLTYPE_DISPLAY[]) && length(t.parameters) >= 3
                 print(io, "Node2{", F, ",", t.parameters[2], ",", t.parameters[3], "}")
@@ -79,11 +83,11 @@ const _SHORT_TYPE_PRINTING_CODE = quote
     end
 
     function Base.show(io::IO, t::Type{<:AdjointNull})
-        t isa DataType && !isempty(t.parameters) ? print(io, "AdjointNull{", t.parameters[1], "}") : print(io, "AdjointNull")
+        return t isa DataType && !isempty(t.parameters) ? print(io, "AdjointNull{", t.parameters[1], "}") : print(io, "AdjointNull")
     end
 
     function Base.show(io::IO, t::Type{<:AdjointNodeVar})
-        if get(io, :fulltype, _FULLTYPE_DISPLAY[]) && t isa DataType && length(t.parameters) >= 2
+        return if get(io, :fulltype, _FULLTYPE_DISPLAY[]) && t isa DataType && length(t.parameters) >= 2
             print(io, "AdjointNodeVar{", t.parameters[1], ",", t.parameters[2], "}")
         else
             T = (t isa DataType && length(t.parameters) >= 2) ? t.parameters[2] : "?"
@@ -92,7 +96,7 @@ const _SHORT_TYPE_PRINTING_CODE = quote
     end
 
     function Base.show(io::IO, t::Type{<:AdjointNode1})
-        if t isa DataType && !isempty(t.parameters)
+        return if t isa DataType && !isempty(t.parameters)
             F, T = t.parameters[1], (length(t.parameters) >= 2 ? t.parameters[2] : "?")
             if get(io, :fulltype, _FULLTYPE_DISPLAY[]) && length(t.parameters) >= 3
                 print(io, "AdjointNode1{", F, ",", T, ",", t.parameters[3], "}")
@@ -105,7 +109,7 @@ const _SHORT_TYPE_PRINTING_CODE = quote
     end
 
     function Base.show(io::IO, t::Type{<:AdjointNode2})
-        if t isa DataType && !isempty(t.parameters)
+        return if t isa DataType && !isempty(t.parameters)
             F, T = t.parameters[1], (length(t.parameters) >= 2 ? t.parameters[2] : "?")
             if get(io, :fulltype, _FULLTYPE_DISPLAY[]) && length(t.parameters) >= 4
                 print(io, "AdjointNode2{", F, ",", T, ",", t.parameters[3], ",", t.parameters[4], "}")
@@ -118,7 +122,7 @@ const _SHORT_TYPE_PRINTING_CODE = quote
     end
 
     function Base.show(io::IO, t::Type{<:AdjointNodeSource})
-        if get(io, :fulltype, _FULLTYPE_DISPLAY[]) && t isa DataType && !isempty(t.parameters)
+        return if get(io, :fulltype, _FULLTYPE_DISPLAY[]) && t isa DataType && !isempty(t.parameters)
             print(io, "AdjointNodeSource{", t.parameters[1], "}")
         else
             print(io, "AdjointNodeSource{…}")
@@ -126,11 +130,11 @@ const _SHORT_TYPE_PRINTING_CODE = quote
     end
 
     function Base.show(io::IO, t::Type{<:SecondAdjointNull})
-        t isa DataType && !isempty(t.parameters) ? print(io, "SecondAdjointNull{", t.parameters[1], "}") : print(io, "SecondAdjointNull")
+        return t isa DataType && !isempty(t.parameters) ? print(io, "SecondAdjointNull{", t.parameters[1], "}") : print(io, "SecondAdjointNull")
     end
 
     function Base.show(io::IO, t::Type{<:SecondAdjointNodeVar})
-        if get(io, :fulltype, _FULLTYPE_DISPLAY[]) && t isa DataType && length(t.parameters) >= 2
+        return if get(io, :fulltype, _FULLTYPE_DISPLAY[]) && t isa DataType && length(t.parameters) >= 2
             print(io, "SecondAdjointNodeVar{", t.parameters[1], ",", t.parameters[2], "}")
         else
             T = (t isa DataType && length(t.parameters) >= 2) ? t.parameters[2] : "?"
@@ -139,7 +143,7 @@ const _SHORT_TYPE_PRINTING_CODE = quote
     end
 
     function Base.show(io::IO, t::Type{<:SecondAdjointNode1})
-        if t isa DataType && !isempty(t.parameters)
+        return if t isa DataType && !isempty(t.parameters)
             F, T = t.parameters[1], (length(t.parameters) >= 2 ? t.parameters[2] : "?")
             if get(io, :fulltype, _FULLTYPE_DISPLAY[]) && length(t.parameters) >= 3
                 print(io, "SecondAdjointNode1{", F, ",", T, ",", t.parameters[3], "}")
@@ -152,7 +156,7 @@ const _SHORT_TYPE_PRINTING_CODE = quote
     end
 
     function Base.show(io::IO, t::Type{<:SecondAdjointNode2})
-        if t isa DataType && !isempty(t.parameters)
+        return if t isa DataType && !isempty(t.parameters)
             F, T = t.parameters[1], (length(t.parameters) >= 2 ? t.parameters[2] : "?")
             if get(io, :fulltype, _FULLTYPE_DISPLAY[]) && length(t.parameters) >= 4
                 print(io, "SecondAdjointNode2{", F, ",", T, ",", t.parameters[3], ",", t.parameters[4], "}")
@@ -165,7 +169,7 @@ const _SHORT_TYPE_PRINTING_CODE = quote
     end
 
     function Base.show(io::IO, t::Type{<:SecondAdjointNodeSource})
-        if get(io, :fulltype, _FULLTYPE_DISPLAY[]) && t isa DataType && !isempty(t.parameters)
+        return if get(io, :fulltype, _FULLTYPE_DISPLAY[]) && t isa DataType && !isempty(t.parameters)
             print(io, "SecondAdjointNodeSource{", t.parameters[1], "}")
         else
             print(io, "SecondAdjointNodeSource{…}")
@@ -173,10 +177,10 @@ const _SHORT_TYPE_PRINTING_CODE = quote
     end
 
     function Base.show(io::IO, ::Type{SumNode{I}}) where {I}
-        print(io, "SumNode{…}")
+        return print(io, "SumNode{…}")
     end
 
     function Base.show(io::IO, ::Type{ProdNode{I}}) where {I}
-        print(io, "ProdNode{…}")
+        return print(io, "ProdNode{…}")
     end
 end

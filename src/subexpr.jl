@@ -27,6 +27,12 @@ end
 # of the body's `DataSource`, so substituting the use-site index must reach it, or
 # `e2[k + 1]` with `e2 = 2 * e[k]`, `e` buffered, reads slot k rather than k + 1.
 @inline _reindex(n::SubexprNode, i) = SubexprNode(_reindex(getfield(n, :i), i))
+Base.@assume_effects :foldable _contains_node(::Type{SubexprNode{I}}, ::Type{X}) where {I, X} =
+    SubexprNode{I} <: X || _contains_node(I, X)
+@inline function _hoist(n::SubexprNode, acc)
+    i, acc = _hoist(getfield(n, :i), acc)
+    return SubexprNode(i), acc
+end
 _short_type(::SubexprNode) = "SubexprNode"
 Base.show(io::IO, node::SubexprNode{I}) where {I} = print(io, "subexpr(θ[", node.i, "])")
 
@@ -508,8 +514,8 @@ end
 # linear paths, which is valid only when the top-level second-order seed is
 # zero; a stage replay is seeded with μ ≠ 0, so a linear stage tree still
 # produces μ·∇s∇sᵀ and needs those slots.
-@inline function _stage_simdfunction(T, gen::Base.Generator)
-    f = _constant_tree(T, replace_T(T, gen.f(DataSource())))
+@inline function _stage_simdfunction(T, body)
+    f = _constant_tree(T, replace_T(T, body))
 
     d = f(Identity(), AdjointNodeSource(NaNSource{T}()), NaNSource{T}())
     raw1 = Any[]
