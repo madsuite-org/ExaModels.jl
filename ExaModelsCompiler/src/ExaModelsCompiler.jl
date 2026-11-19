@@ -1932,8 +1932,8 @@ function _check_device(device::Symbol)
     device === :cpu && return
     device === :cuda || throw(ArgumentError("`device` must be :cpu or :cuda, got :$device"))
     hasmethod(_device_source, Tuple{Val{:cuda}, AbstractString, Any}) || throw(ArgumentError(
-        "`device = :cuda` needs the CUDA extension: `using CUDA` (it loads CUDACore and " *
-        "GPUCompiler) before calling `compile_library`."))
+        "`device = :cuda` needs the CUDA extension: `using CUDACore, GPUCompiler` (or `using CUDA`) " *
+        "before calling `compile_library`."))
     return
 end
 

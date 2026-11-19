@@ -9,7 +9,7 @@ Kernels are generic: the block function, its data (a range by value, or a device
 pointer and length), constraint dims and every array arrive as arguments.  So the
 PTX depends only on TYPES, never on sizes, and one library serves every instance.
 
-CUDA.jl is used here only.  The public pieces are `GPUCompiler.compile` and
+CUDA.jl (CUDACore) is used here only.  The public pieces are `GPUCompiler.compile` and
 `GPUCompiler.CompilerJob`; `CUDACore.compiler_config` and `CUDACore.methodinstance`
 are the only internals touched, and only at build time, so a CUDA.jl change can
 break a build loudly but never a compiled library.
@@ -17,8 +17,8 @@ break a build loudly but never a compiled library.
 module ExaModelsCompilerCUDAExt
 
 using ExaModelsCompiler, ExaModels
-using CUDA
-import CUDACore, GPUCompiler
+using CUDACore
+import GPUCompiler
 const EM = ExaModels
 
 const LP{T} = Core.LLVMPtr{T,1}
@@ -26,7 +26,7 @@ const PTX_ARCH = v"7.0"     # lowest target; the driver compiles the PTX for new
 
 # ── device code ─────────────────────────────────────────────────────────────────
 @inline _tid() = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
-@inline _w(p::LP{T}, n::Int) where {T} = CuDeviceArray{T,1,CUDA.AS.Global}(p, (n,))
+@inline _w(p::LP{T}, n::Int) where {T} = CuDeviceArray{T,1,CUDACore.AS.Global}(p, (n,))
 @inline _it(r::UnitRange{Int}) = r
 @inline _it(t::Tuple{LP{T},Int}) where {T} = _w(t[1], t[2])
 
@@ -34,7 +34,7 @@ function k_obj(F, it, L::Int, o::LP{Float64}, xp::LP{Float64}, xn::Int, tp::LP{F
     I = _tid()
     if I <= L
         itr = _it(it); x = _w(xp, xn); θ = _w(tp, tn); out = _w(o, 1)
-        @inbounds CUDA.@atomic out[1] += F(itr[I], x, θ)
+        @inbounds CUDACore.@atomic out[1] += F(itr[I], x, θ)
     end
     return
 end
@@ -59,7 +59,7 @@ function k_con(F, it, D, L::Int, cp::LP{Float64}, cn::Int, xp::LP{Float64}, xn::
     I = _tid()
     if I <= L
         itr = _it(it); x = _w(xp, xn); θ = _w(tp, tn); c = _w(cp, cn)
-        @inbounds CUDA.@atomic c[EM.offset0(F, itr, I, D)] += F(itr[I], x, θ)
+        @inbounds CUDACore.@atomic c[EM.offset0(F, itr, I, D)] += F(itr[I], x, θ)
     end
     return
 end
@@ -86,7 +86,7 @@ function k_scatter(gp::LP{Float64}, gn::Int, bp::LP{Float64}, bn::Int, vp::LP{In
     I = _tid()
     if I <= n
         g = _w(gp, gn); buf = _w(bp, bn); gvar = _w(vp, n); gpos = _w(pp, n)
-        @inbounds CUDA.@atomic g[gvar[I]] += buf[gpos[I]]
+        @inbounds CUDACore.@atomic g[gvar[I]] += buf[gpos[I]]
     end
     return
 end
@@ -111,7 +111,7 @@ the host type's.  A mismatch here would otherwise be a silent miscompute.
 """
 function ptx(f, argtypes::Tuple)
     job = GPUCompiler.CompilerJob(CUDACore.methodinstance(typeof(f), Tuple{argtypes...}),
-                                  CUDACore.compiler_config(CUDA.device(); arch = PTX_ARCH))
+                                  CUDACore.compiler_config(CUDACore.device(); arch = PTX_ARCH))
     asm, _ = CUDACore.JuliaContext() do ctx
         GPUCompiler.compile(:asm, job)
     end
