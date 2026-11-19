@@ -1763,6 +1763,14 @@ $(_writers_source(p, s.writers))
         return Cint(MODELS_$p[Int(id)].meta.nnzh)
     end
 
+    # Objective sense: 1 = minimize, 0 = maximize, -1 = invalid id. Optional in the ABI
+    # (a consumer that does not find it assumes minimize), so it must be exported for
+    # every model whose objective is maximized, or the consumer solves the wrong problem.
+    Base.@ccallable function $(p)_minimize(id::Cint)::Cint
+        _valid_$p(id) || return Cint(-1)
+        return MODELS_$p[Int(id)].meta.minimize ? Cint(1) : Cint(0)
+    end
+
     Base.@ccallable function $(p)_meta(
         id::Cint,
         x0::Ptr{Cdouble},
