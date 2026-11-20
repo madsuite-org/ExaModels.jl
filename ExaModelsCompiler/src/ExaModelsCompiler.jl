@@ -110,8 +110,10 @@ struct ModelSpec
     arg::Any
     field::Any
     writers::Vector{Writer}
+    default_writer::String     # the writer consumers use by default; "" for the standard format
 end
-ModelSpec(prefix, core, arg, field) = ModelSpec(prefix, core, arg, field, Writer[])
+ModelSpec(prefix, core, arg, field) = ModelSpec(prefix, core, arg, field, Writer[], "")
+ModelSpec(prefix, core, arg, field, writers) = ModelSpec(prefix, core, arg, field, writers, "")
 
 """
     compile_library(out, core, args...; prefix = basename(out), trim = "safe",
@@ -413,7 +415,12 @@ function _with_writers(s::ModelSpec, writers)
         "`$(s.prefix)`: solution writers need a model with an argument function " *
         "— the writer is handed the value that function was called with."))
     out = Writer[]
+    default = ""
     for w in writers
+        # `:default => :name` names the writer consumers use by default (P_default_writer)
+        if w isa Pair && Symbol(first(w)) === :default && last(w) isa Union{Symbol, AbstractString}
+            default = String(last(w)); continue
+        end
         w isa Pair && first(w) isa Union{Symbol, AbstractString} && last(w) isa Function ||
             throw(ArgumentError(
                 "`$(s.prefix)`: a writer is `:name => function`, got $(repr(w))"))
@@ -423,7 +430,9 @@ function _with_writers(s::ModelSpec, writers)
             "`$(s.prefix)`: two writers are both named `$name`"))
         push!(out, Writer(name, _argfun_call(s.prefix, last(w); what = "a writer"), last(w)))
     end
-    return ModelSpec(s.prefix, s.core, s.arg, s.field, out)
+    isempty(default) || any(x -> x.name == default, out) || throw(ArgumentError(
+        "`$(s.prefix)`: the default writer `$default` is not one of its writers $(map(x -> x.name, out))"))
+    return ModelSpec(s.prefix, s.core, s.arg, s.field, out, default)
 end
 
 # The per-model validation both entry points share. Everything here is checked
@@ -1658,6 +1667,26 @@ end
 #
 # Each writer is called by name, so `--trim=safe` resolves it statically; the
 # solution is copied out of the caller's buffers before the call.
+# The writer a consumer uses when asked for "the" solution file (P_default_writer):
+# its name by the copy-out convention, 0 when the model leaves it to the standard
+# format, -1 for an invalid id. Exported only when a default is named.
+function _default_writer_source(p::AbstractString, default::AbstractString)
+    isempty(default) && return ""
+    return """
+    const DEFAULT_WRITER_$p = Vector{UInt8}($(repr(default)))
+    Base.@ccallable function $(p)_default_writer(id::Cint, buf::Ptr{UInt8}, cap::Cint)::Cint
+        _valid_$p(id) || return Cint(-1)
+        b = DEFAULT_WRITER_$p
+        n = length(b)
+        m = min(Int(cap), n)
+        if m > 0 && buf != Ptr{UInt8}(0)
+            GC.@preserve b unsafe_copyto!(buf, pointer(b), m)
+        end
+        return Cint(n)
+    end
+"""
+end
+
 function _writers_source(p::AbstractString, writers::Vector{Writer})
     names = join((
         """    const WNAME_$(p)_$(i) = Vector{UInt8}($(repr(w.name)))\n"""
@@ -1743,6 +1772,7 @@ function _model_source(s::ModelSpec)
 $(_instantiation_source(p, s.field))
 $(_layout_source(p, s.core))
 $(_writers_source(p, s.writers))
+$(_default_writer_source(p, s.default_writer))
     Base.@ccallable function $(p)_nvar(id::Cint)::Cint
         _valid_$p(id) || return Cint(-1)
         return Cint(MODELS_$p[Int(id)].meta.nvar)
