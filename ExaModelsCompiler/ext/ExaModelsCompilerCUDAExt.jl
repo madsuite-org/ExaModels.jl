@@ -30,6 +30,14 @@ const PTX_ARCH = v"7.0"     # lowest target; the driver compiles the PTX for new
 @inline _it(r::UnitRange{Int}) = r
 @inline _it(t::Tuple{LP{T},Int}) where {T} = _w(t[1], t[2])
 
+# A merged block (ExaModels merges every block of a fixed core into families) keeps its
+# nonzero offsets and compressors in each row element, not in the SIMDFunction: read them
+# from the element, as ExaModels' own KernelAbstractions kernels (kerg_m, kerj_m, kerh_m) do.
+@inline _o1(F, el, I) = EM.offset1(F, I)
+@inline _o1(F, el::EM.MergedRow, I) = getfield(el, :o1)
+@inline _o2(F, el, I) = EM.offset2(F, I)
+@inline _o2(F, el::EM.MergedRow, I) = getfield(el, :o2)
+
 function k_obj(F, it, L::Int, o::LP{Float64}, xp::LP{Float64}, xn::Int, tp::LP{Float64}, tn::Int)
     I = _tid()
     if I <= L
@@ -42,7 +50,8 @@ function k_grad(F, it, L::Int, bp::LP{Float64}, bn::Int, xp::LP{Float64}, xn::In
     I = _tid()
     if I <= L
         itr = _it(it); x = _w(xp, xn); θ = _w(tp, tn); buf = _w(bp, bn)
-        @inbounds EM.grpass(F(itr[I], EM.AdjointNodeSource(x), θ), F.comp1, buf, EM.offset1(F, I), 0, 1.0)
+        @inbounds el = itr[I]
+        @inbounds EM.grpass(F(el, EM.AdjointNodeSource(x), θ), EM._comp1(F, el), buf, _o1(F, el, I), 0, 1.0)
     end
     return
 end
@@ -50,8 +59,9 @@ function k_hessobj(F, it, L::Int, hp::LP{Float64}, hn::Int, xp::LP{Float64}, xn:
     I = _tid()
     if I <= L
         itr = _it(it); x = _w(xp, xn); θ = _w(tp, tn); hv = _w(hp, hn)
-        @inbounds EM.hrpass0(F(itr[I], EM.SecondAdjointNodeSource(x), θ), F.comp2, hv, nothing,
-                             EM.offset2(F, I), 0, w, 0.0)
+        @inbounds el = itr[I]
+        @inbounds EM.hrpass0(F(el, EM.SecondAdjointNodeSource(x), θ), EM._comp2(F, el), hv, nothing,
+                             _o2(F, el, I), 0, w, 0.0)
     end
     return
 end
@@ -67,8 +77,9 @@ function k_jac(F, it, D, L::Int, jp::LP{Float64}, jn::Int, xp::LP{Float64}, xn::
     I = _tid()
     if I <= L
         itr = _it(it); x = _w(xp, xn); θ = _w(tp, tn); jv = _w(jp, jn)
-        @inbounds EM.jrpass(F(itr[I], EM.AdjointNodeSource(x), θ), F.comp1, EM.offset0(F, itr, I, D),
-                            jv, nothing, EM.offset1(F, I), 0, 1.0)
+        @inbounds el = itr[I]
+        @inbounds EM.jrpass(F(el, EM.AdjointNodeSource(x), θ), EM._comp1(F, el), EM.offset0(F, itr, I, D),
+                            jv, nothing, _o1(F, el, I), 0, 1.0)
     end
     return
 end
@@ -77,8 +88,9 @@ function k_hesscon(F, it, D, L::Int, hp::LP{Float64}, hn::Int, xp::LP{Float64}, 
     I = _tid()
     if I <= L
         itr = _it(it); x = _w(xp, xn); θ = _w(tp, tn); hv = _w(hp, hn); y = _w(yp, yn)
-        @inbounds EM.hrpass0(F(itr[I], EM.SecondAdjointNodeSource(x), θ), F.comp2, hv, nothing,
-                             EM.offset2(F, I), 0, y[EM.offset0(F, itr, I, D)], 0.0)
+        @inbounds el = itr[I]
+        @inbounds EM.hrpass0(F(el, EM.SecondAdjointNodeSource(x), θ), EM._comp2(F, el), hv, nothing,
+                             _o2(F, el, I), 0, y[EM.offset0(F, itr, I, D)], 0.0)
     end
     return
 end
@@ -179,17 +191,29 @@ function ExaModelsCompiler._device_source(::Val{:cuda}, p::AbstractString, probe
     end
     pr("    end")
     pr("    const GPU_$p = GPU_$(p)_T[]")
+    pr("    # gradient slots of one objective row: a merged row's count is its compressor's range")
+    pr("    _ns_$p(f, el) = f.o1step")
+    pr("    _ns_$p(f, el::ExaModels.MergedRow) = foldl(max, getfield(el, :comp1).inner; init = 0)")
     pr("    function _mkgpu_$p(m)")
     # Gradient scatter plan: which variable each per-term buffer slot belongs to,
     # computed on the host with the same pass the KernelAbstractions backend uses.
+    # The buffer spans every objective row's slots: its end is the largest row offset
+    # plus that row's slot count, read per row so merged blocks (offsets in the rows) and
+    # plain ones (o1 + o1step * (i - 1)) are sized alike.
     pr("        nb = 0")
-    for (k, b) in enumerate(objs); pr("        nb += length($(blk(:obj, k)).itr) * $(blk(:obj, k)).f.o1step"); end
+    for (k, b) in enumerate(objs)
+        pr("        let b = $(blk(:obj, k)), itr = vec(collect(b.itr))")
+        pr("            for i in eachindex(itr)")
+        pr("                nb = max(nb, ExaModels.offset1(b, i) + _ns_$p(b.f, itr[i]))")
+        pr("            end")
+        pr("        end")
+    end
     pr("        gs = fill((0, 0), nb)")
     for (k, b) in enumerate(objs)
         pr("        let b = $(blk(:obj, k)), itr = vec(collect(b.itr))")
         pr("            for i in eachindex(itr)")
         pr("                ExaModels.grpass(b.f.f(itr[i], ExaModels.AdjointNodeSource(ExaModels.NaNSource{Float64}()), ExaModels.NaNSource{Float64}()),")
-        pr("                                 b.f.comp1, gs, ExaModels.offset1(b.f, i), 0, NaN)")
+        pr("                                 ExaModels._comp1(b.f, itr[i]), gs, ExaModels.offset1(b, i), 0, NaN)")
         pr("            end")
         pr("        end")
     end
