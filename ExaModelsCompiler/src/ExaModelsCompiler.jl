@@ -101,6 +101,17 @@ struct Writer
     fun::Any
 end
 
+# A model's own input format (cnlp.h, the readers tier). `kind` is the ABI's:
+# 0 = instance (path -> the argument tuple), 1 = parameters (path, model ->
+# a NamedTuple of parameter-block values), 2 = start (path, model -> x0, or
+# a tuple (x0, y0, zl, zu)).
+struct Reader
+    name::String
+    kind::Int
+    call::String
+    fun::Any
+end
+
 # One model's compiled form: its prefix, its concretized core, the example value
 # whose types `juliac` needs, how `<prefix>_new(n)` rebuilds it (`field`), and
 # its solution writers.
@@ -111,9 +122,12 @@ struct ModelSpec
     field::Any
     writers::Vector{Writer}
     default_writer::String     # the writer consumers use by default; "" for the standard format
+    readers::Vector{Reader}
+    default_reader::String     # the instance reader for a bare path; "" for none
 end
-ModelSpec(prefix, core, arg, field) = ModelSpec(prefix, core, arg, field, Writer[], "")
-ModelSpec(prefix, core, arg, field, writers) = ModelSpec(prefix, core, arg, field, writers, "")
+ModelSpec(prefix, core, arg, field) = ModelSpec(prefix, core, arg, field, Writer[], "", Reader[], "")
+ModelSpec(prefix, core, arg, field, writers) = ModelSpec(prefix, core, arg, field, writers, "", Reader[], "")
+ModelSpec(prefix, core, arg, field, writers, dw) = ModelSpec(prefix, core, arg, field, writers, dw, Reader[], "")
 
 """
     compile_library(out, core, args...; prefix = basename(out), trim = "safe",
@@ -279,9 +293,10 @@ function compile_library(
     verbose::Bool = false,
     argfun = nothing,
     writers = (),
+    readers = (),
     device::Symbol = :cpu,
 )
-    spec = _with_writers(_model_spec(prefix, core, argfun, args), writers)
+    spec = _with_readers(_with_writers(_model_spec(prefix, core, argfun, args), writers), readers)
     r = _compile([spec], out, prefix, trim, bundle, verbose; device)
     # One model keeps the singular field it has always returned.
     return (; libpath = r.libpath, outdir = r.outdir, prefix = spec.prefix)
@@ -334,6 +349,7 @@ function compile_library(
     bundle::Bool = false,
     verbose::Bool = false,
     writers = (),
+    readers = (),
     device::Symbol = :cpu,
 )
     isempty(models) && throw(ArgumentError("give at least one `:name => core` model"))
@@ -349,6 +365,14 @@ function compile_library(
     end
     specs = ModelSpec[
         _with_writers(s, (ws for (name, ws) in writers if Symbol(name) == Symbol(s.prefix))...)
+        for s in specs
+    ]
+    for (name, _) in readers
+        Symbol(name) in names || throw(ArgumentError(
+            "`readers` names a model `$name` that is not in this library; it has $(sort(collect(names)))"))
+    end
+    specs = ModelSpec[
+        _with_readers(s, (rs for (name, rs) in readers if Symbol(name) == Symbol(s.prefix))...)
         for s in specs
     ]
     # The FILE is named after `out`; the models are named by their symbols.
@@ -432,7 +456,34 @@ function _with_writers(s::ModelSpec, writers)
     end
     isempty(default) || any(x -> x.name == default, out) || throw(ArgumentError(
         "`$(s.prefix)`: the default writer `$default` is not one of its writers $(map(x -> x.name, out))"))
-    return ModelSpec(s.prefix, s.core, s.arg, s.field, out, default)
+    return ModelSpec(s.prefix, s.core, s.arg, s.field, out, default, s.readers, s.default_reader)
+end
+
+_with_readers(s::ModelSpec) = s
+function _with_readers(s::ModelSpec, readers)
+    isempty(readers) && return s
+    readers isa NamedTuple || throw(ArgumentError(
+        "`$(s.prefix)`: readers are `(instance = (:name => f, ...), parameters = (...), " *
+        "start = (...), default = :name)`, got $(repr(readers))"))
+    out = Reader[]
+    for (key, kind) in ((:instance, 0), (:parameters, 1), (:start, 2))
+        for r in get(readers, key, ())
+            r isa Pair && first(r) isa Union{Symbol, AbstractString} && last(r) isa Function ||
+                throw(ArgumentError("`$(s.prefix)`: a reader is `:name => function`, got $(repr(r))"))
+            name = String(first(r))
+            _check_prefix(name)
+            any(x -> x.name == name, out) && throw(ArgumentError(
+                "`$(s.prefix)`: two readers are both named `$name`"))
+            kind == 0 && !(s.field isa UserArgs{:str}) && throw(ArgumentError(
+                "`$(s.prefix)`: instance readers need a model instantiated from a string " *
+                "(an argument function taking a path), like `P_new_str`"))
+            push!(out, Reader(name, kind, _argfun_call(s.prefix, last(r); what = "a reader"), last(r)))
+        end
+    end
+    default = String(get(readers, :default, ""))
+    isempty(default) || any(x -> x.name == default && x.kind == 0, out) || throw(ArgumentError(
+        "`$(s.prefix)`: the default reader `$default` is not one of its instance readers"))
+    return ModelSpec(s.prefix, s.core, s.arg, s.field, s.writers, s.default_writer, out, default)
 end
 
 # The per-model validation both entry points share. Everything here is checked
@@ -1465,6 +1516,16 @@ function _module_source(modname::AbstractString, specs::Vector{ModelSpec}, pkgs 
     import ExaModels
     import Serialization
     $imports
+    # Start readers return x0, or (x0, y0, zl, zu); every entry of the
+    # caller's arrays is written, 0 where the reader gives no value.
+    function _fill_start(x0, y0, zl, zu, x::AbstractVector)
+        copyto!(x0, x); fill!(y0, 0.0); fill!(zl, 0.0); fill!(zu, 0.0)
+        return nothing
+    end
+    function _fill_start(x0, y0, zl, zu, t::Tuple)
+        copyto!(x0, t[1]); copyto!(y0, t[2]); copyto!(zl, t[3]); copyto!(zu, t[4])
+        return nothing
+    end
     $(join((_model_source(s) for s in specs), "\n"))
 $device_src
 $(_catalog_source(specs))
@@ -1670,6 +1731,103 @@ end
 # The writer a consumer uses when asked for "the" solution file (P_default_writer):
 # its name by the copy-out convention, 0 when the model leaves it to the standard
 # format, -1 for an invalid id. Exported only when a default is named.
+# The readers tier: names, kinds, the default instance reader, and one entry
+# point per reader (`P_new_from_<name>`, `P_set_from_<name>`, `P_start_from_<name>`).
+function _readers_source(p::AbstractString, s::ModelSpec)
+    rs = s.readers
+    isempty(rs) && return ""
+    copyout(b) = """
+            n = length($b)
+            m = min(Int(cap), n)
+            if m > 0 && buf != Ptr{UInt8}(0)
+                GC.@preserve $b unsafe_copyto!(buf, pointer($b), m)
+            end
+            return Cint(n)
+"""
+    names = join(("    const RNAME_$(p)_$(i) = Vector{UInt8}($(repr(r.name)))\n" for (i, r) in enumerate(rs)))
+    name_arms = join(("        if k == Cint($(i - 1))\n$(copyout("RNAME_$(p)_$(i)"))        end\n" for (i, _) in enumerate(rs)))
+    kind_arms = join(("        k == Cint($(i - 1)) && return Cint($(r.kind))\n" for (i, r) in enumerate(rs)))
+    default = isempty(s.default_reader) ? "" : """
+    const DEFAULT_READER_$p = Vector{UInt8}($(repr(s.default_reader)))
+    Base.@ccallable function $(p)_default_reader(buf::Ptr{UInt8}, cap::Cint)::Cint
+$(copyout("DEFAULT_READER_$p"))    end
+"""
+    pars = [k for (k, kind) in _layout_blocks(s.core) if kind == 2]
+    entries = map(rs) do r
+        if r.kind == 0
+            """
+    Base.@ccallable function $(p)_new_from_$(r.name)(s_ptr::Ptr{Cchar})::Cint
+        try
+            s = unsafe_string(s_ptr)
+            push!(MODELS_$p, ExaModels.ExaModel(CORE_$p, $(r.call)(s)...; check = Val(false)))
+            push!(ARGIN_$p, s)
+            return Cint(length(MODELS_$p))
+        catch
+            return Cint(0)
+        end
+    end
+"""
+        elseif r.kind == 1
+            sets = join(("""
+            if hasproperty(r, :$(k))
+                b = m.refs.$(k)
+                o = getfield(b, :offset)
+                n = ExaModels.total(getfield(b, :size))
+                v = getproperty(r, :$(k))
+                length(v) == n || return Cint(3)
+                copyto!(view(m.θ, (o + 1):(o + n)), v)
+            end
+""" for k in pars))
+            """
+    Base.@ccallable function $(p)_set_from_$(r.name)(id::Cint, s_ptr::Ptr{Cchar})::Cint
+        _valid_$p(id) || return Cint(1)
+        try
+            m = MODELS_$p[Int(id)]
+            r = $(r.call)(unsafe_string(s_ptr), m)
+$sets            return Cint(0)
+        catch
+            return Cint(2)
+        end
+    end
+"""
+        else
+            """
+    Base.@ccallable function $(p)_start_from_$(r.name)(
+        id::Cint, s_ptr::Ptr{Cchar}, x0::Ptr{Cdouble}, y0::Ptr{Cdouble}, zl::Ptr{Cdouble}, zu::Ptr{Cdouble},
+    )::Cint
+        _valid_$p(id) || return Cint(1)
+        try
+            m = MODELS_$p[Int(id)]
+            nv = Int(m.meta.nvar); nc = Int(m.meta.ncon)
+            _fill_start(unsafe_wrap(Array, x0, nv), unsafe_wrap(Array, y0, nc),
+                        unsafe_wrap(Array, zl, nv), unsafe_wrap(Array, zu, nv),
+                        $(r.call)(unsafe_string(s_ptr), m))
+            return Cint(0)
+        catch
+            return Cint(2)
+        end
+    end
+"""
+        end
+    end
+    return """
+    # ── readers of `$p` ──────────────────────────────────────────────────────
+$names
+    Base.@ccallable function $(p)_nreaders()::Cint
+        return Cint($(length(rs)))
+    end
+
+    Base.@ccallable function $(p)_reader_name(k::Cint, buf::Ptr{UInt8}, cap::Cint)::Cint
+$name_arms        return Cint(-1)
+    end
+
+    Base.@ccallable function $(p)_reader_kind(k::Cint)::Cint
+$kind_arms        return Cint(-1)
+    end
+$default
+$(join(entries))"""
+end
+
 function _default_writer_source(p::AbstractString, default::AbstractString)
     isempty(default) && return ""
     return """
@@ -1773,6 +1931,7 @@ $(_instantiation_source(p, s.field))
 $(_layout_source(p, s.core))
 $(_writers_source(p, s.writers))
 $(_default_writer_source(p, s.default_writer))
+$(_readers_source(p, s))
     Base.@ccallable function $(p)_nvar(id::Cint)::Cint
         _valid_$p(id) || return Cint(-1)
         return Cint(MODELS_$p[Int(id)].meta.nvar)
