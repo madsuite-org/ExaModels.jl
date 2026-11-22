@@ -21,14 +21,14 @@ using CUDACore
 import GPUCompiler
 const EM = ExaModels
 
-const LP{T} = Core.LLVMPtr{T,1}
+const LP{T} = Core.LLVMPtr{T, 1}
 const PTX_ARCH = v"7.0"     # lowest target; the driver compiles the PTX for newer GPUs
 
 # ── device code ─────────────────────────────────────────────────────────────────
 @inline _tid() = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
-@inline _w(p::LP{T}, n::Int) where {T} = CuDeviceArray{T,1,CUDACore.AS.Global}(p, (n,))
+@inline _w(p::LP{T}, n::Int) where {T} = CuDeviceArray{T, 1, CUDACore.AS.Global}(p, (n,))
 @inline _it(r::UnitRange{Int}) = r
-@inline _it(t::Tuple{LP{T},Int}) where {T} = _w(t[1], t[2])
+@inline _it(t::Tuple{LP{T}, Int}) where {T} = _w(t[1], t[2])
 
 # A merged block (ExaModels merges every block of a fixed core into families) keeps its
 # nonzero offsets and compressors in each row element, not in the SIMDFunction: read them
@@ -60,8 +60,10 @@ function k_hessobj(F, it, L::Int, hp::LP{Float64}, hn::Int, xp::LP{Float64}, xn:
     if I <= L
         itr = _it(it); x = _w(xp, xn); θ = _w(tp, tn); hv = _w(hp, hn)
         @inbounds el = itr[I]
-        @inbounds EM.hrpass0(F(el, EM.SecondAdjointNodeSource(x), θ), EM._comp2(F, el), hv, nothing,
-                             _o2(F, el, I), 0, w, 0.0)
+        @inbounds EM.hrpass0(
+            F(el, EM.SecondAdjointNodeSource(x), θ), EM._comp2(F, el), hv, nothing,
+            _o2(F, el, I), 0, w, 0.0
+        )
     end
     return
 end
@@ -78,19 +80,25 @@ function k_jac(F, it, D, L::Int, jp::LP{Float64}, jn::Int, xp::LP{Float64}, xn::
     if I <= L
         itr = _it(it); x = _w(xp, xn); θ = _w(tp, tn); jv = _w(jp, jn)
         @inbounds el = itr[I]
-        @inbounds EM.jrpass(F(el, EM.AdjointNodeSource(x), θ), EM._comp1(F, el), EM.offset0(F, itr, I, D),
-                            jv, nothing, _o1(F, el, I), 0, 1.0)
+        @inbounds EM.jrpass(
+            F(el, EM.AdjointNodeSource(x), θ), EM._comp1(F, el), EM.offset0(F, itr, I, D),
+            jv, nothing, _o1(F, el, I), 0, 1.0
+        )
     end
     return
 end
-function k_hesscon(F, it, D, L::Int, hp::LP{Float64}, hn::Int, xp::LP{Float64}, xn::Int, tp::LP{Float64}, tn::Int,
-                   yp::LP{Float64}, yn::Int)
+function k_hesscon(
+        F, it, D, L::Int, hp::LP{Float64}, hn::Int, xp::LP{Float64}, xn::Int, tp::LP{Float64}, tn::Int,
+        yp::LP{Float64}, yn::Int
+    )
     I = _tid()
     if I <= L
         itr = _it(it); x = _w(xp, xn); θ = _w(tp, tn); hv = _w(hp, hn); y = _w(yp, yn)
         @inbounds el = itr[I]
-        @inbounds EM.hrpass0(F(el, EM.SecondAdjointNodeSource(x), θ), EM._comp2(F, el), hv, nothing,
-                             _o2(F, el, I), 0, y[EM.offset0(F, itr, I, D)], 0.0)
+        @inbounds EM.hrpass0(
+            F(el, EM.SecondAdjointNodeSource(x), θ), EM._comp2(F, el), hv, nothing,
+            _o2(F, el, I), 0, y[EM.offset0(F, itr, I, D)], 0.0
+        )
     end
     return
 end
@@ -122,8 +130,10 @@ kernel-state parameter, then one parameter per non-ghost argument whose size equ
 the host type's.  A mismatch here would otherwise be a silent miscompute.
 """
 function ptx(f, argtypes::Tuple)
-    job = GPUCompiler.CompilerJob(CUDACore.methodinstance(typeof(f), Tuple{argtypes...}),
-                                  CUDACore.compiler_config(CUDACore.device(); arch = PTX_ARCH))
+    job = GPUCompiler.CompilerJob(
+        CUDACore.methodinstance(typeof(f), Tuple{argtypes...}),
+        CUDACore.compiler_config(CUDACore.device(); arch = PTX_ARCH)
+    )
     asm, _ = CUDACore.JuliaContext() do ctx
         GPUCompiler.compile(:asm, job)
     end
@@ -144,19 +154,21 @@ end
 
 # ── library source for one model ────────────────────────────────────────────────
 _isrange(itr) = itr isa UnitRange{Int}
-_itrtype(itr) = _isrange(itr) ? UnitRange{Int} : Tuple{LP{eltype(collect(itr))},Int}
+_itrtype(itr) = _isrange(itr) ? UnitRange{Int} : Tuple{LP{eltype(collect(itr))}, Int}
 
 function ExaModelsCompiler._device_source(::Val{:cuda}, p::AbstractString, probe)
     objs, cons = probe.objs, probe.cons
     (objs isa Tuple && cons isa Tuple) || error(
         "`$p`: device = :cuda needs the model's blocks stored as a Tuple; this model " *
-        "has too many blocks for that ($(length(objs)) objective, $(length(cons)) constraint)")
+            "has too many blocks for that ($(length(objs)) objective, $(length(cons)) constraint)"
+    )
     # Buffered subexpressions are evaluated in stages on the host before the blocks; the
     # device tier has no such pass, so it would evaluate the blocks on stale values.
     probe.subexprs === () || error(
-        "`$p`: device = :cuda does not support buffered subexpressions (`add_expr(...; buffered = Val(true))`)")
+        "`$p`: device = :cuda does not support buffered subexpressions (`add_expr(...; buffered = Val(true))`)"
+    )
     V = (LP{Float64}, Int)                          # a vector argument: pointer, length
-    kernels = Tuple{String,Any,Tuple}[]
+    kernels = Tuple{String, Any, Tuple}[]
     for (k, b) in enumerate(objs)
         F = typeof(b.f); IT = _itrtype(b.itr)
         push!(kernels, ("obj_$k", k_obj, (F, IT, Int, LP{Float64}, V..., V...)))
@@ -222,8 +234,10 @@ function ExaModelsCompiler._device_source(::Val{:cuda}, p::AbstractString, probe
         pr("        end")
     end
     pr("        GPU_$(p)_T(MiniAOT.Buffer(Vector{Float64}(m.θ)), MiniAOT.Buffer{Float64}(1), MiniAOT.Buffer{Float64}(nb),")
-    pr("                  MiniAOT.Buffer(Int[first(q) for q in gs]), MiniAOT.Buffer(Int[last(q) for q in gs])",
-       join([", MiniAOT.Buffer(vec(collect($(blk(kind, k)).itr)))" for (kind, k) in arrblocks]), ")")
+    pr(
+        "                  MiniAOT.Buffer(Int[first(q) for q in gs]), MiniAOT.Buffer(Int[last(q) for q in gs])",
+        join([", MiniAOT.Buffer(vec(collect($(blk(kind, k)).itr)))" for (kind, k) in arrblocks]), ")"
+    )
     pr("    end")
     pr("    function _gpu_$p(id::Int)")
     pr("        while length(GPU_$p) < id")
@@ -256,25 +270,38 @@ function ExaModelsCompiler._device_source(::Val{:cuda}, p::AbstractString, probe
     pr("    Base.@ccallable function $(p)_device(id::Int64)::Int64")
     pr("        return _valid_$p(id) ? Int64(1) : Int64(-1)")
     pr("    end")
-    b_obj = join(["            MiniAOT.launch(KERNELS_$p.obj_$k, $(L(:obj,k,b)), $(blk(:obj,k)).f, $(itarg(:obj,k,b)), $(L(:obj,k,b)), MiniAOT.devptr(g.out), $common)\n" for (k, b) in enumerate(objs)])
-    callback("obj_d", "id::Int64, xh::Ptr{Cdouble}, out::Ptr{Cdouble}",
-             "            MiniAOT.zero!(MiniAOT.devptr(g.out), 1)\n" * b_obj *
-             "            unsafe_store!(out, MiniAOT.download(g.out)[1])\n")
-    b_grad = join(["            MiniAOT.launch(KERNELS_$p.grad_$k, $(L(:obj,k,b)), $(blk(:obj,k)).f, $(itarg(:obj,k,b)), $(L(:obj,k,b)), MiniAOT.devptr(g.gbuf), length(g.gbuf), $common)\n" for (k, b) in enumerate(objs)])
-    callback("grad_d", "id::Int64, xh::Ptr{Cdouble}, gh::Ptr{Cdouble}",
-             "            gd = _dev_$p(gh); MiniAOT.zero!(gd, n); MiniAOT.zero!(MiniAOT.devptr(g.gbuf), length(g.gbuf))\n" * b_grad *
-             "            MiniAOT.launch(KERNELS_$p.scatter, length(g.gvar), gd, n, MiniAOT.devptr(g.gbuf), length(g.gbuf), MiniAOT.devptr(g.gvar), MiniAOT.devptr(g.gpos), length(g.gvar))\n")
-    b_con = join(["            MiniAOT.launch(KERNELS_$p.con_$k, $(L(:con,k,b)), $(blk(:con,k)).f, $(itarg(:con,k,b)), ExaModels._constraint_dims($(blk(:con,k))), $(L(:con,k,b)), cd, m.meta.ncon, $common)\n" for (k, b) in enumerate(cons)])
-    callback("cons_d", "id::Int64, xh::Ptr{Cdouble}, ch::Ptr{Cdouble}",
-             "            cd = _dev_$p(ch); MiniAOT.zero!(cd, m.meta.ncon)\n" * b_con)
-    b_jac = join(["            MiniAOT.launch(KERNELS_$p.jac_$k, $(L(:con,k,b)), $(blk(:con,k)).f, $(itarg(:con,k,b)), ExaModels._constraint_dims($(blk(:con,k))), $(L(:con,k,b)), jd, m.meta.nnzj, $common)\n" for (k, b) in enumerate(cons)])
-    callback("jac_d", "id::Int64, xh::Ptr{Cdouble}, vh::Ptr{Cdouble}",
-             "            jd = _dev_$p(vh); MiniAOT.zero!(jd, m.meta.nnzj)\n" * b_jac)
-    b_hess = join(vcat(
-        ["            MiniAOT.launch(KERNELS_$p.hessobj_$k, $(L(:obj,k,b)), $(blk(:obj,k)).f, $(itarg(:obj,k,b)), $(L(:obj,k,b)), hd, m.meta.nnzh, $common, obj_weight)\n" for (k, b) in enumerate(objs)],
-        ["            MiniAOT.launch(KERNELS_$p.hesscon_$k, $(L(:con,k,b)), $(blk(:con,k)).f, $(itarg(:con,k,b)), ExaModels._constraint_dims($(blk(:con,k))), $(L(:con,k,b)), hd, m.meta.nnzh, $common, _dev_$p(yh), m.meta.ncon)\n" for (k, b) in enumerate(cons)]))
-    callback("hess_d", "id::Int64, xh::Ptr{Cdouble}, yh::Ptr{Cdouble}, obj_weight::Cdouble, vh::Ptr{Cdouble}",
-             "            hd = _dev_$p(vh); MiniAOT.zero!(hd, m.meta.nnzh)\n" * b_hess)
+    b_obj = join(["            MiniAOT.launch(KERNELS_$p.obj_$k, $(L(:obj, k, b)), $(blk(:obj, k)).f, $(itarg(:obj, k, b)), $(L(:obj, k, b)), MiniAOT.devptr(g.out), $common)\n" for (k, b) in enumerate(objs)])
+    callback(
+        "obj_d", "id::Int64, xh::Ptr{Cdouble}, out::Ptr{Cdouble}",
+        "            MiniAOT.zero!(MiniAOT.devptr(g.out), 1)\n" * b_obj *
+            "            unsafe_store!(out, MiniAOT.download(g.out)[1])\n"
+    )
+    b_grad = join(["            MiniAOT.launch(KERNELS_$p.grad_$k, $(L(:obj, k, b)), $(blk(:obj, k)).f, $(itarg(:obj, k, b)), $(L(:obj, k, b)), MiniAOT.devptr(g.gbuf), length(g.gbuf), $common)\n" for (k, b) in enumerate(objs)])
+    callback(
+        "grad_d", "id::Int64, xh::Ptr{Cdouble}, gh::Ptr{Cdouble}",
+        "            gd = _dev_$p(gh); MiniAOT.zero!(gd, n); MiniAOT.zero!(MiniAOT.devptr(g.gbuf), length(g.gbuf))\n" * b_grad *
+            "            MiniAOT.launch(KERNELS_$p.scatter, length(g.gvar), gd, n, MiniAOT.devptr(g.gbuf), length(g.gbuf), MiniAOT.devptr(g.gvar), MiniAOT.devptr(g.gpos), length(g.gvar))\n"
+    )
+    b_con = join(["            MiniAOT.launch(KERNELS_$p.con_$k, $(L(:con, k, b)), $(blk(:con, k)).f, $(itarg(:con, k, b)), ExaModels._constraint_dims($(blk(:con, k))), $(L(:con, k, b)), cd, m.meta.ncon, $common)\n" for (k, b) in enumerate(cons)])
+    callback(
+        "cons_d", "id::Int64, xh::Ptr{Cdouble}, ch::Ptr{Cdouble}",
+        "            cd = _dev_$p(ch); MiniAOT.zero!(cd, m.meta.ncon)\n" * b_con
+    )
+    b_jac = join(["            MiniAOT.launch(KERNELS_$p.jac_$k, $(L(:con, k, b)), $(blk(:con, k)).f, $(itarg(:con, k, b)), ExaModels._constraint_dims($(blk(:con, k))), $(L(:con, k, b)), jd, m.meta.nnzj, $common)\n" for (k, b) in enumerate(cons)])
+    callback(
+        "jac_d", "id::Int64, xh::Ptr{Cdouble}, vh::Ptr{Cdouble}",
+        "            jd = _dev_$p(vh); MiniAOT.zero!(jd, m.meta.nnzj)\n" * b_jac
+    )
+    b_hess = join(
+        vcat(
+            ["            MiniAOT.launch(KERNELS_$p.hessobj_$k, $(L(:obj, k, b)), $(blk(:obj, k)).f, $(itarg(:obj, k, b)), $(L(:obj, k, b)), hd, m.meta.nnzh, $common, obj_weight)\n" for (k, b) in enumerate(objs)],
+            ["            MiniAOT.launch(KERNELS_$p.hesscon_$k, $(L(:con, k, b)), $(blk(:con, k)).f, $(itarg(:con, k, b)), ExaModels._constraint_dims($(blk(:con, k))), $(L(:con, k, b)), hd, m.meta.nnzh, $common, _dev_$p(yh), m.meta.ncon)\n" for (k, b) in enumerate(cons)]
+        )
+    )
+    callback(
+        "hess_d", "id::Int64, xh::Ptr{Cdouble}, yh::Ptr{Cdouble}, obj_weight::Cdouble, vh::Ptr{Cdouble}",
+        "            hd = _dev_$p(vh); MiniAOT.zero!(hd, m.meta.nnzh)\n" * b_hess
+    )
     return String(take!(io))
 end
 

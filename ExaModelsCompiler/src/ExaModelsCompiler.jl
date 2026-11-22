@@ -286,18 +286,18 @@ Give `:name => core` pairs instead of a single core to put more than one model
 in the library — see the method below.
 """
 function compile_library(
-    out::AbstractString,
-    core::ExaModels.ExaCore,
-    args...;
-    prefix::AbstractString = _default_out_prefix(out),
-    trim::AbstractString = "safe",
-    bundle::Bool = false,
-    verbose::Bool = false,
-    argfun = nothing,
-    writers = (),
-    readers = (),
-    device::Symbol = :cpu,
-)
+        out::AbstractString,
+        core::ExaModels.ExaCore,
+        args...;
+        prefix::AbstractString = _default_out_prefix(out),
+        trim::AbstractString = "safe",
+        bundle::Bool = false,
+        verbose::Bool = false,
+        argfun = nothing,
+        writers = (),
+        readers = (),
+        device::Symbol = :cpu,
+    )
     spec = _with_readers(_with_writers(_model_spec(prefix, core, argfun, args), writers), readers)
     r = _compile([spec], out, prefix, trim, bundle, verbose; device)
     # One model keeps the singular field it has always returned.
@@ -345,15 +345,15 @@ library.
 `writers = (:acp => (:matpower => f,), ...)`; see the single-model form.
 """
 function compile_library(
-    out::AbstractString,
-    models::Pair{Symbol}...;
-    trim::AbstractString = "safe",
-    bundle::Bool = false,
-    verbose::Bool = false,
-    writers = (),
-    readers = (),
-    device::Symbol = :cpu,
-)
+        out::AbstractString,
+        models::Pair{Symbol}...;
+        trim::AbstractString = "safe",
+        bundle::Bool = false,
+        verbose::Bool = false,
+        writers = (),
+        readers = (),
+        device::Symbol = :cpu,
+    )
     isempty(models) && throw(ArgumentError("give at least one `:name => core` model"))
     specs = ModelSpec[
         _model_spec(String(name), _core_and_args(name, value)...) for (name, value) in models
@@ -361,21 +361,27 @@ function compile_library(
     _check_distinct(specs)
     names = Set(first.(models))
     for (name, _) in writers
-        Symbol(name) in names || throw(ArgumentError(
-            "`writers` names a model `$name` that is not in this library; it has " *
-            "$(sort(collect(names)))"))
+        Symbol(name) in names || throw(
+            ArgumentError(
+                "`writers` names a model `$name` that is not in this library; it has " *
+                    "$(sort(collect(names)))"
+            )
+        )
     end
     specs = ModelSpec[
         _with_writers(s, (ws for (name, ws) in writers if Symbol(name) == Symbol(s.prefix))...)
-        for s in specs
+            for s in specs
     ]
     for (name, _) in readers
-        Symbol(name) in names || throw(ArgumentError(
-            "`readers` names a model `$name` that is not in this library; it has $(sort(collect(names)))"))
+        Symbol(name) in names || throw(
+            ArgumentError(
+                "`readers` names a model `$name` that is not in this library; it has $(sort(collect(names)))"
+            )
+        )
     end
     specs = ModelSpec[
         _with_readers(s, (rs for (name, rs) in readers if Symbol(name) == Symbol(s.prefix))...)
-        for s in specs
+            for s in specs
     ]
     # The FILE is named after `out`; the models are named by their symbols.
     r = _compile(specs, out, _default_out_prefix(out), trim, bundle, verbose; device)
@@ -395,7 +401,7 @@ function _core_and_args(name::Symbol, value::Tuple)
     isempty(value) && throw(
         ArgumentError(
             "`:$name => ()` names no core — give `:$name => core` for a fixed " *
-            "model, or `:$name => (core, args...)`.",
+                "model, or `:$name => (core, args...)`.",
         ),
     )
     first(value) isa ExaModels.ExaCore || throw(
@@ -412,7 +418,7 @@ end
 _core_and_args(name::Symbol, value) = throw(
     ArgumentError(
         "`:$name => $(typeof(value))` is not a model — give `:$name => core`, or " *
-        "`:$name => (core, args...)` with the example values `ExaModel` takes.",
+            "`:$name => (core, args...)` with the example values `ExaModel` takes.",
     ),
 )
 
@@ -424,7 +430,7 @@ function _check_distinct(specs::Vector{ModelSpec})
         s.prefix in seen && throw(
             ArgumentError(
                 "two models are both named `$(s.prefix)` — one library cannot " *
-                "carry the same symbol prefix twice.",
+                    "carry the same symbol prefix twice.",
             ),
         )
         push!(seen, s.prefix)
@@ -437,9 +443,12 @@ end
 _with_writers(s::ModelSpec) = s
 function _with_writers(s::ModelSpec, writers)
     isempty(writers) && return s
-    s.field isa UserArgs || throw(ArgumentError(
-        "`$(s.prefix)`: solution writers need a model with an argument function " *
-        "— the writer is handed the value that function was called with."))
+    s.field isa UserArgs || throw(
+        ArgumentError(
+            "`$(s.prefix)`: solution writers need a model with an argument function " *
+                "— the writer is handed the value that function was called with."
+        )
+    )
     out = Writer[]
     default = ""
     for w in writers
@@ -448,25 +457,37 @@ function _with_writers(s::ModelSpec, writers)
             default = String(last(w)); continue
         end
         w isa Pair && first(w) isa Union{Symbol, AbstractString} && last(w) isa Function ||
-            throw(ArgumentError(
-                "`$(s.prefix)`: a writer is `:name => function`, got $(repr(w))"))
+            throw(
+            ArgumentError(
+                "`$(s.prefix)`: a writer is `:name => function`, got $(repr(w))"
+            )
+        )
         name = String(first(w))
         _check_prefix(name)
-        any(x -> x.name == name, out) && throw(ArgumentError(
-            "`$(s.prefix)`: two writers are both named `$name`"))
+        any(x -> x.name == name, out) && throw(
+            ArgumentError(
+                "`$(s.prefix)`: two writers are both named `$name`"
+            )
+        )
         push!(out, Writer(name, _argfun_call(s.prefix, last(w); what = "a writer"), last(w)))
     end
-    isempty(default) || any(x -> x.name == default, out) || throw(ArgumentError(
-        "`$(s.prefix)`: the default writer `$default` is not one of its writers $(map(x -> x.name, out))"))
+    isempty(default) || any(x -> x.name == default, out) || throw(
+        ArgumentError(
+            "`$(s.prefix)`: the default writer `$default` is not one of its writers $(map(x -> x.name, out))"
+        )
+    )
     return ModelSpec(s.prefix, s.core, s.arg, s.field, out, default, s.readers, s.default_reader)
 end
 
 _with_readers(s::ModelSpec) = s
 function _with_readers(s::ModelSpec, readers)
     isempty(readers) && return s
-    readers isa NamedTuple || throw(ArgumentError(
-        "`$(s.prefix)`: readers are `(instance = (:name => f, ...), parameters = (...), " *
-        "start = (...), default = :name)`, got $(repr(readers))"))
+    readers isa NamedTuple || throw(
+        ArgumentError(
+            "`$(s.prefix)`: readers are `(instance = (:name => f, ...), parameters = (...), " *
+                "start = (...), default = :name)`, got $(repr(readers))"
+        )
+    )
     out = Reader[]
     for (key, kind) in ((:instance, 0), (:parameters, 1), (:start, 2))
         for r in get(readers, key, ())
@@ -474,17 +495,26 @@ function _with_readers(s::ModelSpec, readers)
                 throw(ArgumentError("`$(s.prefix)`: a reader is `:name => function`, got $(repr(r))"))
             name = String(first(r))
             _check_prefix(name)
-            any(x -> x.name == name, out) && throw(ArgumentError(
-                "`$(s.prefix)`: two readers are both named `$name`"))
-            kind == 0 && !(s.field isa UserArgs{:str}) && throw(ArgumentError(
-                "`$(s.prefix)`: instance readers need a model instantiated from a string " *
-                "(an argument function taking a path), like `P_new_str`"))
+            any(x -> x.name == name, out) && throw(
+                ArgumentError(
+                    "`$(s.prefix)`: two readers are both named `$name`"
+                )
+            )
+            kind == 0 && !(s.field isa UserArgs{:str}) && throw(
+                ArgumentError(
+                    "`$(s.prefix)`: instance readers need a model instantiated from a string " *
+                        "(an argument function taking a path), like `P_new_str`"
+                )
+            )
             push!(out, Reader(name, kind, _argfun_call(s.prefix, last(r); what = "a reader"), last(r)))
         end
     end
     default = String(get(readers, :default, ""))
-    isempty(default) || any(x -> x.name == default && x.kind == 0, out) || throw(ArgumentError(
-        "`$(s.prefix)`: the default reader `$default` is not one of its instance readers"))
+    isempty(default) || any(x -> x.name == default && x.kind == 0, out) || throw(
+        ArgumentError(
+            "`$(s.prefix)`: the default reader `$default` is not one of its instance readers"
+        )
+    )
     return ModelSpec(s.prefix, s.core, s.arg, s.field, s.writers, s.default_writer, out, default)
 end
 
@@ -508,8 +538,8 @@ function _model_spec(prefix::AbstractString, core::ExaModels.ExaCore, argfun, ar
         isempty(args) && throw(
             ArgumentError(
                 "`$prefix`: `argfun` was given, so the examples are the " *
-                "arguments to call it with — e.g. `:$prefix => (core, " *
-                "ac_opf_args, \"case14.m\")`.",
+                    "arguments to call it with — e.g. `:$prefix => (core, " *
+                    "ac_opf_args, \"case14.m\")`.",
             ),
         )
         kind = _argfun_kind(prefix, args)
@@ -517,8 +547,8 @@ function _model_spec(prefix::AbstractString, core::ExaModels.ExaCore, argfun, ar
         arg isa Tuple || throw(
             ArgumentError(
                 "`$prefix`: `argfun` must return the argument TUPLE the core is " *
-                "instantiated with — what you would splat into " *
-                "`ExaModel(core, ...)`. Got a $(typeof(arg)); wrap it, as `(data,)`.",
+                    "instantiated with — what you would splat into " *
+                    "`ExaModel(core, ...)`. Got a $(typeof(arg)); wrap it, as `(data,)`.",
             ),
         )
         return ModelSpec(String(prefix), core, arg, UserArgs{kind}(_argfun_call(prefix, argfun), argfun, only(args)))
@@ -533,9 +563,9 @@ function _model_spec(prefix::AbstractString, core::ExaModels.ExaCore, argfun, ar
         core.nargs isa Val{0} || throw(
             ArgumentError(
                 "`$prefix`: this core declared $(_nargs_count(core.nargs)) " *
-                "placeholder(s) — give one example value per placeholder, as you " *
-                "would to `ExaModel(core, ...)`; its types are what the compiler " *
-                "needs.",
+                    "placeholder(s) — give one example value per placeholder, as you " *
+                    "would to `ExaModel(core, ...)`; its types are what the compiler " *
+                    "needs.",
             ),
         )
         return ModelSpec(String(prefix), core, nothing, FixedModel())
@@ -573,7 +603,7 @@ function _compile(specs::Vector{ModelSpec}, out, libname, trim, bundle, verbose;
         # the other forms carry a single value (or `nothing` for a fixed core).
         probe = try
             s.arg isa Tuple ? ExaModels.ExaModel(s.core, s.arg...) :
-            ExaModels.ExaModel(s.core, s.arg)
+                ExaModels.ExaModel(s.core, s.arg)
         catch err
             # A shape mismatch between the examples and how the core reads its
             # placeholders (a NamedTuple where a bare size is expected, a
@@ -582,8 +612,8 @@ function _compile(specs::Vector{ModelSpec}, out, libname, trim, bundle, verbose;
             throw(
                 ArgumentError(
                     "`$(s.prefix)`: the example values do not instantiate this " *
-                    "core — `ExaModel(core, example...)` failed with: " *
-                    sprint(showerror, err),
+                        "core — `ExaModel(core, example...)` failed with: " *
+                        sprint(showerror, err),
                 ),
             )
         end
@@ -609,16 +639,22 @@ function _probe_writers(s::ModelSpec, probe)
     for w in s.writers
         out = tempname()
         try
-            w.fun(out, s.field.example, probe, copy(probe.meta.x0), zeros(nc), zeros(nv), zeros(nv);
-                  objective = NaN, status = "probe")
+            w.fun(
+                out, s.field.example, probe, copy(probe.meta.x0), zeros(nc), zeros(nv), zeros(nv);
+                objective = NaN, status = "probe"
+            )
         catch err
-            throw(ArgumentError(
-                "`$(s.prefix)`: writer `$(w.name)` failed on the example instance: " *
-                sprint(showerror, err)))
+            throw(
+                ArgumentError(
+                    "`$(s.prefix)`: writer `$(w.name)` failed on the example instance: " *
+                        sprint(showerror, err)
+                )
+            )
         finally
             rm(out; force = true)
         end
     end
+    return
 end
 
 # A core built in the default (non-concrete) mode accumulates its blocks in
@@ -654,8 +690,8 @@ function _resolve_out(out::AbstractString, bundle::Bool)
     isempty(dirs) && throw(
         ArgumentError(
             "`$out` names a library to install on the CNLPModels search path — " *
-            "but CNLPMODELS_PATH is not set. Set it, or pass a path such as " *
-            "`\"./$name\"`.",
+                "but CNLPMODELS_PATH is not set. Set it, or pass a path such as " *
+                "`\"./$name\"`.",
         ),
     )
     # A bundle gets a directory of its own — `<dir>/<name>/lib/lib<name>.<ext>`,
@@ -684,7 +720,7 @@ struct Field
     name::String
     kind::String                            # "scalar" | "array" | "table"
     type::String                            # "f64" | "i64" — scalars and arrays
-    columns::Vector{Pair{String,String}}    # tables only: name => type
+    columns::Vector{Pair{String, String}}    # tables only: name => type
 end
 
 _ctype(::Type{<:Integer}) = "i64"
@@ -692,19 +728,19 @@ _ctype(::Type{<:AbstractFloat}) = "f64"
 _ctype(::Type{T}) where {T} = throw(
     ArgumentError(
         "an argument of type $T cannot cross the C boundary; the interface " *
-        "carries 64-bit integers and floats, as scalars, arrays, or tables of " *
-        "them.",
+            "carries 64-bit integers and floats, as scalars, arrays, or tables of " *
+            "them.",
     ),
 )
 
 function _field(name::AbstractString, v)
-    v isa Union{Integer,AbstractFloat} &&
-        return Field(name, "scalar", _ctype(typeof(v)), Pair{String,String}[])
+    v isa Union{Integer, AbstractFloat} &&
+        return Field(name, "scalar", _ctype(typeof(v)), Pair{String, String}[])
     if v isa AbstractVector
         isempty(v) && throw(
             ArgumentError(
                 "the example for `$name` is empty, so there is nothing to read " *
-                "its element type from — give one with at least one element.",
+                    "its element type from — give one with at least one element.",
             ),
         )
         el = first(v)
@@ -712,12 +748,12 @@ function _field(name::AbstractString, v)
             name, "table", "",
             [String(k) => _ctype(typeof(getfield(el, k))) for k in keys(el)],
         )
-        return Field(name, "array", _ctype(typeof(el)), Pair{String,String}[])
+        return Field(name, "array", _ctype(typeof(el)), Pair{String, String}[])
     end
     throw(
         ArgumentError(
             "an argument of type $(typeof(v)) cannot cross the C boundary; give " *
-            "a number, a vector of numbers, or a vector of NamedTuples (a table).",
+                "a number, a vector of numbers, or a vector of NamedTuples (a table).",
         ),
     )
 end
@@ -728,10 +764,10 @@ _schema(args) = [_field("arg$i", a) for (i, a) in enumerate(args)]
 function _schema_json(fields::Vector{Field})
     parts = map(fields) do f
         f.kind == "table" ?
-        """{"name":"$(f.name)","kind":"table","columns":[""" *
-        join(["""{"name":"$(c.first)","type":"$(c.second)"}""" for c in f.columns], ",") *
-        "]}" :
-        """{"name":"$(f.name)","kind":"$(f.kind)","type":"$(f.type)"}"""
+            """{"name":"$(f.name)","kind":"table","columns":[""" *
+            join(["""{"name":"$(c.first)","type":"$(c.second)"}""" for c in f.columns], ",") *
+            "]}" :
+            """{"name":"$(f.name)","kind":"$(f.kind)","type":"$(f.type)"}"""
     end
     return """{"fields":[""" * join(parts, ",") * "]}"
 end
@@ -750,7 +786,7 @@ _is_scalar_new(fields) =
 #   a `Vector{Pair{Symbol,String}}` — a NamedTuple, one (key => field) per entry
 struct BuilderModel
     fields::Vector{Field}
-    argspec::Vector{Union{String, Vector{Pair{Symbol,String}}}}
+    argspec::Vector{Union{String, Vector{Pair{Symbol, String}}}}
 end
 
 # Builder storage is GENERATED from the example types, and the model vector's
@@ -770,23 +806,23 @@ _check_exact(name, v) = _exact_err(name, v)
 _exact_err(name, v) = throw(
     ArgumentError(
         "`$name`: builder examples must be Int64/Float64 values — as scalars, " *
-        "as Vector{Int64}/Vector{Float64}, or as a Vector of NamedTuples of " *
-        "them (a table); got $(typeof(v)). The storage the library compiles " *
-        "is exactly the example's type.",
+            "as Vector{Int64}/Vector{Float64}, or as a Vector of NamedTuples of " *
+            "them (a table); got $(typeof(v)). The storage the library compiles " *
+            "is exactly the example's type.",
     ),
 )
 
 function _builder_model(args)
     fields = Field[]
-    argspec = Union{String, Vector{Pair{Symbol,String}}}[]
+    argspec = Union{String, Vector{Pair{Symbol, String}}}[]
     seen = Set{String}()
     claim = function (name, where_)
         name in seen && throw(
             ArgumentError(
                 "two schema fields would both be named `$name` (the second from " *
-                "$where_) — field names come from NamedTuple keys and `argN` " *
-                "positions, and must be distinct across all placeholders; " *
-                "rename one.",
+                    "$where_) — field names come from NamedTuple keys and `argN` " *
+                    "positions, and must be distinct across all placeholders; " *
+                    "rename one.",
             ),
         )
         push!(seen, name)
@@ -794,7 +830,7 @@ function _builder_model(args)
     end
     for (i, a) in enumerate(args)
         if a isa NamedTuple
-            entries = Pair{Symbol,String}[]
+            entries = Pair{Symbol, String}[]
             for k in keys(a)
                 name = claim(String(k), "argument $i")
                 push!(fields, _field(name, _check_exact(name, getfield(a, k))))
@@ -815,7 +851,7 @@ function _builder_model(args)
         f.kind == "table" && isempty(f.columns) && throw(
             ArgumentError(
                 "`$(f.name)`: the example table has no columns — give " *
-                "NamedTuples with at least one entry.",
+                    "NamedTuples with at least one entry.",
             ),
         )
         append!(slots, (s for (s, _, _) in _slots(f)))
@@ -823,7 +859,7 @@ function _builder_model(args)
     allunique(slots) || throw(
         ArgumentError(
             "field and table-column names collide once flattened to storage " *
-            "slots ($(join(slots, ", "))) — rename one of the duplicates.",
+                "slots ($(join(slots, ", "))) — rename one of the duplicates.",
         ),
     )
     return BuilderModel(fields, argspec)
@@ -851,7 +887,7 @@ function _check_prefix(prefix::AbstractString)
     (ok && !isdigit(first(prefix))) || throw(
         ArgumentError(
             "prefix must be a C identifier (ASCII letters, digits, underscore; " *
-            "not starting with a digit) — got $(repr(prefix))",
+                "not starting with a digit) — got $(repr(prefix))",
         ),
     )
     return prefix
@@ -1002,8 +1038,10 @@ function _generate_app(specs::Vector{ModelSpec}, libname::AbstractString; device
         srcs = s.field isa UserArgs ?
             (_core_packages(s.core)..., _core_packages_of(typeof(_argfun_of(s)))...) :
             _core_packages(s.core)
-        srcs = (srcs..., (p for w in s.writers for p in _core_packages_of(typeof(w.fun)))...,
-                (p for r in s.readers for p in _core_packages_of(typeof(r.fun)))...)
+        srcs = (
+            srcs..., (p for w in s.writers for p in _core_packages_of(typeof(w.fun)))...,
+            (p for r in s.readers for p in _core_packages_of(typeof(r.fun)))...,
+        )
         for p in srcs
             any(q -> q.uuid == p.uuid, pkgs) || push!(pkgs, p)
         end
@@ -1039,8 +1077,8 @@ _toml_path(dir::AbstractString) = replace(dir, '\\' => '/')
 _modname(libname::AbstractString) = "ExaLib_" * replace(libname, r"[^A-Za-z0-9_]" => "_")
 
 function _project_toml(
-    modname::AbstractString, exadir::AbstractString, pkgs = _Pkg[], dev = _Pkg[],
-)
+        modname::AbstractString, exadir::AbstractString, pkgs = _Pkg[], dev = _Pkg[],
+    )
     both = vcat(pkgs, dev)
     deps = join(("""$(p.name) = "$(p.uuid)"\n""" for p in both))
     # A path source rather than a version bound: the app must compile the same
@@ -1124,8 +1162,8 @@ function _argfun_kind(prefix, args)
     length(args) == 1 || throw(
         ArgumentError(
             "`$prefix`: `argfun` is called with exactly one argument across the " *
-            "C boundary — got $(length(args)). Give it one value (a case file " *
-            "path, a size) and derive the rest inside the function.",
+                "C boundary — got $(length(args)). Give it one value (a case file " *
+                "path, a size) and derive the rest inside the function.",
         ),
     )
     a = only(args)
@@ -1134,8 +1172,8 @@ function _argfun_kind(prefix, args)
     throw(
         ArgumentError(
             "`$prefix`: the example argument for `argfun` is a $(typeof(a)); the " *
-            "C boundary carries one string or one 64-bit integer. Anything " *
-            "richer belongs INSIDE the function — that is what it is for.",
+                "C boundary carries one string or one 64-bit integer. Anything " *
+                "richer belongs INSIDE the function — that is what it is for.",
         ),
     )
 end
@@ -1163,11 +1201,11 @@ function _argfun_call(prefix, f; what = "`argfun`")
     ok || throw(
         ArgumentError(
             "`$prefix`: $what must be a named function defined at the top " *
-            "level of a PACKAGE — the generated library calls it by name, from " *
-            "another process, so a function defined in a script, the REPL, or " *
-            "a package extension cannot be reached. Got $(repr(f)) in module " *
-            "$m; define it in the package itself (for an extension, move it " *
-            "to the parent package) and pass that.",
+                "level of a PACKAGE — the generated library calls it by name, from " *
+                "another process, so a function defined in a script, the REPL, or " *
+                "a package extension cannot be reached. Got $(repr(f)) in module " *
+                "$m; define it in the package itself (for an extension, move it " *
+                "to the parent package) and pass that.",
         ),
     )
     return string(nameof(m), ".", n)
@@ -1199,24 +1237,24 @@ _nargs_value(::Union{Nothing, Symbol}) = 1
 function _instantiation_source(p::AbstractString, field::Union{Nothing, Symbol, FixedModel})
     argexpr = _arg_expr(field)
     return """
-    # How many instantiation arguments `$(p)_new` consumes (0 = fixed model,
-    # `n` is ignored). Lets a consumer decide whether `args` are required
-    # before instantiating anything.
-    Base.@ccallable function $(p)_nargs()::Int64
-        return Int64($(_nargs_value(field)))
-    end
-
-$(_argtype_source(p, field))
-
-    Base.@ccallable function $(p)_new(n::Int64)::Int64
-        try
-            push!(MODELS_$p, ExaModels.ExaModel(CORE_$p, $argexpr; check = Val(false)))
-            return Int64(length(MODELS_$p))
-        catch
-            return Int64(0)          # 0 is the failure value for _new
+        # How many instantiation arguments `$(p)_new` consumes (0 = fixed model,
+        # `n` is ignored). Lets a consumer decide whether `args` are required
+        # before instantiating anything.
+        Base.@ccallable function $(p)_nargs()::Int64
+            return Int64($(_nargs_value(field)))
         end
-    end
-"""
+
+    $(_argtype_source(p, field))
+
+        Base.@ccallable function $(p)_new(n::Int64)::Int64
+            try
+                push!(MODELS_$p, ExaModels.ExaModel(CORE_$p, $argexpr; check = Val(false)))
+                return Int64(length(MODELS_$p))
+            catch
+                return Int64(0)          # 0 is the failure value for _new
+            end
+        end
+    """
 end
 
 # How a slot is read back out of a builder when the model is instantiated: a
@@ -1259,53 +1297,53 @@ _argtype_source(p::AbstractString, field) = """
 # buffer, so the library never holds a pointer it does not own.
 function _instantiation_source(p::AbstractString, u::UserArgs{:str})
     return """
-    # The argument each instance was built from, by id, for the writers.
-    const ARGIN_$p = String[]
+        # The argument each instance was built from, by id, for the writers.
+        const ARGIN_$p = String[]
 
-    Base.@ccallable function $(p)_nargs()::Int64
-        return Int64(1)
-    end
+        Base.@ccallable function $(p)_nargs()::Int64
+            return Int64(1)
+        end
 
-$(_argtype_source(p, u))
-    # This model instantiates from a string; `$(p)_new(n)` is not its entry
-    # point, so it returns the documented failure value rather than building
-    # something.
-    Base.@ccallable function $(p)_new(n::Int64)::Int64
-        return Int64(0)
-    end
-
-    Base.@ccallable function $(p)_new_str(s_ptr::Ptr{Cchar})::Int64
-        try
-            s = unsafe_string(s_ptr)
-            push!(MODELS_$p, ExaModels.ExaModel(CORE_$p, $(u.call)(s)...; check = Val(false)))
-            push!(ARGIN_$p, s)
-            return Int64(length(MODELS_$p))
-        catch
+    $(_argtype_source(p, u))
+        # This model instantiates from a string; `$(p)_new(n)` is not its entry
+        # point, so it returns the documented failure value rather than building
+        # something.
+        Base.@ccallable function $(p)_new(n::Int64)::Int64
             return Int64(0)
         end
-    end
-"""
+
+        Base.@ccallable function $(p)_new_str(s_ptr::Ptr{Cchar})::Int64
+            try
+                s = unsafe_string(s_ptr)
+                push!(MODELS_$p, ExaModels.ExaModel(CORE_$p, $(u.call)(s)...; check = Val(false)))
+                push!(ARGIN_$p, s)
+                return Int64(length(MODELS_$p))
+            catch
+                return Int64(0)
+            end
+        end
+    """
 end
 
 function _instantiation_source(p::AbstractString, u::UserArgs{:int})
     return """
-    const ARGIN_$p = Int[]
+        const ARGIN_$p = Int[]
 
-    Base.@ccallable function $(p)_nargs()::Int64
-        return Int64(1)
-    end
-
-$(_argtype_source(p, u))
-    Base.@ccallable function $(p)_new(n::Int64)::Int64
-        try
-            push!(MODELS_$p, ExaModels.ExaModel(CORE_$p, $(u.call)(Int(n))...; check = Val(false)))
-            push!(ARGIN_$p, Int(n))
-            return Int64(length(MODELS_$p))
-        catch
-            return Int64(0)
+        Base.@ccallable function $(p)_nargs()::Int64
+            return Int64(1)
         end
-    end
-"""
+
+    $(_argtype_source(p, u))
+        Base.@ccallable function $(p)_new(n::Int64)::Int64
+            try
+                push!(MODELS_$p, ExaModels.ExaModel(CORE_$p, $(u.call)(Int(n))...; check = Val(false)))
+                push!(ARGIN_$p, Int(n))
+                return Int64(length(MODELS_$p))
+            catch
+                return Int64(0)
+            end
+        end
+    """
 end
 
 function _instantiation_source(p::AbstractString, bm::BuilderModel)
@@ -1348,164 +1386,166 @@ function _instantiation_source(p::AbstractString, bm::BuilderModel)
     samelen = join(
         (
             "        (" *
-            join(
-                ("length(B.$(f.name)_$(c.first)) == length(B.$(f.name)_$(first(f.columns).first))"
-                 for c in f.columns[2:end]),
-                " && ",
-            ) *
-            ") || return Int64(0)\n"
-            for f in fields if f.kind == "table" && length(f.columns) > 1
+                join(
+                    (
+                        "length(B.$(f.name)_$(c.first)) == length(B.$(f.name)_$(first(f.columns).first))"
+                        for c in f.columns[2:end]
+                    ),
+                    " && ",
+                ) *
+                ") || return Int64(0)\n"
+                for f in fields if f.kind == "table" && length(f.columns) > 1
         ),
     )
 
     asm = join(
         (
             spec isa String ? _slot_expr(byname[spec]) :
-            "(; " * join(("$(k) = $(_slot_expr(byname[n]))" for (k, n) in spec), ", ") * ")"
-            for spec in bm.argspec
+                "(; " * join(("$(k) = $(_slot_expr(byname[n]))" for (k, n) in spec), ", ") * ")"
+                for spec in bm.argspec
         ),
         ",\n                ",
     )
 
     return """
-$(_argtype_source(p, bm))
-    # ── builder for `$p` (schema + typed setters) ────────────────────────────
+    $(_argtype_source(p, bm))
+        # ── builder for `$p` (schema + typed setters) ────────────────────────────
 
-    const SCHEMA_$p = Vector{UInt8}($(repr(json)))
+        const SCHEMA_$p = Vector{UInt8}($(repr(json)))
 
-    # Returns the schema's byte length; copies what fits in `cap`.
-    Base.@ccallable function $(p)_schema(buf::Ptr{UInt8}, cap::Int64)::Int64
-        n = length(SCHEMA_$p)
-        k = min(Int(cap), n)
-        if k > 0 && buf != Ptr{UInt8}(0)
-            GC.@preserve SCHEMA_$p unsafe_copyto!(buf, pointer(SCHEMA_$p), k)
+        # Returns the schema's byte length; copies what fits in `cap`.
+        Base.@ccallable function $(p)_schema(buf::Ptr{UInt8}, cap::Int64)::Int64
+            n = length(SCHEMA_$p)
+            k = min(Int(cap), n)
+            if k > 0 && buf != Ptr{UInt8}(0)
+                GC.@preserve SCHEMA_$p unsafe_copyto!(buf, pointer(SCHEMA_$p), k)
+            end
+            return Int64(n)
         end
-        return Int64(n)
-    end
 
-    # One concretely-typed slot per scalar/array field and per table column;
-    # the `_set` flags are what make completeness checkable without sentinels.
-    mutable struct Builder_$p
-$decls    end
-    Builder_$p() = Builder_$p($zeros)
-    const BUILDERS_$p = Builder_$p[]
+        # One concretely-typed slot per scalar/array field and per table column;
+        # the `_set` flags are what make completeness checkable without sentinels.
+        mutable struct Builder_$p
+    $decls    end
+        Builder_$p() = Builder_$p($zeros)
+        const BUILDERS_$p = Builder_$p[]
 
-    @inline _bvalid_$p(b::Int64) = 1 <= b <= length(BUILDERS_$p)
+        @inline _bvalid_$p(b::Int64) = 1 <= b <= length(BUILDERS_$p)
 
-    Base.@ccallable function $(p)_data_begin()::Int64
-        try
-            push!(BUILDERS_$p, Builder_$p())
-            return Int64(length(BUILDERS_$p))
-        catch
-            return Int64(0)
+        Base.@ccallable function $(p)_data_begin()::Int64
+            try
+                push!(BUILDERS_$p, Builder_$p())
+                return Int64(length(BUILDERS_$p))
+            catch
+                return Int64(0)
+            end
         end
-    end
 
-    Base.@ccallable function $(p)_set_scalar_i64(b::Int64, field::Ptr{UInt8}, v::Clonglong)::Int64
-        _bvalid_$p(b) || return Int64(1)
-        try
-            f = unsafe_string(field)
+        Base.@ccallable function $(p)_set_scalar_i64(b::Int64, field::Ptr{UInt8}, v::Clonglong)::Int64
+            _bvalid_$p(b) || return Int64(1)
+            try
+                f = unsafe_string(field)
+                B = BUILDERS_$p[Int(b)]
+    $(_setter_arms(pick("scalar", "i64"), scalar))            return Int64(1)
+            catch
+                return Int64(2)
+            end
+        end
+
+        Base.@ccallable function $(p)_set_scalar_f64(b::Int64, field::Ptr{UInt8}, v::Cdouble)::Int64
+            _bvalid_$p(b) || return Int64(1)
+            try
+                f = unsafe_string(field)
+                B = BUILDERS_$p[Int(b)]
+    $(_setter_arms(pick("scalar", "f64"), scalar))            return Int64(1)
+            catch
+                return Int64(2)
+            end
+        end
+
+        Base.@ccallable function $(p)_set_array_i64(
+            b::Int64, field::Ptr{UInt8}, v::Ptr{Clonglong}, len::Int64,
+        )::Int64
+            _bvalid_$p(b) || return Int64(1)
+            try
+                f = unsafe_string(field)
+                B = BUILDERS_$p[Int(b)]
+    $(_setter_arms(pick("array", "i64"), array))            return Int64(1)
+            catch
+                return Int64(2)
+            end
+        end
+
+        Base.@ccallable function $(p)_set_array_f64(
+            b::Int64, field::Ptr{UInt8}, v::Ptr{Cdouble}, len::Int64,
+        )::Int64
+            _bvalid_$p(b) || return Int64(1)
+            try
+                f = unsafe_string(field)
+                B = BUILDERS_$p[Int(b)]
+    $(_setter_arms(pick("array", "f64"), array))            return Int64(1)
+            catch
+                return Int64(2)
+            end
+        end
+
+        Base.@ccallable function $(p)_set_col_i64(
+            b::Int64, table::Ptr{UInt8}, column::Ptr{UInt8}, v::Ptr{Clonglong}, len::Int64,
+        )::Int64
+            _bvalid_$p(b) || return Int64(1)
+            try
+                t = unsafe_string(table)
+                c = unsafe_string(column)
+                B = BUILDERS_$p[Int(b)]
+    $(_setter_arms(cols("i64"), fc -> col(fc...)))            return Int64(1)
+            catch
+                return Int64(2)
+            end
+        end
+
+        Base.@ccallable function $(p)_set_col_f64(
+            b::Int64, table::Ptr{UInt8}, column::Ptr{UInt8}, v::Ptr{Cdouble}, len::Int64,
+        )::Int64
+            _bvalid_$p(b) || return Int64(1)
+            try
+                t = unsafe_string(table)
+                c = unsafe_string(column)
+                B = BUILDERS_$p[Int(b)]
+    $(_setter_arms(cols("f64"), fc -> col(fc...)))            return Int64(1)
+            catch
+                return Int64(2)
+            end
+        end
+
+        # 1 iff every field is set and every table's columns agree in length.
+        Base.@ccallable function $(p)_data_ready(b::Int64)::Int64
+            _bvalid_$p(b) || return Int64(0)
             B = BUILDERS_$p[Int(b)]
-$(_setter_arms(pick("scalar", "i64"), scalar))            return Int64(1)
-        catch
-            return Int64(2)
+            ($flags) || return Int64(0)
+    $samelen        return Int64(1)
         end
-    end
 
-    Base.@ccallable function $(p)_set_scalar_f64(b::Int64, field::Ptr{UInt8}, v::Cdouble)::Int64
-        _bvalid_$p(b) || return Int64(1)
-        try
-            f = unsafe_string(field)
-            B = BUILDERS_$p[Int(b)]
-$(_setter_arms(pick("scalar", "f64"), scalar))            return Int64(1)
-        catch
-            return Int64(2)
+        Base.@ccallable function $(p)_new_from_data(b::Int64)::Int64
+            $(p)_data_ready(b) == Int64(1) || return Int64(0)
+            try
+                B = BUILDERS_$p[Int(b)]
+                push!(MODELS_$p, ExaModels.ExaModel(
+                    CORE_$p,
+                    $asm;
+                    check = Val(false),
+                ))
+                return Int64(length(MODELS_$p))
+            catch
+                return Int64(0)
+            end
         end
-    end
 
-    Base.@ccallable function $(p)_set_array_i64(
-        b::Int64, field::Ptr{UInt8}, v::Ptr{Clonglong}, len::Int64,
-    )::Int64
-        _bvalid_$p(b) || return Int64(1)
-        try
-            f = unsafe_string(field)
-            B = BUILDERS_$p[Int(b)]
-$(_setter_arms(pick("array", "i64"), array))            return Int64(1)
-        catch
-            return Int64(2)
+        # Informative — there is no `$(p)_new` here; the consumers bind one value
+        # per schema field, positionally, and instantiate through the builder.
+        Base.@ccallable function $(p)_nargs()::Int64
+            return Int64($(length(fields)))
         end
-    end
-
-    Base.@ccallable function $(p)_set_array_f64(
-        b::Int64, field::Ptr{UInt8}, v::Ptr{Cdouble}, len::Int64,
-    )::Int64
-        _bvalid_$p(b) || return Int64(1)
-        try
-            f = unsafe_string(field)
-            B = BUILDERS_$p[Int(b)]
-$(_setter_arms(pick("array", "f64"), array))            return Int64(1)
-        catch
-            return Int64(2)
-        end
-    end
-
-    Base.@ccallable function $(p)_set_col_i64(
-        b::Int64, table::Ptr{UInt8}, column::Ptr{UInt8}, v::Ptr{Clonglong}, len::Int64,
-    )::Int64
-        _bvalid_$p(b) || return Int64(1)
-        try
-            t = unsafe_string(table)
-            c = unsafe_string(column)
-            B = BUILDERS_$p[Int(b)]
-$(_setter_arms(cols("i64"), fc -> col(fc...)))            return Int64(1)
-        catch
-            return Int64(2)
-        end
-    end
-
-    Base.@ccallable function $(p)_set_col_f64(
-        b::Int64, table::Ptr{UInt8}, column::Ptr{UInt8}, v::Ptr{Cdouble}, len::Int64,
-    )::Int64
-        _bvalid_$p(b) || return Int64(1)
-        try
-            t = unsafe_string(table)
-            c = unsafe_string(column)
-            B = BUILDERS_$p[Int(b)]
-$(_setter_arms(cols("f64"), fc -> col(fc...)))            return Int64(1)
-        catch
-            return Int64(2)
-        end
-    end
-
-    # 1 iff every field is set and every table's columns agree in length.
-    Base.@ccallable function $(p)_data_ready(b::Int64)::Int64
-        _bvalid_$p(b) || return Int64(0)
-        B = BUILDERS_$p[Int(b)]
-        ($flags) || return Int64(0)
-$samelen        return Int64(1)
-    end
-
-    Base.@ccallable function $(p)_new_from_data(b::Int64)::Int64
-        $(p)_data_ready(b) == Int64(1) || return Int64(0)
-        try
-            B = BUILDERS_$p[Int(b)]
-            push!(MODELS_$p, ExaModels.ExaModel(
-                CORE_$p,
-                $asm;
-                check = Val(false),
-            ))
-            return Int64(length(MODELS_$p))
-        catch
-            return Int64(0)
-        end
-    end
-
-    # Informative — there is no `$(p)_new` here; the consumers bind one value
-    # per schema field, positionally, and instantiate through the builder.
-    Base.@ccallable function $(p)_nargs()::Int64
-        return Int64($(length(fields)))
-    end
-"""
+    """
 end
 
 function _module_source(modname::AbstractString, specs::Vector{ModelSpec}, pkgs = _Pkg[], device_src = "")
@@ -1514,29 +1554,29 @@ function _module_source(modname::AbstractString, specs::Vector{ModelSpec}, pkgs 
     # deserialize below is what needs them.  A dependency alone is not enough.
     imports = join(("import $(p.name)\n" for p in pkgs))
     return """
-    module $modname
+        module $modname
 
-    import ExaModels
-    import Serialization
-    $imports
-    # Start readers return x0, or (x0, y0, zl, zu); every entry of the
-    # caller's arrays is written, 0 where the reader gives no value.
-    _fits(a, b) = length(a) == length(b) || throw(DimensionMismatch("start has \$(length(b)) entries, the model \$(length(a))"))
-    function _fill_start(x0, y0, zl, zu, x::AbstractVector)
-        _fits(x0, x)
-        copyto!(x0, x); fill!(y0, 0.0); fill!(zl, 0.0); fill!(zu, 0.0)
-        return nothing
-    end
-    function _fill_start(x0, y0, zl, zu, t::Tuple)
-        _fits(x0, t[1]); _fits(y0, t[2]); _fits(zl, t[3]); _fits(zu, t[4])
-        copyto!(x0, t[1]); copyto!(y0, t[2]); copyto!(zl, t[3]); copyto!(zu, t[4])
-        return nothing
-    end
-    $(join((_model_source(s) for s in specs), "\n"))
-$device_src
-$(_catalog_source(specs))
-    end # module $modname
-    """
+        import ExaModels
+        import Serialization
+        $imports
+        # Start readers return x0, or (x0, y0, zl, zu); every entry of the
+        # caller's arrays is written, 0 where the reader gives no value.
+        _fits(a, b) = length(a) == length(b) || throw(DimensionMismatch("start has \$(length(b)) entries, the model \$(length(a))"))
+        function _fill_start(x0, y0, zl, zu, x::AbstractVector)
+            _fits(x0, x)
+            copyto!(x0, x); fill!(y0, 0.0); fill!(zl, 0.0); fill!(zu, 0.0)
+            return nothing
+        end
+        function _fill_start(x0, y0, zl, zu, t::Tuple)
+            _fits(x0, t[1]); _fits(y0, t[2]); _fits(zl, t[3]); _fits(zu, t[4])
+            copyto!(x0, t[1]); copyto!(y0, t[2]); copyto!(zl, t[3]); copyto!(zu, t[4])
+            return nothing
+        end
+        $(join((_model_source(s) for s in specs), "\n"))
+    $device_src
+    $(_catalog_source(specs))
+        end # module $modname
+        """
 end
 
 # What the library carries, asked of the library rather than of a model: a
@@ -1544,44 +1584,48 @@ end
 # entry point needs one. These two are the exception — fixed names, no prefix —
 # and they are what makes a library self-describing.
 function _catalog_source(specs::Vector{ModelSpec})
-    names = join((
-        """    const MODELNAME_$(i) = Vector{UInt8}($(repr(s.prefix)))\n"""
-        for (i, s) in enumerate(specs)
-    ))
-    arms = join((
-        """
-        if k == Int64($(i - 1))
-            b = MODELNAME_$(i)
-            n = length(b)
-            m = min(Int(cap), n)
-            if m > 0 && buf != Ptr{UInt8}(0)
-                GC.@preserve b unsafe_copyto!(buf, pointer(b), m)
-            end
-            return Int64(n)
-        end
-"""
-        for (i, _) in enumerate(specs)
-    ))
+    names = join(
+        (
+            """    const MODELNAME_$(i) = Vector{UInt8}($(repr(s.prefix)))\n"""
+                for (i, s) in enumerate(specs)
+        )
+    )
+    arms = join(
+        (
+            """
+                    if k == Int64($(i - 1))
+                        b = MODELNAME_$(i)
+                        n = length(b)
+                        m = min(Int(cap), n)
+                        if m > 0 && buf != Ptr{UInt8}(0)
+                            GC.@preserve b unsafe_copyto!(buf, pointer(b), m)
+                        end
+                        return Int64(n)
+                    end
+            """
+                for (i, _) in enumerate(specs)
+        )
+    )
     return """
-    # ── what this library carries ────────────────────────────────────────────
-$names
-    # How many models are in this library. Fixed name: a consumer asks this
-    # before it knows any prefix.
-    # cnlp ABI version this library implements: major*1000 + minor.
-    Base.@ccallable function cnlp_abi_version()::Int64
-        return Int64(2)
-    end
+        # ── what this library carries ────────────────────────────────────────────
+    $names
+        # How many models are in this library. Fixed name: a consumer asks this
+        # before it knows any prefix.
+        # cnlp ABI version this library implements: major*1000 + minor.
+        Base.@ccallable function cnlp_abi_version()::Int64
+            return Int64(2)
+        end
 
-    Base.@ccallable function cnlp_nmodels()::Int64
-        return Int64($(length(specs)))
-    end
+        Base.@ccallable function cnlp_nmodels()::Int64
+            return Int64($(length(specs)))
+        end
 
-    # The k-th model's symbol prefix, by the copy-out convention the other
-    # name accessors use: returns the needed byte length, copies what fits.
-    Base.@ccallable function cnlp_model_name(k::Int64, buf::Ptr{UInt8}, cap::Int64)::Int64
-$arms        return Int64(-1)
-    end
-"""
+        # The k-th model's symbol prefix, by the copy-out convention the other
+        # name accessors use: returns the needed byte length, copies what fits.
+        Base.@ccallable function cnlp_model_name(k::Int64, buf::Ptr{UInt8}, cap::Int64)::Int64
+    $arms        return Int64(-1)
+        end
+    """
 end
 
 # One model's share of the generated module. Every piece of per-model state
@@ -1610,129 +1654,139 @@ _block_kind(_) = -1
 # parameters.  Objectives and subexpressions are named too, but they index no
 # solution vector, so a consumer has nothing to address them with.
 _layout_blocks(core) =
-    [(k, _block_kind(getfield(core.refs, k))) for k in keys(core.refs) if
-     _block_kind(getfield(core.refs, k)) >= 0]
+    [
+    (k, _block_kind(getfield(core.refs, k))) for k in keys(core.refs) if
+        _block_kind(getfield(core.refs, k)) >= 0
+]
 
 function _layout_source(p::AbstractString, core)
     blocks = _layout_blocks(core)
     n = length(blocks)
 
-    names = join((
-        """    const BNAME_$(p)_$(i) = Vector{UInt8}($(repr(String(k))))\n"""
-        for (i, (k, _)) in enumerate(blocks)
-    ))
+    names = join(
+        (
+            """    const BNAME_$(p)_$(i) = Vector{UInt8}($(repr(String(k))))\n"""
+                for (i, (k, _)) in enumerate(blocks)
+        )
+    )
 
-    name_arms = join((
-        """
-        if k == Int64($(i - 1))
-            b = BNAME_$(p)_$(i)
-            n = length(b)
-            m = min(Int(cap), n)
-            if m > 0 && buf != Ptr{UInt8}(0)
-                GC.@preserve b unsafe_copyto!(buf, pointer(b), m)
-            end
-            return Int64(n)
+    name_arms = join(
+        (
+            """
+                    if k == Int64($(i - 1))
+                        b = BNAME_$(p)_$(i)
+                        n = length(b)
+                        m = min(Int(cap), n)
+                        if m > 0 && buf != Ptr{UInt8}(0)
+                            GC.@preserve b unsafe_copyto!(buf, pointer(b), m)
+                        end
+                        return Int64(n)
+                    end
+            """
+                for (i, (k, _)) in enumerate(blocks)
+        )
+    )
+
+    block_arms = join(
+        (
+            """
+                    if k == Int64($(i - 1))
+                        b = m.refs.$(k)
+                        dims = ExaModels.size(getfield(b, :size))
+                        unsafe_store!(out, Int64($(kind)), 1)
+                        unsafe_store!(out, Int64(getfield(b, :offset)), 2)
+                        unsafe_store!(out, Int64(ExaModels.total(getfield(b, :size))), 3)
+                        unsafe_store!(out, Int64(length(dims)), 4)
+                        for j in 1:length(dims)
+                            unsafe_store!(out, Int64(dims[j]), 4 + j)
+                        end
+                        return Int64(0)
+                    end
+            """
+                for (i, (k, kind)) in enumerate(blocks)
+        )
+    )
+
+    par_arms = join(
+        (
+            """
+                    if k == Int64($(i - 1))
+                        b = m.refs.$(k)
+                        o = getfield(b, :offset)
+                        n = ExaModels.total(getfield(b, :size))
+                        Int(len) == n || return Int64(3)
+                        return _value_$(p)_rw(m, o, n, vals, get)
+                    end
+            """
+                for (i, (k, kind)) in enumerate(blocks) if kind == 2
+        )
+    )
+
+    return """
+        # ── named blocks of `$p` ─────────────────────────────────────────────────
+    $names
+        # How many named blocks this model publishes.
+        Base.@ccallable function $(p)_nblocks(id::Int64)::Int64
+            _valid_$p(id) || return Int64(-1)
+            return Int64($n)
         end
-"""
-        for (i, (k, _)) in enumerate(blocks)
-    ))
 
-    block_arms = join((
-        """
-        if k == Int64($(i - 1))
-            b = m.refs.$(k)
-            dims = ExaModels.size(getfield(b, :size))
-            unsafe_store!(out, Int64($(kind)), 1)
-            unsafe_store!(out, Int64(getfield(b, :offset)), 2)
-            unsafe_store!(out, Int64(ExaModels.total(getfield(b, :size))), 3)
-            unsafe_store!(out, Int64(length(dims)), 4)
-            for j in 1:length(dims)
-                unsafe_store!(out, Int64(dims[j]), 4 + j)
+        # The block's name, by the copy-out convention `$(p)_schema` uses:
+        # returns the needed byte length, copies what fits in `cap`.
+        Base.@ccallable function $(p)_block_name(id::Int64, k::Int64, buf::Ptr{UInt8}, cap::Int64)::Int64
+            _valid_$p(id) || return Int64(-1)
+    $name_arms        return Int64(-1)
+        end
+
+        # `out` receives [kind, offset, length, ndims, dims...] — kind 0 = variable,
+        # 1 = constraint, 2 = parameter; offset is 0-based, as `solution` expects.
+        # A caller sizes `out` from `ndims` after a first call, or allocates
+        # generously: no model has more dimensions than it has blocks.
+        Base.@ccallable function $(p)_block(id::Int64, k::Int64, out::Ptr{Int64})::Int64
+            _valid_$p(id) || return Int64(1)
+            try
+                m = MODELS_$p[Int(id)]
+    $block_arms            return Int64(1)
+            catch
+                return Int64(2)
+            end
+        end
+
+        # Parameters are live model state: `θ` is read and written in place, so a
+        # consumer can re-solve at new parameter values without rebuilding.
+        @inline function _value_$(p)_rw(m, o::Int, n::Int, vals::Ptr{Cdouble}, get::Bool)
+            w = unsafe_wrap(Array, vals, n)
+            if get
+                copyto!(w, view(m.θ, (o + 1):(o + n)))
+            else
+                copyto!(view(m.θ, (o + 1):(o + n)), w)
             end
             return Int64(0)
         end
-"""
-        for (i, (k, kind)) in enumerate(blocks)
-    ))
 
-    par_arms = join((
-        """
-        if k == Int64($(i - 1))
-            b = m.refs.$(k)
-            o = getfield(b, :offset)
-            n = ExaModels.total(getfield(b, :size))
-            Int(len) == n || return Int64(3)
-            return _value_$(p)_rw(m, o, n, vals, get)
+        @inline function _value_$(p)_at(id::Int64, k::Int64, vals::Ptr{Cdouble}, len::Int64, get::Bool)
+            _valid_$p(id) || return Int64(1)
+            try
+                m = MODELS_$p[Int(id)]
+    $par_arms            return Int64(1)
+            catch
+                return Int64(2)
+            end
         end
-"""
-        for (i, (k, kind)) in enumerate(blocks) if kind == 2
-    ))
 
-    return """
-    # ── named blocks of `$p` ─────────────────────────────────────────────────
-$names
-    # How many named blocks this model publishes.
-    Base.@ccallable function $(p)_nblocks(id::Int64)::Int64
-        _valid_$p(id) || return Int64(-1)
-        return Int64($n)
-    end
-
-    # The block's name, by the copy-out convention `$(p)_schema` uses:
-    # returns the needed byte length, copies what fits in `cap`.
-    Base.@ccallable function $(p)_block_name(id::Int64, k::Int64, buf::Ptr{UInt8}, cap::Int64)::Int64
-        _valid_$p(id) || return Int64(-1)
-$name_arms        return Int64(-1)
-    end
-
-    # `out` receives [kind, offset, length, ndims, dims...] — kind 0 = variable,
-    # 1 = constraint, 2 = parameter; offset is 0-based, as `solution` expects.
-    # A caller sizes `out` from `ndims` after a first call, or allocates
-    # generously: no model has more dimensions than it has blocks.
-    Base.@ccallable function $(p)_block(id::Int64, k::Int64, out::Ptr{Int64})::Int64
-        _valid_$p(id) || return Int64(1)
-        try
-            m = MODELS_$p[Int(id)]
-$block_arms            return Int64(1)
-        catch
-            return Int64(2)
+        # `get_value` / `set_value`, matching ExaModels' two-stage parameter
+        # vocabulary. Status 0 on success, 1 for a bad id or a block that is not
+        # a parameter, 3 for a length that disagrees with the block. Unlike
+        # ExaModels' `get_value`, this copies out rather than returning a view:
+        # the storage lives in the library's address space, not the caller's.
+        Base.@ccallable function $(p)_get_value(id::Int64, k::Int64, vals::Ptr{Cdouble}, len::Int64)::Int64
+            return _value_$(p)_at(id, k, vals, len, true)
         end
-    end
 
-    # Parameters are live model state: `θ` is read and written in place, so a
-    # consumer can re-solve at new parameter values without rebuilding.
-    @inline function _value_$(p)_rw(m, o::Int, n::Int, vals::Ptr{Cdouble}, get::Bool)
-        w = unsafe_wrap(Array, vals, n)
-        if get
-            copyto!(w, view(m.θ, (o + 1):(o + n)))
-        else
-            copyto!(view(m.θ, (o + 1):(o + n)), w)
+        Base.@ccallable function $(p)_set_value(id::Int64, k::Int64, vals::Ptr{Cdouble}, len::Int64)::Int64
+            return _value_$(p)_at(id, k, vals, len, false)
         end
-        return Int64(0)
-    end
-
-    @inline function _value_$(p)_at(id::Int64, k::Int64, vals::Ptr{Cdouble}, len::Int64, get::Bool)
-        _valid_$p(id) || return Int64(1)
-        try
-            m = MODELS_$p[Int(id)]
-$par_arms            return Int64(1)
-        catch
-            return Int64(2)
-        end
-    end
-
-    # `get_value` / `set_value`, matching ExaModels' two-stage parameter
-    # vocabulary. Status 0 on success, 1 for a bad id or a block that is not
-    # a parameter, 3 for a length that disagrees with the block. Unlike
-    # ExaModels' `get_value`, this copies out rather than returning a view:
-    # the storage lives in the library's address space, not the caller's.
-    Base.@ccallable function $(p)_get_value(id::Int64, k::Int64, vals::Ptr{Cdouble}, len::Int64)::Int64
-        return _value_$(p)_at(id, k, vals, len, true)
-    end
-
-    Base.@ccallable function $(p)_set_value(id::Int64, k::Int64, vals::Ptr{Cdouble}, len::Int64)::Int64
-        return _value_$(p)_at(id, k, vals, len, false)
-    end
-"""
+    """
 end
 
 # ── A model's solution writers ───────────────────────────────────────────────
@@ -1748,127 +1802,112 @@ function _readers_source(p::AbstractString, s::ModelSpec)
     rs = s.readers
     isempty(rs) && return ""
     copyout(b) = """
-            n = length($b)
-            m = min(Int(cap), n)
-            if m > 0 && buf != Ptr{UInt8}(0)
-                GC.@preserve $b unsafe_copyto!(buf, pointer($b), m)
-            end
-            return Int64(n)
-"""
+                n = length($b)
+                m = min(Int(cap), n)
+                if m > 0 && buf != Ptr{UInt8}(0)
+                    GC.@preserve $b unsafe_copyto!(buf, pointer($b), m)
+                end
+                return Int64(n)
+    """
     names = join(("    const RNAME_$(p)_$(i) = Vector{UInt8}($(repr(r.name)))\n" for (i, r) in enumerate(rs)))
     name_arms = join(("        if k == Int64($(i - 1))\n$(copyout("RNAME_$(p)_$(i)"))        end\n" for (i, _) in enumerate(rs)))
     kind_arms = join(("        k == Int64($(i - 1)) && return Int64($(r.kind))\n" for (i, r) in enumerate(rs)))
     default = """
-    const DEFAULT_READER_$p = Vector{UInt8}($(repr(s.default_reader)))
-    Base.@ccallable function $(p)_default_reader(buf::Ptr{UInt8}, cap::Int64)::Int64
-$(copyout("DEFAULT_READER_$p"))    end
-"""
+        const DEFAULT_READER_$p = Vector{UInt8}($(repr(s.default_reader)))
+        Base.@ccallable function $(p)_default_reader(buf::Ptr{UInt8}, cap::Int64)::Int64
+    $(copyout("DEFAULT_READER_$p"))    end
+    """
     pars = [k for (k, kind) in _layout_blocks(s.core) if kind == 2]
     entries = map(rs) do r
         if r.kind == 0
             """
-    Base.@ccallable function $(p)_new_from_$(r.name)(s_ptr::Ptr{Cchar})::Int64
-        try
-            s = unsafe_string(s_ptr)
-            push!(MODELS_$p, ExaModels.ExaModel(CORE_$p, $(r.call)(s)...; check = Val(false)))
-            push!(ARGIN_$p, s)
-            return Int64(length(MODELS_$p))
-        catch
-            return Int64(0)
-        end
-    end
-"""
-        elseif r.kind == 1
-            sets = join(("""
-            if hasproperty(r, :$(k))
-                b = m.refs.$(k)
-                o = getfield(b, :offset)
-                n = ExaModels.total(getfield(b, :size))
-                v = getproperty(r, :$(k))
-                length(v) == n || return Int64(3)
-                copyto!(view(m.θ, (o + 1):(o + n)), v)
-            end
-""" for k in pars))
+                Base.@ccallable function $(p)_new_from_$(r.name)(s_ptr::Ptr{Cchar})::Int64
+                    try
+                        s = unsafe_string(s_ptr)
+                        push!(MODELS_$p, ExaModels.ExaModel(CORE_$p, $(r.call)(s)...; check = Val(false)))
+                        push!(ARGIN_$p, s)
+                        return Int64(length(MODELS_$p))
+                    catch
+                        return Int64(0)
+                    end
+                end
             """
-    Base.@ccallable function $(p)_set_from_$(r.name)(id::Int64, s_ptr::Ptr{Cchar})::Int64
-        _valid_$p(id) || return Int64(1)
-        try
-            m = MODELS_$p[Int(id)]
-            r = $(r.call)(unsafe_string(s_ptr), m)
-$sets            return Int64(0)
-        catch
-            return Int64(2)
-        end
-    end
-"""
+        elseif r.kind == 1
+            sets = join(
+                (
+                    """
+                                if hasproperty(r, :$(k))
+                                    b = m.refs.$(k)
+                                    o = getfield(b, :offset)
+                                    n = ExaModels.total(getfield(b, :size))
+                                    v = getproperty(r, :$(k))
+                                    length(v) == n || return Int64(3)
+                                    copyto!(view(m.θ, (o + 1):(o + n)), v)
+                                end
+                    """ for k in pars
+                )
+            )
+            """
+                Base.@ccallable function $(p)_set_from_$(r.name)(id::Int64, s_ptr::Ptr{Cchar})::Int64
+                    _valid_$p(id) || return Int64(1)
+                    try
+                        m = MODELS_$p[Int(id)]
+                        r = $(r.call)(unsafe_string(s_ptr), m)
+            $sets            return Int64(0)
+                    catch
+                        return Int64(2)
+                    end
+                end
+            """
         else
             """
-    Base.@ccallable function $(p)_start_from_$(r.name)(
-        id::Int64, s_ptr::Ptr{Cchar}, x0::Ptr{Cdouble}, y0::Ptr{Cdouble}, zl::Ptr{Cdouble}, zu::Ptr{Cdouble},
-    )::Int64
-        _valid_$p(id) || return Int64(1)
-        try
-            m = MODELS_$p[Int(id)]
-            nv = Int(m.meta.nvar); nc = Int(m.meta.ncon)
-            _fill_start(unsafe_wrap(Array, x0, nv), unsafe_wrap(Array, y0, nc),
-                        unsafe_wrap(Array, zl, nv), unsafe_wrap(Array, zu, nv),
-                        $(r.call)(unsafe_string(s_ptr), m))
-            if !m.meta.minimize   # NLPModels convention -> cnlp: negate multipliers
-                for (q, k) in ((y0, nc), (zl, nv), (zu, nv))
-                    v = unsafe_wrap(Array, q, k); v .= .-v
+                Base.@ccallable function $(p)_start_from_$(r.name)(
+                    id::Int64, s_ptr::Ptr{Cchar}, x0::Ptr{Cdouble}, y0::Ptr{Cdouble}, zl::Ptr{Cdouble}, zu::Ptr{Cdouble},
+                )::Int64
+                    _valid_$p(id) || return Int64(1)
+                    try
+                        m = MODELS_$p[Int(id)]
+                        nv = Int(m.meta.nvar); nc = Int(m.meta.ncon)
+                        _fill_start(unsafe_wrap(Array, x0, nv), unsafe_wrap(Array, y0, nc),
+                                    unsafe_wrap(Array, zl, nv), unsafe_wrap(Array, zu, nv),
+                                    $(r.call)(unsafe_string(s_ptr), m))
+                        if !m.meta.minimize   # NLPModels convention -> cnlp: negate multipliers
+                            for (q, k) in ((y0, nc), (zl, nv), (zu, nv))
+                                v = unsafe_wrap(Array, q, k); v .= .-v
+                            end
+                        end
+                        return Int64(0)
+                    catch e
+                        return e isa DimensionMismatch ? Int64(3) : Int64(2)
+                    end
                 end
-            end
-            return Int64(0)
-        catch e
-            return e isa DimensionMismatch ? Int64(3) : Int64(2)
-        end
-    end
-"""
+            """
         end
     end
     return """
-    # ── readers of `$p` ──────────────────────────────────────────────────────
-$names
-    Base.@ccallable function $(p)_nreaders()::Int64
-        return Int64($(length(rs)))
-    end
+        # ── readers of `$p` ──────────────────────────────────────────────────────
+    $names
+        Base.@ccallable function $(p)_nreaders()::Int64
+            return Int64($(length(rs)))
+        end
 
-    Base.@ccallable function $(p)_reader_name(k::Int64, buf::Ptr{UInt8}, cap::Int64)::Int64
-$name_arms        return Int64(-1)
-    end
+        Base.@ccallable function $(p)_reader_name(k::Int64, buf::Ptr{UInt8}, cap::Int64)::Int64
+    $name_arms        return Int64(-1)
+        end
 
-    Base.@ccallable function $(p)_reader_kind(k::Int64)::Int64
-$kind_arms        return Int64(-1)
-    end
-$default
-$(join(entries))"""
+        Base.@ccallable function $(p)_reader_kind(k::Int64)::Int64
+    $kind_arms        return Int64(-1)
+        end
+    $default
+    $(join(entries))"""
 end
 
 function _default_writer_source(p::AbstractString, default::AbstractString)
     return """
-    const DEFAULT_WRITER_$p = Vector{UInt8}($(repr(default)))
-    Base.@ccallable function $(p)_default_writer(id::Int64, buf::Ptr{UInt8}, cap::Int64)::Int64
-        _valid_$p(id) || return Int64(-1)
-        b = DEFAULT_WRITER_$p
-        n = length(b)
-        m = min(Int(cap), n)
-        if m > 0 && buf != Ptr{UInt8}(0)
-            GC.@preserve b unsafe_copyto!(buf, pointer(b), m)
-        end
-        return Int64(n)
-    end
-"""
-end
-
-function _writers_source(p::AbstractString, writers::Vector{Writer})
-    names = join((
-        """    const WNAME_$(p)_$(i) = Vector{UInt8}($(repr(w.name)))\n"""
-        for (i, w) in enumerate(writers)
-    ))
-    name_arms = join((
-        """
-        if k == Int64($(i - 1))
-            b = WNAME_$(p)_$(i)
+        const DEFAULT_WRITER_$p = Vector{UInt8}($(repr(default)))
+        Base.@ccallable function $(p)_default_writer(id::Int64, buf::Ptr{UInt8}, cap::Int64)::Int64
+            _valid_$p(id) || return Int64(-1)
+            b = DEFAULT_WRITER_$p
             n = length(b)
             m = min(Int(cap), n)
             if m > 0 && buf != Ptr{UInt8}(0)
@@ -1876,49 +1915,74 @@ function _writers_source(p::AbstractString, writers::Vector{Writer})
             end
             return Int64(n)
         end
-"""
-        for (i, _) in enumerate(writers)
-    ))
-    entries = join((
-        """
-    Base.@ccallable function $(p)_write_$(w.name)(
-        id::Int64, out::Ptr{Cchar}, x::Ptr{Cdouble}, y::Ptr{Cdouble},
-        zl::Ptr{Cdouble}, zu::Ptr{Cdouble}, objective::Cdouble, status::Ptr{Cchar},
-    )::Int64
-        _valid_$p(id) || return Int64(1)
-        try
-            m = MODELS_$p[Int(id)]
-            nv = Int(m.meta.nvar)
-            nc = Int(m.meta.ncon)
-            st = status == Ptr{Cchar}(0) ? "" : unsafe_string(status)
-            # cnlp multipliers -> NLPModels convention (negated for maximization)
-            sg = m.meta.minimize ? 1.0 : -1.0
-            $(w.call)(
-                unsafe_string(out), ARGIN_$p[Int(id)], m,
-                copy(unsafe_wrap(Array, x, nv)), sg .* unsafe_wrap(Array, y, nc),
-                sg .* unsafe_wrap(Array, zl, nv), sg .* unsafe_wrap(Array, zu, nv);
-                objective = Float64(objective), status = st,
-            )
-            return Int64(0)
-        catch
-            return Int64(2)
-        end
-    end
-"""
-        for w in writers
-    ))
-    return """
-    # ── solution writers of `$p` ─────────────────────────────────────────────
-$names
-    Base.@ccallable function $(p)_nwriters()::Int64
-        return Int64($(length(writers)))
-    end
+    """
+end
 
-    # The k-th writer's name (0-based), by the copy-out convention.
-    Base.@ccallable function $(p)_writer_name(k::Int64, buf::Ptr{UInt8}, cap::Int64)::Int64
-$name_arms        return Int64(-1)
-    end
-$entries"""
+function _writers_source(p::AbstractString, writers::Vector{Writer})
+    names = join(
+        (
+            """    const WNAME_$(p)_$(i) = Vector{UInt8}($(repr(w.name)))\n"""
+                for (i, w) in enumerate(writers)
+        )
+    )
+    name_arms = join(
+        (
+            """
+                    if k == Int64($(i - 1))
+                        b = WNAME_$(p)_$(i)
+                        n = length(b)
+                        m = min(Int(cap), n)
+                        if m > 0 && buf != Ptr{UInt8}(0)
+                            GC.@preserve b unsafe_copyto!(buf, pointer(b), m)
+                        end
+                        return Int64(n)
+                    end
+            """
+                for (i, _) in enumerate(writers)
+        )
+    )
+    entries = join(
+        (
+            """
+                Base.@ccallable function $(p)_write_$(w.name)(
+                    id::Int64, out::Ptr{Cchar}, x::Ptr{Cdouble}, y::Ptr{Cdouble},
+                    zl::Ptr{Cdouble}, zu::Ptr{Cdouble}, objective::Cdouble, status::Ptr{Cchar},
+                )::Int64
+                    _valid_$p(id) || return Int64(1)
+                    try
+                        m = MODELS_$p[Int(id)]
+                        nv = Int(m.meta.nvar)
+                        nc = Int(m.meta.ncon)
+                        st = status == Ptr{Cchar}(0) ? "" : unsafe_string(status)
+                        # cnlp multipliers -> NLPModels convention (negated for maximization)
+                        sg = m.meta.minimize ? 1.0 : -1.0
+                        $(w.call)(
+                            unsafe_string(out), ARGIN_$p[Int(id)], m,
+                            copy(unsafe_wrap(Array, x, nv)), sg .* unsafe_wrap(Array, y, nc),
+                            sg .* unsafe_wrap(Array, zl, nv), sg .* unsafe_wrap(Array, zu, nv);
+                            objective = Float64(objective), status = st,
+                        )
+                        return Int64(0)
+                    catch
+                        return Int64(2)
+                    end
+                end
+            """
+                for w in writers
+        )
+    )
+    return """
+        # ── solution writers of `$p` ─────────────────────────────────────────────
+    $names
+        Base.@ccallable function $(p)_nwriters()::Int64
+            return Int64($(length(writers)))
+        end
+
+        # The k-th writer's name (0-based), by the copy-out convention.
+        Base.@ccallable function $(p)_writer_name(k::Int64, buf::Ptr{UInt8}, cap::Int64)::Int64
+    $name_arms        return Int64(-1)
+        end
+    $entries"""
 end
 
 function _model_source(s::ModelSpec)
@@ -1927,207 +1991,207 @@ function _model_source(s::ModelSpec)
     # way `ExaModel` takes them; the other forms carry a single value.
     example = (s.field isa BuilderModel || s.field isa UserArgs) ? "ARG0_$p..." : "ARG0_$p"
     return """
-    # ── model `$p` ───────────────────────────────────────────────────────────
+        # ── model `$p` ───────────────────────────────────────────────────────────
 
-    # Deserialized at precompile time, so the core is baked into the package
-    # image and no model-building code enters the compiled call graph.
-    const CORE_$p = Serialization.deserialize(joinpath(@__DIR__, "core_$p.jls"))
-    const ARG0_$p = Serialization.deserialize(joinpath(@__DIR__, "arg_$p.jls"))
+        # Deserialized at precompile time, so the core is baked into the package
+        # image and no model-building code enters the compiled call graph.
+        const CORE_$p = Serialization.deserialize(joinpath(@__DIR__, "core_$p.jls"))
+        const ARG0_$p = Serialization.deserialize(joinpath(@__DIR__, "arg_$p.jls"))
 
-    # Building one model at precompile time fixes the concrete instance type.
-    # Every runtime instantiation differs only in sizes, so they all land in
-    # this vector without widening it.  `check = Val(false)` drops the
-    # placeholder-leak guard, which walks types reflectively and is not
-    # trimmable — the check already ran, on this exact core, in the process
-    # that called `compile_library`.
-    const MODELS_$p = typeof(ExaModels.ExaModel(CORE_$p, $example; check = Val(false)))[]
+        # Building one model at precompile time fixes the concrete instance type.
+        # Every runtime instantiation differs only in sizes, so they all land in
+        # this vector without widening it.  `check = Val(false)` drops the
+        # placeholder-leak guard, which walks types reflectively and is not
+        # trimmable — the check already ran, on this exact core, in the process
+        # that called `compile_library`.
+        const MODELS_$p = typeof(ExaModels.ExaModel(CORE_$p, $example; check = Val(false)))[]
 
-    @inline _valid_$p(id::Int64) = 1 <= id <= length(MODELS_$p)
+        @inline _valid_$p(id::Int64) = 1 <= id <= length(MODELS_$p)
 
-$(_instantiation_source(p, s.field))
-$(_layout_source(p, s.core))
-$(_writers_source(p, s.writers))
-$(_default_writer_source(p, s.default_writer))
-$(_readers_source(p, s))
-    Base.@ccallable function $(p)_nvar(id::Int64)::Int64
-        _valid_$p(id) || return Int64(-1)
-        return Int64(MODELS_$p[Int(id)].meta.nvar)
-    end
+    $(_instantiation_source(p, s.field))
+    $(_layout_source(p, s.core))
+    $(_writers_source(p, s.writers))
+    $(_default_writer_source(p, s.default_writer))
+    $(_readers_source(p, s))
+        Base.@ccallable function $(p)_nvar(id::Int64)::Int64
+            _valid_$p(id) || return Int64(-1)
+            return Int64(MODELS_$p[Int(id)].meta.nvar)
+        end
 
-    Base.@ccallable function $(p)_ncon(id::Int64)::Int64
-        _valid_$p(id) || return Int64(-1)
-        return Int64(MODELS_$p[Int(id)].meta.ncon)
-    end
+        Base.@ccallable function $(p)_ncon(id::Int64)::Int64
+            _valid_$p(id) || return Int64(-1)
+            return Int64(MODELS_$p[Int(id)].meta.ncon)
+        end
 
-    Base.@ccallable function $(p)_nnzj(id::Int64)::Int64
-        _valid_$p(id) || return Int64(-1)
-        return Int64(MODELS_$p[Int(id)].meta.nnzj)
-    end
+        Base.@ccallable function $(p)_nnzj(id::Int64)::Int64
+            _valid_$p(id) || return Int64(-1)
+            return Int64(MODELS_$p[Int(id)].meta.nnzj)
+        end
 
-    Base.@ccallable function $(p)_nnzh(id::Int64)::Int64
-        _valid_$p(id) || return Int64(-1)
-        return Int64(MODELS_$p[Int(id)].meta.nnzh)
-    end
+        Base.@ccallable function $(p)_nnzh(id::Int64)::Int64
+            _valid_$p(id) || return Int64(-1)
+            return Int64(MODELS_$p[Int(id)].meta.nnzh)
+        end
 
-    # Objective sense: 1 = minimize, 0 = maximize, -1 = invalid id. Optional in the ABI
-    # (a consumer that does not find it assumes minimize), so it must be exported for
-    # every model whose objective is maximized, or the consumer solves the wrong problem.
-    Base.@ccallable function $(p)_minimize(id::Int64)::Int64
-        _valid_$p(id) || return Int64(-1)
-        return MODELS_$p[Int(id)].meta.minimize ? Int64(1) : Int64(0)
-    end
+        # Objective sense: 1 = minimize, 0 = maximize, -1 = invalid id. Optional in the ABI
+        # (a consumer that does not find it assumes minimize), so it must be exported for
+        # every model whose objective is maximized, or the consumer solves the wrong problem.
+        Base.@ccallable function $(p)_minimize(id::Int64)::Int64
+            _valid_$p(id) || return Int64(-1)
+            return MODELS_$p[Int(id)].meta.minimize ? Int64(1) : Int64(0)
+        end
 
-    Base.@ccallable function $(p)_meta(
-        id::Int64,
-        x0::Ptr{Cdouble},
-        lvar::Ptr{Cdouble},
-        uvar::Ptr{Cdouble},
-        lcon::Ptr{Cdouble},
-        ucon::Ptr{Cdouble},
-    )::Int64
-        _valid_$p(id) || return Int64(1)
-        try
-            m = MODELS_$p[Int(id)]
-            n = m.meta.nvar
-            k = m.meta.ncon
-            copyto!(unsafe_wrap(Array, x0, n), m.meta.x0)
-            copyto!(unsafe_wrap(Array, lvar, n), m.meta.lvar)
-            copyto!(unsafe_wrap(Array, uvar, n), m.meta.uvar)
-            if k > 0
-                copyto!(unsafe_wrap(Array, lcon, k), m.meta.lcon)
-                copyto!(unsafe_wrap(Array, ucon, k), m.meta.ucon)
+        Base.@ccallable function $(p)_meta(
+            id::Int64,
+            x0::Ptr{Cdouble},
+            lvar::Ptr{Cdouble},
+            uvar::Ptr{Cdouble},
+            lcon::Ptr{Cdouble},
+            ucon::Ptr{Cdouble},
+        )::Int64
+            _valid_$p(id) || return Int64(1)
+            try
+                m = MODELS_$p[Int(id)]
+                n = m.meta.nvar
+                k = m.meta.ncon
+                copyto!(unsafe_wrap(Array, x0, n), m.meta.x0)
+                copyto!(unsafe_wrap(Array, lvar, n), m.meta.lvar)
+                copyto!(unsafe_wrap(Array, uvar, n), m.meta.uvar)
+                if k > 0
+                    copyto!(unsafe_wrap(Array, lcon, k), m.meta.lcon)
+                    copyto!(unsafe_wrap(Array, ucon, k), m.meta.ucon)
+                end
+                return Int64(0)
+            catch
+                return Int64(2)
             end
-            return Int64(0)
-        catch
-            return Int64(2)
         end
-    end
 
-    Base.@ccallable function $(p)_obj(id::Int64, x::Ptr{Cdouble}, out::Ptr{Cdouble})::Int64
-        _valid_$p(id) || return Int64(1)
-        try
-            m = MODELS_$p[Int(id)]
-            unsafe_store!(out, ExaModels.obj(m, unsafe_wrap(Array, x, m.meta.nvar)))
-            return Int64(0)
-        catch
-            return Int64(2)
+        Base.@ccallable function $(p)_obj(id::Int64, x::Ptr{Cdouble}, out::Ptr{Cdouble})::Int64
+            _valid_$p(id) || return Int64(1)
+            try
+                m = MODELS_$p[Int(id)]
+                unsafe_store!(out, ExaModels.obj(m, unsafe_wrap(Array, x, m.meta.nvar)))
+                return Int64(0)
+            catch
+                return Int64(2)
+            end
         end
-    end
 
-    Base.@ccallable function $(p)_grad(id::Int64, x::Ptr{Cdouble}, g::Ptr{Cdouble})::Int64
-        _valid_$p(id) || return Int64(1)
-        try
-            m = MODELS_$p[Int(id)]
-            n = m.meta.nvar
-            ExaModels.grad!(m, unsafe_wrap(Array, x, n), unsafe_wrap(Array, g, n))
-            return Int64(0)
-        catch
-            return Int64(2)
+        Base.@ccallable function $(p)_grad(id::Int64, x::Ptr{Cdouble}, g::Ptr{Cdouble})::Int64
+            _valid_$p(id) || return Int64(1)
+            try
+                m = MODELS_$p[Int(id)]
+                n = m.meta.nvar
+                ExaModels.grad!(m, unsafe_wrap(Array, x, n), unsafe_wrap(Array, g, n))
+                return Int64(0)
+            catch
+                return Int64(2)
+            end
         end
-    end
 
-    Base.@ccallable function $(p)_cons(id::Int64, x::Ptr{Cdouble}, c::Ptr{Cdouble})::Int64
-        _valid_$p(id) || return Int64(1)
-        try
-            m = MODELS_$p[Int(id)]
-            k = m.meta.ncon
-            k == 0 && return Int64(0)
-            ExaModels.cons_nln!(
-                m,
-                unsafe_wrap(Array, x, m.meta.nvar),
-                unsafe_wrap(Array, c, k),
-            )
-            return Int64(0)
-        catch
-            return Int64(2)
+        Base.@ccallable function $(p)_cons(id::Int64, x::Ptr{Cdouble}, c::Ptr{Cdouble})::Int64
+            _valid_$p(id) || return Int64(1)
+            try
+                m = MODELS_$p[Int(id)]
+                k = m.meta.ncon
+                k == 0 && return Int64(0)
+                ExaModels.cons_nln!(
+                    m,
+                    unsafe_wrap(Array, x, m.meta.nvar),
+                    unsafe_wrap(Array, c, k),
+                )
+                return Int64(0)
+            catch
+                return Int64(2)
+            end
         end
-    end
 
-    Base.@ccallable function $(p)_jac_structure(
-        id::Int64,
-        rows::Ptr{Int64},
-        cols::Ptr{Int64},
-    )::Int64
-        _valid_$p(id) || return Int64(1)
-        try
-            m = MODELS_$p[Int(id)]
-            nz = m.meta.nnzj
-            nz == 0 && return Int64(0)
-            ExaModels.jac_structure!(
-                m,
-                unsafe_wrap(Array, rows, nz),
-                unsafe_wrap(Array, cols, nz),
-            )
-            return Int64(0)
-        catch
-            return Int64(2)
+        Base.@ccallable function $(p)_jac_structure(
+            id::Int64,
+            rows::Ptr{Int64},
+            cols::Ptr{Int64},
+        )::Int64
+            _valid_$p(id) || return Int64(1)
+            try
+                m = MODELS_$p[Int(id)]
+                nz = m.meta.nnzj
+                nz == 0 && return Int64(0)
+                ExaModels.jac_structure!(
+                    m,
+                    unsafe_wrap(Array, rows, nz),
+                    unsafe_wrap(Array, cols, nz),
+                )
+                return Int64(0)
+            catch
+                return Int64(2)
+            end
         end
-    end
 
-    Base.@ccallable function $(p)_jac(id::Int64, x::Ptr{Cdouble}, vals::Ptr{Cdouble})::Int64
-        _valid_$p(id) || return Int64(1)
-        try
-            m = MODELS_$p[Int(id)]
-            nz = m.meta.nnzj
-            nz == 0 && return Int64(0)
-            ExaModels.jac_coord!(
-                m,
-                unsafe_wrap(Array, x, m.meta.nvar),
-                unsafe_wrap(Array, vals, nz),
-            )
-            return Int64(0)
-        catch
-            return Int64(2)
+        Base.@ccallable function $(p)_jac(id::Int64, x::Ptr{Cdouble}, vals::Ptr{Cdouble})::Int64
+            _valid_$p(id) || return Int64(1)
+            try
+                m = MODELS_$p[Int(id)]
+                nz = m.meta.nnzj
+                nz == 0 && return Int64(0)
+                ExaModels.jac_coord!(
+                    m,
+                    unsafe_wrap(Array, x, m.meta.nvar),
+                    unsafe_wrap(Array, vals, nz),
+                )
+                return Int64(0)
+            catch
+                return Int64(2)
+            end
         end
-    end
 
-    Base.@ccallable function $(p)_hess_structure(
-        id::Int64,
-        rows::Ptr{Int64},
-        cols::Ptr{Int64},
-    )::Int64
-        _valid_$p(id) || return Int64(1)
-        try
-            m = MODELS_$p[Int(id)]
-            nz = m.meta.nnzh
-            nz == 0 && return Int64(0)
-            ExaModels.hess_structure!(
-                m,
-                unsafe_wrap(Array, rows, nz),
-                unsafe_wrap(Array, cols, nz),
-            )
-            return Int64(0)
-        catch
-            return Int64(2)
+        Base.@ccallable function $(p)_hess_structure(
+            id::Int64,
+            rows::Ptr{Int64},
+            cols::Ptr{Int64},
+        )::Int64
+            _valid_$p(id) || return Int64(1)
+            try
+                m = MODELS_$p[Int(id)]
+                nz = m.meta.nnzh
+                nz == 0 && return Int64(0)
+                ExaModels.hess_structure!(
+                    m,
+                    unsafe_wrap(Array, rows, nz),
+                    unsafe_wrap(Array, cols, nz),
+                )
+                return Int64(0)
+            catch
+                return Int64(2)
+            end
         end
-    end
 
-    Base.@ccallable function $(p)_hess(
-        id::Int64,
-        x::Ptr{Cdouble},
-        y::Ptr{Cdouble},
-        obj_weight::Cdouble,
-        vals::Ptr{Cdouble},
-    )::Int64
-        _valid_$p(id) || return Int64(1)
-        try
-            m = MODELS_$p[Int(id)]
-            nz = m.meta.nnzh
-            nz == 0 && return Int64(0)
-            ExaModels.hess_coord!(
-                m,
-                unsafe_wrap(Array, x, m.meta.nvar),
-                unsafe_wrap(Array, y, m.meta.ncon),
-                unsafe_wrap(Array, vals, nz);
-                obj_weight = obj_weight,
-            )
-            return Int64(0)
-        catch
-            return Int64(2)
+        Base.@ccallable function $(p)_hess(
+            id::Int64,
+            x::Ptr{Cdouble},
+            y::Ptr{Cdouble},
+            obj_weight::Cdouble,
+            vals::Ptr{Cdouble},
+        )::Int64
+            _valid_$p(id) || return Int64(1)
+            try
+                m = MODELS_$p[Int(id)]
+                nz = m.meta.nnzh
+                nz == 0 && return Int64(0)
+                ExaModels.hess_coord!(
+                    m,
+                    unsafe_wrap(Array, x, m.meta.nvar),
+                    unsafe_wrap(Array, y, m.meta.ncon),
+                    unsafe_wrap(Array, vals, nz);
+                    obj_weight = obj_weight,
+                )
+                return Int64(0)
+            catch
+                return Int64(2)
+            end
         end
-    end
 
-    """
+        """
 end
 
 # ── Device tier ─────────────────────────────────────────────────────────────────
@@ -2145,9 +2209,12 @@ function _device_source end
 function _check_device(device::Symbol)
     device === :cpu && return
     device === :cuda || throw(ArgumentError("`device` must be :cpu or :cuda, got :$device"))
-    hasmethod(_device_source, Tuple{Val{:cuda}, AbstractString, Any}) || throw(ArgumentError(
-        "`device = :cuda` needs the CUDA extension: `using CUDACore, GPUCompiler` (or `using CUDA`) " *
-        "before calling `compile_library`."))
+    hasmethod(_device_source, Tuple{Val{:cuda}, AbstractString, Any}) || throw(
+        ArgumentError(
+            "`device = :cuda` needs the CUDA extension: `using CUDACore, GPUCompiler` (or `using CUDA`) " *
+                "before calling `compile_library`."
+        )
+    )
     return
 end
 
@@ -2201,12 +2268,14 @@ function _link(::Val{true}, img, libname, outdir)
     # call. Distinctly-salted bundles coexist fine (verified). So the salt is
     # forced unique here: bundling runs in its own task whose RNG is seeded
     # from the OS entropy pool — the caller's RNG state is untouched.
-    fetch(Threads.@spawn begin
-        Random.seed!(rand(Random.RandomDevice(), UInt128))
-        JuliaC.bundle_products(
-            JuliaC.BundleRecipe(link_recipe = link, output_dir = outdir, privatize = true),
-        )
-    end)
+    fetch(
+        Threads.@spawn begin
+            Random.seed!(rand(Random.RandomDevice(), UInt128))
+            JuliaC.bundle_products(
+                JuliaC.BundleRecipe(link_recipe = link, output_dir = outdir, privatize = true),
+            )
+        end
+    )
 
     libroot = Sys.iswindows() ? "bin" : "lib"
     libpath = joinpath(outdir, libroot, "lib" * libname * "." * _DLEXT)
@@ -2301,12 +2370,15 @@ compile_all(m::Module; kwargs...) = compile_all(Val(m); kwargs...)
 # Reached when the package has no method — either it provides no models, or its
 # extension is not loaded because this package was not in scope when it was.
 function compile_all(::Val{M}; kwargs...) where {M}
-    throw(ArgumentError(
-        "$M does not implement `compile_all`. A package that provides models " *
-        "implements it in an ExaModelsCompiler extension — see the " *
-        "`compile_all` docstring for the shape. If $M does implement it, load " *
-        "both packages before calling: the extension only comes up once " *
-        "ExaModelsCompiler is in scope."))
+    throw(
+        ArgumentError(
+            "$M does not implement `compile_all`. A package that provides models " *
+                "implements it in an ExaModelsCompiler extension — see the " *
+                "`compile_all` docstring for the shape. If $M does implement it, load " *
+                "both packages before calling: the extension only comes up once " *
+                "ExaModelsCompiler is in scope."
+        )
+    )
 end
 
 """
@@ -2330,15 +2402,21 @@ function select(models; only = nothing, exclude = ())
     have = Set(first.(models))
     _sym(x) = x isa Symbol ? x : Symbol(x)
     for name in Iterators.flatten((only === nothing ? () : only, exclude))
-        _sym(name) in have || throw(ArgumentError(
-            "no model named `$(_sym(name))`; this package provides " *
-            "$(sort(collect(have)))"))
+        _sym(name) in have || throw(
+            ArgumentError(
+                "no model named `$(_sym(name))`; this package provides " *
+                    "$(sort(collect(have)))"
+            )
+        )
     end
     keep = only === nothing ? have : Set(_sym.(only))
     setdiff!(keep, Set(_sym.(exclude)))
     out = [p for p in models if first(p) in keep]
-    isempty(out) && throw(ArgumentError(
-        "`only`/`exclude` selected no models out of $(sort(collect(have)))"))
+    isempty(out) && throw(
+        ArgumentError(
+            "`only`/`exclude` selected no models out of $(sort(collect(have)))"
+        )
+    )
     return out
 end
 
