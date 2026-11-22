@@ -280,6 +280,32 @@ convention) so a consumer can discover them.  Every model exports the latter
 two, reporting `0` writers when it has none.  Each writer is called once on the
 example instance before compiling.
 
+`:default => :name` among the writers names the one consumers use when no format
+is given (`P_default_writer`).
+
+## Readers
+
+`readers = (instance = (:name => f, ...), parameters = (...), start = (...), default = :name)`
+compiles readers of the model's own file formats, each a named package function:
+
+| kind | called as | exported as |
+|:--|:--|:--|
+| `instance` | `f(path)` returns the argument tuple | `P_new_from_<name>(path) -> id` |
+| `parameters` | `f(path, model)` returns a NamedTuple of parameter values | `P_set_from_<name>(id, path)` |
+| `start` | `f(path, model)` returns `x0` or `(x0, y0, zl, zu)` | `P_start_from_<name>(id, path, x0, y0, zl, zu)` |
+
+Instance readers need a model with a string argument function. A start reader's
+multipliers are in the NLPModels convention; the library converts them. `default`
+names the instance reader for a bare path (`P_default_reader`).
+
+## GPU evaluation
+
+`device = :cuda` (with CUDACore and GPUCompiler loaded) adds `P_device` and the
+device-pointer callbacks `P_obj_d`, `P_grad_d`, `P_cons_d`, `P_jac_d`, `P_hess_d`. The
+kernels are compiled to PTX here and take the problem size as an argument; at run time
+the library needs only the NVIDIA driver. The CPU entry points are unchanged. Models
+with buffered subexpressions are refused.
+
 ## Several models in one library
 
 Give `:name => core` pairs instead of a single core to put more than one model
