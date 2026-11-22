@@ -10,13 +10,16 @@ run time. It can be used from Julia through
 A library compiled with `device = :cuda` also evaluates the model on an NVIDIA GPU, on
 device pointers. The same file serves both: the CPU entry points are always present.
 
-Neither package is registered yet. Both are installed from their repositories:
+ExaModelsCompiler is registered; CNLPModels is installed from its repository:
 
 ```julia
 using Pkg
-Pkg.add(url = "https://github.com/madsuite-org/ExaModels.jl", subdir = "ExaModelsCompiler")
+Pkg.add("ExaModelsCompiler")
 Pkg.add(url = "https://github.com/madsuite-org/CNLPModels.jl")
 ```
+
+This page describes ExaModelsCompiler 0.4, whose libraries implement cnlp ABI 0.2 and are
+read by CNLPModels 0.4.
 
 Compiling requires Julia 1.12 or later (it uses `juliac` through JuliaC.jl, which is a
 dependency) and takes from one to a few minutes per library.
