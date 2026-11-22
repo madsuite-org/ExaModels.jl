@@ -154,7 +154,10 @@ jobs:
         julia --startup-file=no --color=yes --project=./test -e '
           using Pkg
           Pkg.Registry.update()
-          Pkg.add("${{ matrix.backend == 'cuda' && 'CUDA' || matrix.backend == 'amdgpu' && 'AMDGPU' || 'oneAPI' }}")
+          b = "${{ matrix.backend == 'cuda' && 'CUDA' || matrix.backend == 'amdgpu' && 'AMDGPU' || 'oneAPI' }}"
+          # AMDGPU 2.12 cannot load HIP on the gfx906 runners (could not load symbol
+          # "hipDeviceGet"); 2.11 works there.
+          b == "AMDGPU" ? Pkg.add(name = b, version = "2.11") : Pkg.add(b)
           Pkg.develop(path=".")
           Pkg.instantiate()'
     - name: Run tests
@@ -289,8 +292,8 @@ jobs:
       - name: Instantiate
         working-directory: benchmark
         run: |
-          julia --startup-file=no --project=main    -e 'using Pkg; Pkg.Registry.update(); Pkg.add("AMDGPU"); Pkg.instantiate()'
-          julia --startup-file=no --project=current -e 'using Pkg; Pkg.Registry.update(); Pkg.add("AMDGPU"); Pkg.instantiate()'
+          julia --startup-file=no --project=main    -e 'using Pkg; Pkg.Registry.update(); Pkg.add(name = "AMDGPU", version = "2.11"); Pkg.instantiate()'
+          julia --startup-file=no --project=current -e 'using Pkg; Pkg.Registry.update(); Pkg.add(name = "AMDGPU", version = "2.11"); Pkg.instantiate()'
       - name: Run benchmark (main)
         working-directory: benchmark
         run: julia --startup-file=no runbenchmark.jl main amdgpu
