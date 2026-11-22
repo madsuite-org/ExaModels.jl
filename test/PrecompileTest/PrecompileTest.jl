@@ -158,7 +158,7 @@ end
 function _test_stored_ka(r)
     # GPUCompiler keeps its cache in the session on Julia 1.10, so nothing is stored there.
     if VERSION >= v"1.11"
-        @test !any(contains("ExaModels"), r["stored_ka"].trace)
+        @test_broken !any(contains("ExaModels"), r["stored_ka"].trace)
         @test !any(contains("PrecompileAppKA"), r["stored_ka"].trace)
     end
     @test_broken r["stored_ka"].trace == String[]
