@@ -602,6 +602,55 @@ function runtests()
             @test occursin("Int64(0)", ExaModelsCompiler._writers_source("m", ExaModelsCompiler.Writer[]))
         end
 
+        @testset "sense, writers and start readers in the cnlp sign convention" begin
+            let   # local names: this runs inside `runtests()`, whose later testsets reuse them
+                function sbuild(minimize)
+                    c, N = ExaCore(nargs = Val(1), minimize = minimize)
+                    @add_var(c, x, N; start = 0.5, lvar = 0.0, uvar = 1.0)
+                    @add_obj(c, (x[i] - 0.3)^2 for i in 1:N)
+                    @add_con(c, x[i] + x[i+1] for i in 1:N-1; lcon = 0.0, ucon = 2.0)
+                    return c
+                end
+                w = (:summary => RecipeKernels.summary_writer,)
+                rd = (start = (:cst => RecipeKernels.const_start, :short => RecipeKernels.short_start),)
+                sr = compile_library(
+                    joinpath(OUT, "sense"),
+                    :mx => (sbuild(false), RecipeKernels.parsed_args, "4"),
+                    :mn => (sbuild(true), RecipeKernels.parsed_args, "4");
+                    writers = (:mx => w, :mn => w), readers = (:mx => rd, :mn => rd), bundle = true,
+                )
+                slib = CNLPModels.load(sr.libpath)
+                dl(s) = CNLPModels.Libdl.dlsym(slib.handle, s)
+                @test ccall(dl(:cnlp_abi_version), Int64, ()) == 2
+                for (p, mn) in (("mx", 0), ("mn", 1))
+                    sym(s) = dl(Symbol(p, "_", s))
+                    σ = mn == 1 ? 1.0 : -1.0
+                    id = ccall(sym(:new_str), Int64, (Cstring,), "4")
+                    @test id > 0
+                    @test ccall(sym(:minimize), Int64, (Int64,), id) == mn
+                    # the tiers' default names exist and say "none"
+                    @test ccall(sym(:default_writer), Int64, (Int64, Ptr{UInt8}, Int64), id, C_NULL, 0) == 0
+                    @test ccall(sym(:default_reader), Int64, (Ptr{UInt8}, Int64), C_NULL, 0) == 0
+                    # a start reader returns NLPModels-convention multipliers; the library
+                    # hands out the cnlp convention: negated when maximizing
+                    f = joinpath(mktempdir(), "start.txt"); write(f, "0.25\n")
+                    x0, y0, zl, zu = zeros(4), zeros(3), zeros(4), zeros(4)
+                    @test ccall(sym(:start_from_cst), Int64, (Int64, Cstring, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}),
+                                id, f, x0, y0, zl, zu) == 0
+                    @test x0 == fill(0.25, 4) && y0 == fill(σ * 0.25, 3)
+                    @test zl == fill(σ * 0.25, 4) && zu == fill(σ * 0.5, 4)
+                    @test ccall(sym(:start_from_short), Int64, (Int64, Cstring, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}),
+                                id, f, x0, y0, zl, zu) == 3            # wrong length
+                    # a writer takes the cnlp convention and hands its function NLPModels'
+                    out = joinpath(mktempdir(), "summary.txt")
+                    @test ccall(sym(:write_summary), Int64, (Int64, Cstring, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Cdouble, Cstring),
+                                id, out, ones(4), ones(3), ones(4), fill(2.0, 4), 1.5, "solved") == 0
+                    words = split(readline(out))
+                    @test parse.(Float64, words[6:8]) == σ .* [3.0, 4.0, 8.0]   # Σy, Σzl, Σzu
+                end
+            end
+        end
+
         @testset "a structured model instantiates through the builder" begin
             # One compile carries every surface — builder, one-knob, and both
             # argument-function kinds — in one library: the surface is per

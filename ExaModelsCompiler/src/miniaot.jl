@@ -23,7 +23,13 @@ const CONTEXT = Ref{Ptr{Cvoid}}(C_NULL)
 # The primary context of device 0: the same context CUDA.jl and the CUDA
 # runtime use, so device pointers from the caller are valid here.
 function init()
-    CONTEXT[] == C_NULL || return nothing
+    if CONTEXT[] != C_NULL
+        # a context is current per thread: a caller may come in on another thread
+        cur = Ref{Ptr{Cvoid}}(C_NULL)
+        check(ccall((:cuCtxGetCurrent, libcuda), Cint, (Ptr{Ptr{Cvoid}},), cur), :cuCtxGetCurrent)
+        cur[] == C_NULL && check(ccall((:cuCtxSetCurrent, libcuda), Cint, (Ptr{Cvoid},), CONTEXT[]), :cuCtxSetCurrent)
+        return nothing
+    end
     check(ccall((:cuInit, libcuda), Cint, (Cuint,), 0), :cuInit)
     dev = Ref{Cint}(0)
     check(ccall((:cuDeviceGet, libcuda), Cint, (Ptr{Cint}, Cint), dev, 0), :cuDeviceGet)

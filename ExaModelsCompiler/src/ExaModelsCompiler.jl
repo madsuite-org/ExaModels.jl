@@ -1002,7 +1002,8 @@ function _generate_app(specs::Vector{ModelSpec}, libname::AbstractString; device
         srcs = s.field isa UserArgs ?
             (_core_packages(s.core)..., _core_packages_of(typeof(_argfun_of(s)))...) :
             _core_packages(s.core)
-        srcs = (srcs..., (p for w in s.writers for p in _core_packages_of(typeof(w.fun)))...)
+        srcs = (srcs..., (p for w in s.writers for p in _core_packages_of(typeof(w.fun)))...,
+                (p for r in s.readers for p in _core_packages_of(typeof(r.fun)))...)
         for p in srcs
             any(q -> q.uuid == p.uuid, pkgs) || push!(pkgs, p)
         end
@@ -1520,11 +1521,14 @@ function _module_source(modname::AbstractString, specs::Vector{ModelSpec}, pkgs 
     $imports
     # Start readers return x0, or (x0, y0, zl, zu); every entry of the
     # caller's arrays is written, 0 where the reader gives no value.
+    _fits(a, b) = length(a) == length(b) || throw(DimensionMismatch("start has \$(length(b)) entries, the model \$(length(a))"))
     function _fill_start(x0, y0, zl, zu, x::AbstractVector)
+        _fits(x0, x)
         copyto!(x0, x); fill!(y0, 0.0); fill!(zl, 0.0); fill!(zu, 0.0)
         return nothing
     end
     function _fill_start(x0, y0, zl, zu, t::Tuple)
+        _fits(x0, t[1]); _fits(y0, t[2]); _fits(zl, t[3]); _fits(zu, t[4])
         copyto!(x0, t[1]); copyto!(y0, t[2]); copyto!(zl, t[3]); copyto!(zu, t[4])
         return nothing
     end
@@ -1754,7 +1758,7 @@ function _readers_source(p::AbstractString, s::ModelSpec)
     names = join(("    const RNAME_$(p)_$(i) = Vector{UInt8}($(repr(r.name)))\n" for (i, r) in enumerate(rs)))
     name_arms = join(("        if k == Int64($(i - 1))\n$(copyout("RNAME_$(p)_$(i)"))        end\n" for (i, _) in enumerate(rs)))
     kind_arms = join(("        k == Int64($(i - 1)) && return Int64($(r.kind))\n" for (i, r) in enumerate(rs)))
-    default = isempty(s.default_reader) ? "" : """
+    default = """
     const DEFAULT_READER_$p = Vector{UInt8}($(repr(s.default_reader)))
     Base.@ccallable function $(p)_default_reader(buf::Ptr{UInt8}, cap::Int64)::Int64
 $(copyout("DEFAULT_READER_$p"))    end
@@ -1815,8 +1819,8 @@ $sets            return Int64(0)
                 end
             end
             return Int64(0)
-        catch
-            return Int64(2)
+        catch e
+            return e isa DimensionMismatch ? Int64(3) : Int64(2)
         end
     end
 """
@@ -1841,7 +1845,6 @@ $(join(entries))"""
 end
 
 function _default_writer_source(p::AbstractString, default::AbstractString)
-    isempty(default) && return ""
     return """
     const DEFAULT_WRITER_$p = Vector{UInt8}($(repr(default)))
     Base.@ccallable function $(p)_default_writer(id::Int64, buf::Ptr{UInt8}, cap::Int64)::Int64

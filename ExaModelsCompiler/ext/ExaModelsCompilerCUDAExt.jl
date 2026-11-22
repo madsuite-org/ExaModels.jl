@@ -151,6 +151,10 @@ function ExaModelsCompiler._device_source(::Val{:cuda}, p::AbstractString, probe
     (objs isa Tuple && cons isa Tuple) || error(
         "`$p`: device = :cuda needs the model's blocks stored as a Tuple; this model " *
         "has too many blocks for that ($(length(objs)) objective, $(length(cons)) constraint)")
+    # Buffered subexpressions are evaluated in stages on the host before the blocks; the
+    # device tier has no such pass, so it would evaluate the blocks on stale values.
+    probe.subexprs === () || error(
+        "`$p`: device = :cuda does not support buffered subexpressions (`add_expr(...; buffered = Val(true))`)")
     V = (LP{Float64}, Int)                          # a vector argument: pointer, length
     kernels = Tuple{String,Any,Tuple}[]
     for (k, b) in enumerate(objs)
@@ -255,7 +259,7 @@ function ExaModelsCompiler._device_source(::Val{:cuda}, p::AbstractString, probe
     b_obj = join(["            MiniAOT.launch(KERNELS_$p.obj_$k, $(L(:obj,k,b)), $(blk(:obj,k)).f, $(itarg(:obj,k,b)), $(L(:obj,k,b)), MiniAOT.devptr(g.out), $common)\n" for (k, b) in enumerate(objs)])
     callback("obj_d", "id::Int64, xh::Ptr{Cdouble}, out::Ptr{Cdouble}",
              "            MiniAOT.zero!(MiniAOT.devptr(g.out), 1)\n" * b_obj *
-             "            MiniAOT.synchronize(); unsafe_store!(out, MiniAOT.download(g.out)[1])\n")
+             "            unsafe_store!(out, MiniAOT.download(g.out)[1])\n")
     b_grad = join(["            MiniAOT.launch(KERNELS_$p.grad_$k, $(L(:obj,k,b)), $(blk(:obj,k)).f, $(itarg(:obj,k,b)), $(L(:obj,k,b)), MiniAOT.devptr(g.gbuf), length(g.gbuf), $common)\n" for (k, b) in enumerate(objs)])
     callback("grad_d", "id::Int64, xh::Ptr{Cdouble}, gh::Ptr{Cdouble}",
              "            gd = _dev_$p(gh); MiniAOT.zero!(gd, n); MiniAOT.zero!(MiniAOT.devptr(g.gbuf), length(g.gbuf))\n" * b_grad *
