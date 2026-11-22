@@ -212,7 +212,7 @@ The library exports, for `prefix` `P`, one of two **instantiation surfaces**,
 then the shared evaluators — id-first `P_nvar`, `P_ncon`, `P_nnzj`, `P_nnzh`,
 `P_meta`, `P_obj`, `P_grad`, `P_cons`, `P_jac_structure`, `P_jac`,
 `P_hess_structure`, `P_hess`.  Indices are 1-based; the Hessian is the lower
-triangle of `obj_weight * ∇²f + Σᵢ yᵢ ∇²cᵢ`; every function returns a `Cint`
+triangle of `obj_weight * ∇²f + Σᵢ yᵢ ∇²cᵢ`; every function returns a `Int64`
 status, `0` on success, and none of them throws across the boundary.
 
 **One integer** (`rosenbrock` at size `N` — a bare `Integer` example, or a
@@ -266,9 +266,11 @@ function a package owns, called as
 
 where `arg` is the value the instance's argument function was called with (a
 case-file path, say), `model` the instance, and `x`, `y`, `zl`, `zu` the primal solution,
-constraint multipliers and bound multipliers.  The library exports, per writer,
+constraint multipliers and bound multipliers, in the NLPModels sign convention
+(the library converts from the cnlp convention it receives).  The library exports,
+per writer,
 
-    int P_write_<name>(int id, const char *out, const double *x, const double *y,
+    int64_t P_write_<name>(int64_t id, const char *out, const double *x, const double *y,
                        const double *zl, const double *zu, double objective,
                        const char *status)
 
@@ -1199,18 +1201,18 @@ function _instantiation_source(p::AbstractString, field::Union{Nothing, Symbol, 
     # How many instantiation arguments `$(p)_new` consumes (0 = fixed model,
     # `n` is ignored). Lets a consumer decide whether `args` are required
     # before instantiating anything.
-    Base.@ccallable function $(p)_nargs()::Cint
-        return Cint($(_nargs_value(field)))
+    Base.@ccallable function $(p)_nargs()::Int64
+        return Int64($(_nargs_value(field)))
     end
 
 $(_argtype_source(p, field))
 
-    Base.@ccallable function $(p)_new(n::Cint)::Cint
+    Base.@ccallable function $(p)_new(n::Int64)::Int64
         try
             push!(MODELS_$p, ExaModels.ExaModel(CORE_$p, $argexpr; check = Val(false)))
-            return Cint(length(MODELS_$p))
+            return Int64(length(MODELS_$p))
         catch
-            return Cint(0)          # 0 is the failure value for _new
+            return Int64(0)          # 0 is the failure value for _new
         end
     end
 """
@@ -1242,13 +1244,13 @@ _argtype_source(p::AbstractString, field) = """
     # optionally `type|description`. Empty means it takes nothing.
     const ARGTYPE_$p = Vector{UInt8}($(repr(_argtype_value(field))))
 
-    Base.@ccallable function $(p)_argtype(buf::Ptr{UInt8}, cap::Cint)::Cint
+    Base.@ccallable function $(p)_argtype(buf::Ptr{UInt8}, cap::Int64)::Int64
         n = length(ARGTYPE_$p)
         k = min(Int(cap), n)
         if k > 0 && buf != Ptr{UInt8}(0)
             GC.@preserve ARGTYPE_$p unsafe_copyto!(buf, pointer(ARGTYPE_$p), k)
         end
-        return Cint(n)
+        return Int64(n)
     end
 """
 
@@ -1259,26 +1261,26 @@ function _instantiation_source(p::AbstractString, u::UserArgs{:str})
     # The argument each instance was built from, by id, for the writers.
     const ARGIN_$p = String[]
 
-    Base.@ccallable function $(p)_nargs()::Cint
-        return Cint(1)
+    Base.@ccallable function $(p)_nargs()::Int64
+        return Int64(1)
     end
 
 $(_argtype_source(p, u))
     # This model instantiates from a string; `$(p)_new(n)` is not its entry
     # point, so it returns the documented failure value rather than building
     # something.
-    Base.@ccallable function $(p)_new(n::Cint)::Cint
-        return Cint(0)
+    Base.@ccallable function $(p)_new(n::Int64)::Int64
+        return Int64(0)
     end
 
-    Base.@ccallable function $(p)_new_str(s_ptr::Ptr{Cchar})::Cint
+    Base.@ccallable function $(p)_new_str(s_ptr::Ptr{Cchar})::Int64
         try
             s = unsafe_string(s_ptr)
             push!(MODELS_$p, ExaModels.ExaModel(CORE_$p, $(u.call)(s)...; check = Val(false)))
             push!(ARGIN_$p, s)
-            return Cint(length(MODELS_$p))
+            return Int64(length(MODELS_$p))
         catch
-            return Cint(0)
+            return Int64(0)
         end
     end
 """
@@ -1288,18 +1290,18 @@ function _instantiation_source(p::AbstractString, u::UserArgs{:int})
     return """
     const ARGIN_$p = Int[]
 
-    Base.@ccallable function $(p)_nargs()::Cint
-        return Cint(1)
+    Base.@ccallable function $(p)_nargs()::Int64
+        return Int64(1)
     end
 
 $(_argtype_source(p, u))
-    Base.@ccallable function $(p)_new(n::Cint)::Cint
+    Base.@ccallable function $(p)_new(n::Int64)::Int64
         try
             push!(MODELS_$p, ExaModels.ExaModel(CORE_$p, $(u.call)(Int(n))...; check = Val(false)))
             push!(ARGIN_$p, Int(n))
-            return Cint(length(MODELS_$p))
+            return Int64(length(MODELS_$p))
         catch
-            return Cint(0)
+            return Int64(0)
         end
     end
 """
@@ -1319,21 +1321,21 @@ function _instantiation_source(p::AbstractString, bm::BuilderModel)
             if f == $(repr(f.name))
                 B.$(f.name) = v
                 B.$(f.name)_set = true
-                return Cint(0)
+                return Int64(0)
             end
     """
     array(f) = """
             if f == $(repr(f.name))
                 B.$(f.name) = copy(unsafe_wrap(Array, v, Int(len)))
                 B.$(f.name)_set = true
-                return Cint(0)
+                return Int64(0)
             end
     """
     col(f, c) = """
             if t == $(repr(f.name)) && c == $(repr(c.first))
                 B.$(f.name)_$(c.first) = copy(unsafe_wrap(Array, v, Int(len)))
                 B.$(f.name)_$(c.first)_set = true
-                return Cint(0)
+                return Int64(0)
             end
     """
     pick(kind, type) = [f for f in fields if f.kind == kind && f.type == type]
@@ -1350,7 +1352,7 @@ function _instantiation_source(p::AbstractString, bm::BuilderModel)
                  for c in f.columns[2:end]),
                 " && ",
             ) *
-            ") || return Cint(0)\n"
+            ") || return Int64(0)\n"
             for f in fields if f.kind == "table" && length(f.columns) > 1
         ),
     )
@@ -1371,13 +1373,13 @@ $(_argtype_source(p, bm))
     const SCHEMA_$p = Vector{UInt8}($(repr(json)))
 
     # Returns the schema's byte length; copies what fits in `cap`.
-    Base.@ccallable function $(p)_schema(buf::Ptr{UInt8}, cap::Cint)::Cint
+    Base.@ccallable function $(p)_schema(buf::Ptr{UInt8}, cap::Int64)::Int64
         n = length(SCHEMA_$p)
         k = min(Int(cap), n)
         if k > 0 && buf != Ptr{UInt8}(0)
             GC.@preserve SCHEMA_$p unsafe_copyto!(buf, pointer(SCHEMA_$p), k)
         end
-        return Cint(n)
+        return Int64(n)
     end
 
     # One concretely-typed slot per scalar/array field and per table column;
@@ -1387,103 +1389,103 @@ $decls    end
     Builder_$p() = Builder_$p($zeros)
     const BUILDERS_$p = Builder_$p[]
 
-    @inline _bvalid_$p(b::Cint) = 1 <= b <= length(BUILDERS_$p)
+    @inline _bvalid_$p(b::Int64) = 1 <= b <= length(BUILDERS_$p)
 
-    Base.@ccallable function $(p)_data_begin()::Cint
+    Base.@ccallable function $(p)_data_begin()::Int64
         try
             push!(BUILDERS_$p, Builder_$p())
-            return Cint(length(BUILDERS_$p))
+            return Int64(length(BUILDERS_$p))
         catch
-            return Cint(0)
+            return Int64(0)
         end
     end
 
-    Base.@ccallable function $(p)_set_scalar_i64(b::Cint, field::Ptr{UInt8}, v::Clonglong)::Cint
-        _bvalid_$p(b) || return Cint(1)
+    Base.@ccallable function $(p)_set_scalar_i64(b::Int64, field::Ptr{UInt8}, v::Clonglong)::Int64
+        _bvalid_$p(b) || return Int64(1)
         try
             f = unsafe_string(field)
             B = BUILDERS_$p[Int(b)]
-$(_setter_arms(pick("scalar", "i64"), scalar))            return Cint(1)
+$(_setter_arms(pick("scalar", "i64"), scalar))            return Int64(1)
         catch
-            return Cint(2)
+            return Int64(2)
         end
     end
 
-    Base.@ccallable function $(p)_set_scalar_f64(b::Cint, field::Ptr{UInt8}, v::Cdouble)::Cint
-        _bvalid_$p(b) || return Cint(1)
+    Base.@ccallable function $(p)_set_scalar_f64(b::Int64, field::Ptr{UInt8}, v::Cdouble)::Int64
+        _bvalid_$p(b) || return Int64(1)
         try
             f = unsafe_string(field)
             B = BUILDERS_$p[Int(b)]
-$(_setter_arms(pick("scalar", "f64"), scalar))            return Cint(1)
+$(_setter_arms(pick("scalar", "f64"), scalar))            return Int64(1)
         catch
-            return Cint(2)
+            return Int64(2)
         end
     end
 
     Base.@ccallable function $(p)_set_array_i64(
-        b::Cint, field::Ptr{UInt8}, v::Ptr{Clonglong}, len::Cint,
-    )::Cint
-        _bvalid_$p(b) || return Cint(1)
+        b::Int64, field::Ptr{UInt8}, v::Ptr{Clonglong}, len::Int64,
+    )::Int64
+        _bvalid_$p(b) || return Int64(1)
         try
             f = unsafe_string(field)
             B = BUILDERS_$p[Int(b)]
-$(_setter_arms(pick("array", "i64"), array))            return Cint(1)
+$(_setter_arms(pick("array", "i64"), array))            return Int64(1)
         catch
-            return Cint(2)
+            return Int64(2)
         end
     end
 
     Base.@ccallable function $(p)_set_array_f64(
-        b::Cint, field::Ptr{UInt8}, v::Ptr{Cdouble}, len::Cint,
-    )::Cint
-        _bvalid_$p(b) || return Cint(1)
+        b::Int64, field::Ptr{UInt8}, v::Ptr{Cdouble}, len::Int64,
+    )::Int64
+        _bvalid_$p(b) || return Int64(1)
         try
             f = unsafe_string(field)
             B = BUILDERS_$p[Int(b)]
-$(_setter_arms(pick("array", "f64"), array))            return Cint(1)
+$(_setter_arms(pick("array", "f64"), array))            return Int64(1)
         catch
-            return Cint(2)
+            return Int64(2)
         end
     end
 
     Base.@ccallable function $(p)_set_col_i64(
-        b::Cint, table::Ptr{UInt8}, column::Ptr{UInt8}, v::Ptr{Clonglong}, len::Cint,
-    )::Cint
-        _bvalid_$p(b) || return Cint(1)
+        b::Int64, table::Ptr{UInt8}, column::Ptr{UInt8}, v::Ptr{Clonglong}, len::Int64,
+    )::Int64
+        _bvalid_$p(b) || return Int64(1)
         try
             t = unsafe_string(table)
             c = unsafe_string(column)
             B = BUILDERS_$p[Int(b)]
-$(_setter_arms(cols("i64"), fc -> col(fc...)))            return Cint(1)
+$(_setter_arms(cols("i64"), fc -> col(fc...)))            return Int64(1)
         catch
-            return Cint(2)
+            return Int64(2)
         end
     end
 
     Base.@ccallable function $(p)_set_col_f64(
-        b::Cint, table::Ptr{UInt8}, column::Ptr{UInt8}, v::Ptr{Cdouble}, len::Cint,
-    )::Cint
-        _bvalid_$p(b) || return Cint(1)
+        b::Int64, table::Ptr{UInt8}, column::Ptr{UInt8}, v::Ptr{Cdouble}, len::Int64,
+    )::Int64
+        _bvalid_$p(b) || return Int64(1)
         try
             t = unsafe_string(table)
             c = unsafe_string(column)
             B = BUILDERS_$p[Int(b)]
-$(_setter_arms(cols("f64"), fc -> col(fc...)))            return Cint(1)
+$(_setter_arms(cols("f64"), fc -> col(fc...)))            return Int64(1)
         catch
-            return Cint(2)
+            return Int64(2)
         end
     end
 
     # 1 iff every field is set and every table's columns agree in length.
-    Base.@ccallable function $(p)_data_ready(b::Cint)::Cint
-        _bvalid_$p(b) || return Cint(0)
+    Base.@ccallable function $(p)_data_ready(b::Int64)::Int64
+        _bvalid_$p(b) || return Int64(0)
         B = BUILDERS_$p[Int(b)]
-        ($flags) || return Cint(0)
-$samelen        return Cint(1)
+        ($flags) || return Int64(0)
+$samelen        return Int64(1)
     end
 
-    Base.@ccallable function $(p)_new_from_data(b::Cint)::Cint
-        $(p)_data_ready(b) == Cint(1) || return Cint(0)
+    Base.@ccallable function $(p)_new_from_data(b::Int64)::Int64
+        $(p)_data_ready(b) == Int64(1) || return Int64(0)
         try
             B = BUILDERS_$p[Int(b)]
             push!(MODELS_$p, ExaModels.ExaModel(
@@ -1491,16 +1493,16 @@ $samelen        return Cint(1)
                 $asm;
                 check = Val(false),
             ))
-            return Cint(length(MODELS_$p))
+            return Int64(length(MODELS_$p))
         catch
-            return Cint(0)
+            return Int64(0)
         end
     end
 
     # Informative — there is no `$(p)_new` here; the consumers bind one value
     # per schema field, positionally, and instantiate through the builder.
-    Base.@ccallable function $(p)_nargs()::Cint
-        return Cint($(length(fields)))
+    Base.@ccallable function $(p)_nargs()::Int64
+        return Int64($(length(fields)))
     end
 """
 end
@@ -1544,14 +1546,14 @@ function _catalog_source(specs::Vector{ModelSpec})
     ))
     arms = join((
         """
-        if k == Cint($(i - 1))
+        if k == Int64($(i - 1))
             b = MODELNAME_$(i)
             n = length(b)
             m = min(Int(cap), n)
             if m > 0 && buf != Ptr{UInt8}(0)
                 GC.@preserve b unsafe_copyto!(buf, pointer(b), m)
             end
-            return Cint(n)
+            return Int64(n)
         end
 """
         for (i, _) in enumerate(specs)
@@ -1561,14 +1563,19 @@ function _catalog_source(specs::Vector{ModelSpec})
 $names
     # How many models are in this library. Fixed name: a consumer asks this
     # before it knows any prefix.
-    Base.@ccallable function cnlp_nmodels()::Cint
-        return Cint($(length(specs)))
+    # cnlp ABI version this library implements: major*1000 + minor.
+    Base.@ccallable function cnlp_abi_version()::Int64
+        return Int64(2)
+    end
+
+    Base.@ccallable function cnlp_nmodels()::Int64
+        return Int64($(length(specs)))
     end
 
     # The k-th model's symbol prefix, by the copy-out convention the other
     # name accessors use: returns the needed byte length, copies what fits.
-    Base.@ccallable function cnlp_model_name(k::Cint, buf::Ptr{UInt8}, cap::Cint)::Cint
-$arms        return Cint(-1)
+    Base.@ccallable function cnlp_model_name(k::Int64, buf::Ptr{UInt8}, cap::Int64)::Int64
+$arms        return Int64(-1)
     end
 """
 end
@@ -1613,14 +1620,14 @@ function _layout_source(p::AbstractString, core)
 
     name_arms = join((
         """
-        if k == Cint($(i - 1))
+        if k == Int64($(i - 1))
             b = BNAME_$(p)_$(i)
             n = length(b)
             m = min(Int(cap), n)
             if m > 0 && buf != Ptr{UInt8}(0)
                 GC.@preserve b unsafe_copyto!(buf, pointer(b), m)
             end
-            return Cint(n)
+            return Int64(n)
         end
 """
         for (i, (k, _)) in enumerate(blocks)
@@ -1628,17 +1635,17 @@ function _layout_source(p::AbstractString, core)
 
     block_arms = join((
         """
-        if k == Cint($(i - 1))
+        if k == Int64($(i - 1))
             b = m.refs.$(k)
             dims = ExaModels.size(getfield(b, :size))
-            unsafe_store!(out, Cint($(kind)), 1)
-            unsafe_store!(out, Cint(getfield(b, :offset)), 2)
-            unsafe_store!(out, Cint(ExaModels.total(getfield(b, :size))), 3)
-            unsafe_store!(out, Cint(length(dims)), 4)
+            unsafe_store!(out, Int64($(kind)), 1)
+            unsafe_store!(out, Int64(getfield(b, :offset)), 2)
+            unsafe_store!(out, Int64(ExaModels.total(getfield(b, :size))), 3)
+            unsafe_store!(out, Int64(length(dims)), 4)
             for j in 1:length(dims)
-                unsafe_store!(out, Cint(dims[j]), 4 + j)
+                unsafe_store!(out, Int64(dims[j]), 4 + j)
             end
-            return Cint(0)
+            return Int64(0)
         end
 """
         for (i, (k, kind)) in enumerate(blocks)
@@ -1646,11 +1653,11 @@ function _layout_source(p::AbstractString, core)
 
     par_arms = join((
         """
-        if k == Cint($(i - 1))
+        if k == Int64($(i - 1))
             b = m.refs.$(k)
             o = getfield(b, :offset)
             n = ExaModels.total(getfield(b, :size))
-            Int(len) == n || return Cint(3)
+            Int(len) == n || return Int64(3)
             return _value_$(p)_rw(m, o, n, vals, get)
         end
 """
@@ -1661,29 +1668,29 @@ function _layout_source(p::AbstractString, core)
     # ── named blocks of `$p` ─────────────────────────────────────────────────
 $names
     # How many named blocks this model publishes.
-    Base.@ccallable function $(p)_nblocks(id::Cint)::Cint
-        _valid_$p(id) || return Cint(-1)
-        return Cint($n)
+    Base.@ccallable function $(p)_nblocks(id::Int64)::Int64
+        _valid_$p(id) || return Int64(-1)
+        return Int64($n)
     end
 
     # The block's name, by the copy-out convention `$(p)_schema` uses:
     # returns the needed byte length, copies what fits in `cap`.
-    Base.@ccallable function $(p)_block_name(id::Cint, k::Cint, buf::Ptr{UInt8}, cap::Cint)::Cint
-        _valid_$p(id) || return Cint(-1)
-$name_arms        return Cint(-1)
+    Base.@ccallable function $(p)_block_name(id::Int64, k::Int64, buf::Ptr{UInt8}, cap::Int64)::Int64
+        _valid_$p(id) || return Int64(-1)
+$name_arms        return Int64(-1)
     end
 
     # `out` receives [kind, offset, length, ndims, dims...] — kind 0 = variable,
     # 1 = constraint, 2 = parameter; offset is 0-based, as `solution` expects.
     # A caller sizes `out` from `ndims` after a first call, or allocates
     # generously: no model has more dimensions than it has blocks.
-    Base.@ccallable function $(p)_block(id::Cint, k::Cint, out::Ptr{Cint})::Cint
-        _valid_$p(id) || return Cint(1)
+    Base.@ccallable function $(p)_block(id::Int64, k::Int64, out::Ptr{Int64})::Int64
+        _valid_$p(id) || return Int64(1)
         try
             m = MODELS_$p[Int(id)]
-$block_arms            return Cint(1)
+$block_arms            return Int64(1)
         catch
-            return Cint(2)
+            return Int64(2)
         end
     end
 
@@ -1696,16 +1703,16 @@ $block_arms            return Cint(1)
         else
             copyto!(view(m.θ, (o + 1):(o + n)), w)
         end
-        return Cint(0)
+        return Int64(0)
     end
 
-    @inline function _value_$(p)_at(id::Cint, k::Cint, vals::Ptr{Cdouble}, len::Cint, get::Bool)
-        _valid_$p(id) || return Cint(1)
+    @inline function _value_$(p)_at(id::Int64, k::Int64, vals::Ptr{Cdouble}, len::Int64, get::Bool)
+        _valid_$p(id) || return Int64(1)
         try
             m = MODELS_$p[Int(id)]
-$par_arms            return Cint(1)
+$par_arms            return Int64(1)
         catch
-            return Cint(2)
+            return Int64(2)
         end
     end
 
@@ -1714,11 +1721,11 @@ $par_arms            return Cint(1)
     # a parameter, 3 for a length that disagrees with the block. Unlike
     # ExaModels' `get_value`, this copies out rather than returning a view:
     # the storage lives in the library's address space, not the caller's.
-    Base.@ccallable function $(p)_get_value(id::Cint, k::Cint, vals::Ptr{Cdouble}, len::Cint)::Cint
+    Base.@ccallable function $(p)_get_value(id::Int64, k::Int64, vals::Ptr{Cdouble}, len::Int64)::Int64
         return _value_$(p)_at(id, k, vals, len, true)
     end
 
-    Base.@ccallable function $(p)_set_value(id::Cint, k::Cint, vals::Ptr{Cdouble}, len::Cint)::Cint
+    Base.@ccallable function $(p)_set_value(id::Int64, k::Int64, vals::Ptr{Cdouble}, len::Int64)::Int64
         return _value_$(p)_at(id, k, vals, len, false)
     end
 """
@@ -1742,28 +1749,28 @@ function _readers_source(p::AbstractString, s::ModelSpec)
             if m > 0 && buf != Ptr{UInt8}(0)
                 GC.@preserve $b unsafe_copyto!(buf, pointer($b), m)
             end
-            return Cint(n)
+            return Int64(n)
 """
     names = join(("    const RNAME_$(p)_$(i) = Vector{UInt8}($(repr(r.name)))\n" for (i, r) in enumerate(rs)))
-    name_arms = join(("        if k == Cint($(i - 1))\n$(copyout("RNAME_$(p)_$(i)"))        end\n" for (i, _) in enumerate(rs)))
-    kind_arms = join(("        k == Cint($(i - 1)) && return Cint($(r.kind))\n" for (i, r) in enumerate(rs)))
+    name_arms = join(("        if k == Int64($(i - 1))\n$(copyout("RNAME_$(p)_$(i)"))        end\n" for (i, _) in enumerate(rs)))
+    kind_arms = join(("        k == Int64($(i - 1)) && return Int64($(r.kind))\n" for (i, r) in enumerate(rs)))
     default = isempty(s.default_reader) ? "" : """
     const DEFAULT_READER_$p = Vector{UInt8}($(repr(s.default_reader)))
-    Base.@ccallable function $(p)_default_reader(buf::Ptr{UInt8}, cap::Cint)::Cint
+    Base.@ccallable function $(p)_default_reader(buf::Ptr{UInt8}, cap::Int64)::Int64
 $(copyout("DEFAULT_READER_$p"))    end
 """
     pars = [k for (k, kind) in _layout_blocks(s.core) if kind == 2]
     entries = map(rs) do r
         if r.kind == 0
             """
-    Base.@ccallable function $(p)_new_from_$(r.name)(s_ptr::Ptr{Cchar})::Cint
+    Base.@ccallable function $(p)_new_from_$(r.name)(s_ptr::Ptr{Cchar})::Int64
         try
             s = unsafe_string(s_ptr)
             push!(MODELS_$p, ExaModels.ExaModel(CORE_$p, $(r.call)(s)...; check = Val(false)))
             push!(ARGIN_$p, s)
-            return Cint(length(MODELS_$p))
+            return Int64(length(MODELS_$p))
         catch
-            return Cint(0)
+            return Int64(0)
         end
     end
 """
@@ -1774,37 +1781,42 @@ $(copyout("DEFAULT_READER_$p"))    end
                 o = getfield(b, :offset)
                 n = ExaModels.total(getfield(b, :size))
                 v = getproperty(r, :$(k))
-                length(v) == n || return Cint(3)
+                length(v) == n || return Int64(3)
                 copyto!(view(m.θ, (o + 1):(o + n)), v)
             end
 """ for k in pars))
             """
-    Base.@ccallable function $(p)_set_from_$(r.name)(id::Cint, s_ptr::Ptr{Cchar})::Cint
-        _valid_$p(id) || return Cint(1)
+    Base.@ccallable function $(p)_set_from_$(r.name)(id::Int64, s_ptr::Ptr{Cchar})::Int64
+        _valid_$p(id) || return Int64(1)
         try
             m = MODELS_$p[Int(id)]
             r = $(r.call)(unsafe_string(s_ptr), m)
-$sets            return Cint(0)
+$sets            return Int64(0)
         catch
-            return Cint(2)
+            return Int64(2)
         end
     end
 """
         else
             """
     Base.@ccallable function $(p)_start_from_$(r.name)(
-        id::Cint, s_ptr::Ptr{Cchar}, x0::Ptr{Cdouble}, y0::Ptr{Cdouble}, zl::Ptr{Cdouble}, zu::Ptr{Cdouble},
-    )::Cint
-        _valid_$p(id) || return Cint(1)
+        id::Int64, s_ptr::Ptr{Cchar}, x0::Ptr{Cdouble}, y0::Ptr{Cdouble}, zl::Ptr{Cdouble}, zu::Ptr{Cdouble},
+    )::Int64
+        _valid_$p(id) || return Int64(1)
         try
             m = MODELS_$p[Int(id)]
             nv = Int(m.meta.nvar); nc = Int(m.meta.ncon)
             _fill_start(unsafe_wrap(Array, x0, nv), unsafe_wrap(Array, y0, nc),
                         unsafe_wrap(Array, zl, nv), unsafe_wrap(Array, zu, nv),
                         $(r.call)(unsafe_string(s_ptr), m))
-            return Cint(0)
+            if !m.meta.minimize   # NLPModels convention -> cnlp: negate multipliers
+                for (q, k) in ((y0, nc), (zl, nv), (zu, nv))
+                    v = unsafe_wrap(Array, q, k); v .= .-v
+                end
+            end
+            return Int64(0)
         catch
-            return Cint(2)
+            return Int64(2)
         end
     end
 """
@@ -1813,16 +1825,16 @@ $sets            return Cint(0)
     return """
     # ── readers of `$p` ──────────────────────────────────────────────────────
 $names
-    Base.@ccallable function $(p)_nreaders()::Cint
-        return Cint($(length(rs)))
+    Base.@ccallable function $(p)_nreaders()::Int64
+        return Int64($(length(rs)))
     end
 
-    Base.@ccallable function $(p)_reader_name(k::Cint, buf::Ptr{UInt8}, cap::Cint)::Cint
-$name_arms        return Cint(-1)
+    Base.@ccallable function $(p)_reader_name(k::Int64, buf::Ptr{UInt8}, cap::Int64)::Int64
+$name_arms        return Int64(-1)
     end
 
-    Base.@ccallable function $(p)_reader_kind(k::Cint)::Cint
-$kind_arms        return Cint(-1)
+    Base.@ccallable function $(p)_reader_kind(k::Int64)::Int64
+$kind_arms        return Int64(-1)
     end
 $default
 $(join(entries))"""
@@ -1832,15 +1844,15 @@ function _default_writer_source(p::AbstractString, default::AbstractString)
     isempty(default) && return ""
     return """
     const DEFAULT_WRITER_$p = Vector{UInt8}($(repr(default)))
-    Base.@ccallable function $(p)_default_writer(id::Cint, buf::Ptr{UInt8}, cap::Cint)::Cint
-        _valid_$p(id) || return Cint(-1)
+    Base.@ccallable function $(p)_default_writer(id::Int64, buf::Ptr{UInt8}, cap::Int64)::Int64
+        _valid_$p(id) || return Int64(-1)
         b = DEFAULT_WRITER_$p
         n = length(b)
         m = min(Int(cap), n)
         if m > 0 && buf != Ptr{UInt8}(0)
             GC.@preserve b unsafe_copyto!(buf, pointer(b), m)
         end
-        return Cint(n)
+        return Int64(n)
     end
 """
 end
@@ -1852,14 +1864,14 @@ function _writers_source(p::AbstractString, writers::Vector{Writer})
     ))
     name_arms = join((
         """
-        if k == Cint($(i - 1))
+        if k == Int64($(i - 1))
             b = WNAME_$(p)_$(i)
             n = length(b)
             m = min(Int(cap), n)
             if m > 0 && buf != Ptr{UInt8}(0)
                 GC.@preserve b unsafe_copyto!(buf, pointer(b), m)
             end
-            return Cint(n)
+            return Int64(n)
         end
 """
         for (i, _) in enumerate(writers)
@@ -1867,24 +1879,26 @@ function _writers_source(p::AbstractString, writers::Vector{Writer})
     entries = join((
         """
     Base.@ccallable function $(p)_write_$(w.name)(
-        id::Cint, out::Ptr{Cchar}, x::Ptr{Cdouble}, y::Ptr{Cdouble},
+        id::Int64, out::Ptr{Cchar}, x::Ptr{Cdouble}, y::Ptr{Cdouble},
         zl::Ptr{Cdouble}, zu::Ptr{Cdouble}, objective::Cdouble, status::Ptr{Cchar},
-    )::Cint
-        _valid_$p(id) || return Cint(1)
+    )::Int64
+        _valid_$p(id) || return Int64(1)
         try
             m = MODELS_$p[Int(id)]
             nv = Int(m.meta.nvar)
             nc = Int(m.meta.ncon)
             st = status == Ptr{Cchar}(0) ? "" : unsafe_string(status)
+            # cnlp multipliers -> NLPModels convention (negated for maximization)
+            sg = m.meta.minimize ? 1.0 : -1.0
             $(w.call)(
                 unsafe_string(out), ARGIN_$p[Int(id)], m,
-                copy(unsafe_wrap(Array, x, nv)), copy(unsafe_wrap(Array, y, nc)),
-                copy(unsafe_wrap(Array, zl, nv)), copy(unsafe_wrap(Array, zu, nv));
+                copy(unsafe_wrap(Array, x, nv)), sg .* unsafe_wrap(Array, y, nc),
+                sg .* unsafe_wrap(Array, zl, nv), sg .* unsafe_wrap(Array, zu, nv);
                 objective = Float64(objective), status = st,
             )
-            return Cint(0)
+            return Int64(0)
         catch
-            return Cint(2)
+            return Int64(2)
         end
     end
 """
@@ -1893,13 +1907,13 @@ function _writers_source(p::AbstractString, writers::Vector{Writer})
     return """
     # ── solution writers of `$p` ─────────────────────────────────────────────
 $names
-    Base.@ccallable function $(p)_nwriters()::Cint
-        return Cint($(length(writers)))
+    Base.@ccallable function $(p)_nwriters()::Int64
+        return Int64($(length(writers)))
     end
 
     # The k-th writer's name (0-based), by the copy-out convention.
-    Base.@ccallable function $(p)_writer_name(k::Cint, buf::Ptr{UInt8}, cap::Cint)::Cint
-$name_arms        return Cint(-1)
+    Base.@ccallable function $(p)_writer_name(k::Int64, buf::Ptr{UInt8}, cap::Int64)::Int64
+$name_arms        return Int64(-1)
     end
 $entries"""
 end
@@ -1925,50 +1939,50 @@ function _model_source(s::ModelSpec)
     # that called `compile_library`.
     const MODELS_$p = typeof(ExaModels.ExaModel(CORE_$p, $example; check = Val(false)))[]
 
-    @inline _valid_$p(id::Cint) = 1 <= id <= length(MODELS_$p)
+    @inline _valid_$p(id::Int64) = 1 <= id <= length(MODELS_$p)
 
 $(_instantiation_source(p, s.field))
 $(_layout_source(p, s.core))
 $(_writers_source(p, s.writers))
 $(_default_writer_source(p, s.default_writer))
 $(_readers_source(p, s))
-    Base.@ccallable function $(p)_nvar(id::Cint)::Cint
-        _valid_$p(id) || return Cint(-1)
-        return Cint(MODELS_$p[Int(id)].meta.nvar)
+    Base.@ccallable function $(p)_nvar(id::Int64)::Int64
+        _valid_$p(id) || return Int64(-1)
+        return Int64(MODELS_$p[Int(id)].meta.nvar)
     end
 
-    Base.@ccallable function $(p)_ncon(id::Cint)::Cint
-        _valid_$p(id) || return Cint(-1)
-        return Cint(MODELS_$p[Int(id)].meta.ncon)
+    Base.@ccallable function $(p)_ncon(id::Int64)::Int64
+        _valid_$p(id) || return Int64(-1)
+        return Int64(MODELS_$p[Int(id)].meta.ncon)
     end
 
-    Base.@ccallable function $(p)_nnzj(id::Cint)::Cint
-        _valid_$p(id) || return Cint(-1)
-        return Cint(MODELS_$p[Int(id)].meta.nnzj)
+    Base.@ccallable function $(p)_nnzj(id::Int64)::Int64
+        _valid_$p(id) || return Int64(-1)
+        return Int64(MODELS_$p[Int(id)].meta.nnzj)
     end
 
-    Base.@ccallable function $(p)_nnzh(id::Cint)::Cint
-        _valid_$p(id) || return Cint(-1)
-        return Cint(MODELS_$p[Int(id)].meta.nnzh)
+    Base.@ccallable function $(p)_nnzh(id::Int64)::Int64
+        _valid_$p(id) || return Int64(-1)
+        return Int64(MODELS_$p[Int(id)].meta.nnzh)
     end
 
     # Objective sense: 1 = minimize, 0 = maximize, -1 = invalid id. Optional in the ABI
     # (a consumer that does not find it assumes minimize), so it must be exported for
     # every model whose objective is maximized, or the consumer solves the wrong problem.
-    Base.@ccallable function $(p)_minimize(id::Cint)::Cint
-        _valid_$p(id) || return Cint(-1)
-        return MODELS_$p[Int(id)].meta.minimize ? Cint(1) : Cint(0)
+    Base.@ccallable function $(p)_minimize(id::Int64)::Int64
+        _valid_$p(id) || return Int64(-1)
+        return MODELS_$p[Int(id)].meta.minimize ? Int64(1) : Int64(0)
     end
 
     Base.@ccallable function $(p)_meta(
-        id::Cint,
+        id::Int64,
         x0::Ptr{Cdouble},
         lvar::Ptr{Cdouble},
         uvar::Ptr{Cdouble},
         lcon::Ptr{Cdouble},
         ucon::Ptr{Cdouble},
-    )::Cint
-        _valid_$p(id) || return Cint(1)
+    )::Int64
+        _valid_$p(id) || return Int64(1)
         try
             m = MODELS_$p[Int(id)]
             n = m.meta.nvar
@@ -1980,123 +1994,123 @@ $(_readers_source(p, s))
                 copyto!(unsafe_wrap(Array, lcon, k), m.meta.lcon)
                 copyto!(unsafe_wrap(Array, ucon, k), m.meta.ucon)
             end
-            return Cint(0)
+            return Int64(0)
         catch
-            return Cint(2)
+            return Int64(2)
         end
     end
 
-    Base.@ccallable function $(p)_obj(id::Cint, x::Ptr{Cdouble}, out::Ptr{Cdouble})::Cint
-        _valid_$p(id) || return Cint(1)
+    Base.@ccallable function $(p)_obj(id::Int64, x::Ptr{Cdouble}, out::Ptr{Cdouble})::Int64
+        _valid_$p(id) || return Int64(1)
         try
             m = MODELS_$p[Int(id)]
             unsafe_store!(out, ExaModels.obj(m, unsafe_wrap(Array, x, m.meta.nvar)))
-            return Cint(0)
+            return Int64(0)
         catch
-            return Cint(2)
+            return Int64(2)
         end
     end
 
-    Base.@ccallable function $(p)_grad(id::Cint, x::Ptr{Cdouble}, g::Ptr{Cdouble})::Cint
-        _valid_$p(id) || return Cint(1)
+    Base.@ccallable function $(p)_grad(id::Int64, x::Ptr{Cdouble}, g::Ptr{Cdouble})::Int64
+        _valid_$p(id) || return Int64(1)
         try
             m = MODELS_$p[Int(id)]
             n = m.meta.nvar
             ExaModels.grad!(m, unsafe_wrap(Array, x, n), unsafe_wrap(Array, g, n))
-            return Cint(0)
+            return Int64(0)
         catch
-            return Cint(2)
+            return Int64(2)
         end
     end
 
-    Base.@ccallable function $(p)_cons(id::Cint, x::Ptr{Cdouble}, c::Ptr{Cdouble})::Cint
-        _valid_$p(id) || return Cint(1)
+    Base.@ccallable function $(p)_cons(id::Int64, x::Ptr{Cdouble}, c::Ptr{Cdouble})::Int64
+        _valid_$p(id) || return Int64(1)
         try
             m = MODELS_$p[Int(id)]
             k = m.meta.ncon
-            k == 0 && return Cint(0)
+            k == 0 && return Int64(0)
             ExaModels.cons_nln!(
                 m,
                 unsafe_wrap(Array, x, m.meta.nvar),
                 unsafe_wrap(Array, c, k),
             )
-            return Cint(0)
+            return Int64(0)
         catch
-            return Cint(2)
+            return Int64(2)
         end
     end
 
     Base.@ccallable function $(p)_jac_structure(
-        id::Cint,
-        rows::Ptr{Cint},
-        cols::Ptr{Cint},
-    )::Cint
-        _valid_$p(id) || return Cint(1)
+        id::Int64,
+        rows::Ptr{Int64},
+        cols::Ptr{Int64},
+    )::Int64
+        _valid_$p(id) || return Int64(1)
         try
             m = MODELS_$p[Int(id)]
             nz = m.meta.nnzj
-            nz == 0 && return Cint(0)
+            nz == 0 && return Int64(0)
             ExaModels.jac_structure!(
                 m,
                 unsafe_wrap(Array, rows, nz),
                 unsafe_wrap(Array, cols, nz),
             )
-            return Cint(0)
+            return Int64(0)
         catch
-            return Cint(2)
+            return Int64(2)
         end
     end
 
-    Base.@ccallable function $(p)_jac(id::Cint, x::Ptr{Cdouble}, vals::Ptr{Cdouble})::Cint
-        _valid_$p(id) || return Cint(1)
+    Base.@ccallable function $(p)_jac(id::Int64, x::Ptr{Cdouble}, vals::Ptr{Cdouble})::Int64
+        _valid_$p(id) || return Int64(1)
         try
             m = MODELS_$p[Int(id)]
             nz = m.meta.nnzj
-            nz == 0 && return Cint(0)
+            nz == 0 && return Int64(0)
             ExaModels.jac_coord!(
                 m,
                 unsafe_wrap(Array, x, m.meta.nvar),
                 unsafe_wrap(Array, vals, nz),
             )
-            return Cint(0)
+            return Int64(0)
         catch
-            return Cint(2)
+            return Int64(2)
         end
     end
 
     Base.@ccallable function $(p)_hess_structure(
-        id::Cint,
-        rows::Ptr{Cint},
-        cols::Ptr{Cint},
-    )::Cint
-        _valid_$p(id) || return Cint(1)
+        id::Int64,
+        rows::Ptr{Int64},
+        cols::Ptr{Int64},
+    )::Int64
+        _valid_$p(id) || return Int64(1)
         try
             m = MODELS_$p[Int(id)]
             nz = m.meta.nnzh
-            nz == 0 && return Cint(0)
+            nz == 0 && return Int64(0)
             ExaModels.hess_structure!(
                 m,
                 unsafe_wrap(Array, rows, nz),
                 unsafe_wrap(Array, cols, nz),
             )
-            return Cint(0)
+            return Int64(0)
         catch
-            return Cint(2)
+            return Int64(2)
         end
     end
 
     Base.@ccallable function $(p)_hess(
-        id::Cint,
+        id::Int64,
         x::Ptr{Cdouble},
         y::Ptr{Cdouble},
         obj_weight::Cdouble,
         vals::Ptr{Cdouble},
-    )::Cint
-        _valid_$p(id) || return Cint(1)
+    )::Int64
+        _valid_$p(id) || return Int64(1)
         try
             m = MODELS_$p[Int(id)]
             nz = m.meta.nnzh
-            nz == 0 && return Cint(0)
+            nz == 0 && return Int64(0)
             ExaModels.hess_coord!(
                 m,
                 unsafe_wrap(Array, x, m.meta.nvar),
@@ -2104,9 +2118,9 @@ $(_readers_source(p, s))
                 unsafe_wrap(Array, vals, nz);
                 obj_weight = obj_weight,
             )
-            return Cint(0)
+            return Int64(0)
         catch
-            return Cint(2)
+            return Int64(2)
         end
     end
 

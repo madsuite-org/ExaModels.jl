@@ -310,7 +310,7 @@ function runtests()
         @testset "the recipe library declares its arity" begin
             @test ccall(
                 CNLPModels.Libdl.dlsym(lib.handle, Symbol(r.prefix, "_nargs")),
-                Cint, ()) == 1
+                Int64, ()) == 1
         end
 
         @testset "a fixed core — no placeholders — compiles with no args" begin
@@ -344,7 +344,7 @@ function runtests()
             # The library says it consumes no instantiation arguments.
             @test ccall(
                 CNLPModels.Libdl.dlsym(flib.handle, Symbol(f.prefix, "_nargs")),
-                Cint, ()) == 0
+                Int64, ()) == 0
 
             # The whole chain with no instance data anywhere: CNLPModels
             # consults `_nargs` and instantiates from nothing but the handle.
@@ -438,11 +438,11 @@ function runtests()
 
             # Each model declares its own arity, out of the one library.
             @test ccall(
-                CNLPModels.Libdl.dlsym(glib.handle, :sized_nargs), Cint, ()) == 1
+                CNLPModels.Libdl.dlsym(glib.handle, :sized_nargs), Int64, ()) == 1
             @test ccall(
-                CNLPModels.Libdl.dlsym(glib.handle, :other_nargs), Cint, ()) == 1
+                CNLPModels.Libdl.dlsym(glib.handle, :other_nargs), Int64, ()) == 1
             @test ccall(
-                CNLPModels.Libdl.dlsym(glib.handle, :flat_nargs), Cint, ()) == 0
+                CNLPModels.Libdl.dlsym(glib.handle, :flat_nargs), Int64, ()) == 0
 
             # Instances of three different models, from one library, at once —
             # and at sizes neither compile saw (the examples were 4 and 6).
@@ -598,8 +598,8 @@ function runtests()
             @test occursin("function m_write_summary(", src)
             @test occursin("RecipeKernels.summary_writer(", src)
             @test occursin("push!(ARGIN_m, s)", src)
-            @test occursin("Cint(1)", ExaModelsCompiler._writers_source("m", s.writers))
-            @test occursin("Cint(0)", ExaModelsCompiler._writers_source("m", ExaModelsCompiler.Writer[]))
+            @test occursin("Int64(1)", ExaModelsCompiler._writers_source("m", s.writers))
+            @test occursin("Int64(0)", ExaModelsCompiler._writers_source("m", ExaModelsCompiler.Writer[]))
         end
 
         @testset "a structured model instantiates through the builder" begin
@@ -630,7 +630,7 @@ function runtests()
             @test dl(:structm_data_begin) !== nothing
             @test dl(:knob_new) !== nothing
             @test dl(:knob_data_begin) === nothing
-            @test ccall(dl(:structm_nargs), Cint, ()) == 4
+            @test ccall(dl(:structm_nargs), Int64, ()) == 4
 
             # The published schema is the flattened example: bare values by
             # position, NamedTuple entries by key, the table with its columns.
@@ -677,9 +677,9 @@ function runtests()
             # never seen, instead of probing for symbols and guessing.
             function ak(s)
                 fp = dl(Symbol(s, :_argtype))
-                n = ccall(fp, Cint, (Ptr{UInt8}, Cint), C_NULL, Cint(0))
+                n = ccall(fp, Int64, (Ptr{UInt8}, Int64), C_NULL, Int64(0))
                 b = Vector{UInt8}(undef, Int(n))
-                ccall(fp, Cint, (Ptr{UInt8}, Cint), b, n)
+                ccall(fp, Int64, (Ptr{UInt8}, Int64), b, n)
                 String(b)
             end
             @test ak("knob") == "int|size"
@@ -699,32 +699,32 @@ function runtests()
             @test dm.meta.nvar == 10
             # :str kind — `P_new_str` instantiates; `P_new` is not its entry
             # point and returns the documented failure value.
-            sid = ccall(dl(:strd_new_str), Cint, (Cstring,), "6")
+            sid = ccall(dl(:strd_new_str), Int64, (Cstring,), "6")
             @test sid > 0
-            @test ccall(dl(:strd_nvar), Cint, (Cint,), sid) == 6
-            @test ccall(dl(:strd_new), Cint, (Cint,), 4) == 0
+            @test ccall(dl(:strd_nvar), Int64, (Int64,), sid) == 6
+            @test ccall(dl(:strd_new), Int64, (Int64,), 4) == 0
 
             # The solution writer: discoverable by name, and handed this
             # instance's own argument and the caller's solution.
-            @test ccall(dl(:strd_nwriters), Cint, ()) == 1
-            @test ccall(dl(:knob_nwriters), Cint, ()) == 0
+            @test ccall(dl(:strd_nwriters), Int64, ()) == 1
+            @test ccall(dl(:knob_nwriters), Int64, ()) == 0
             wbuf = zeros(UInt8, 16)
-            wn = ccall(dl(:strd_writer_name), Cint, (Cint, Ptr{UInt8}, Cint), 0, wbuf, 16)
+            wn = ccall(dl(:strd_writer_name), Int64, (Int64, Ptr{UInt8}, Int64), 0, wbuf, 16)
             @test String(wbuf[1:wn]) == "summary"
-            @test ccall(dl(:strd_writer_name), Cint, (Cint, Ptr{UInt8}, Cint), 1, wbuf, 16) == -1
+            @test ccall(dl(:strd_writer_name), Int64, (Int64, Ptr{UInt8}, Int64), 1, wbuf, 16) == -1
             wx, wy = collect(1.0:6.0), fill(0.5, 5)
             wzl, wzu = fill(0.25, 6), fill(2.0, 6)
             wout = tempname()
-            @test ccall(dl(:strd_write_summary), Cint,
-                        (Cint, Cstring, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Cdouble, Cstring),
+            @test ccall(dl(:strd_write_summary), Int64,
+                        (Int64, Cstring, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Cdouble, Cstring),
                         sid, wout, wx, wy, wzl, wzu, 1.5, "done") == 0
             @test readline(wout) == "6 6 6 21.0 5 2.5 1.5 12.0 1.5 done"
-            @test ccall(dl(:strd_write_summary), Cint,
-                        (Cint, Cstring, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Cdouble, Cstring),
+            @test ccall(dl(:strd_write_summary), Int64,
+                        (Int64, Cstring, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Cdouble, Cstring),
                         99, wout, wx, wy, wzl, wzu, 1.5, "done") == 1
             # A writer that throws (an unwritable path) reports 2, not a crash.
-            @test ccall(dl(:strd_write_summary), Cint,
-                        (Cint, Cstring, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Cdouble, Cstring),
+            @test ccall(dl(:strd_write_summary), Int64,
+                        (Int64, Cstring, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Cdouble, Cstring),
                         sid, joinpath(wout, "no", "such"), wx, wy, wzl, wzu, 1.5, "done") == 2
 
             # ── the layout surface: named blocks, addressable from a
@@ -732,16 +732,16 @@ function runtests()
             # `pbuild` names a variable, a parameter and a constraint; the
             # library publishes each one's kind, offset, length and dims, at
             # the size THIS instance was built at (3 here, not the example's).
-            lid = ccall(dl(:lay_new), Cint, (Cint,), 3)
+            lid = ccall(dl(:lay_new), Int64, (Int64,), 3)
             @test lid > 0
-            @test ccall(dl(:lay_nblocks), Cint, (Cint,), lid) == 4
+            @test ccall(dl(:lay_nblocks), Int64, (Int64,), lid) == 4
 
             function block(k)
-                out = zeros(Cint, 8)
-                @test ccall(dl(:lay_block), Cint, (Cint, Cint, Ptr{Cint}), lid, Cint(k), out) == 0
+                out = zeros(Int64, 8)
+                @test ccall(dl(:lay_block), Int64, (Int64, Int64, Ptr{Int64}), lid, Int64(k), out) == 0
                 nb = zeros(UInt8, 64)
-                n = ccall(dl(:lay_block_name), Cint,
-                          (Cint, Cint, Ptr{UInt8}, Cint), lid, Cint(k), nb, Cint(64))
+                n = ccall(dl(:lay_block_name), Int64,
+                          (Int64, Int64, Ptr{UInt8}, Int64), lid, Int64(k), nb, Int64(64))
                 (name = String(nb[1:n]), kind = out[1], offset = out[2],
                  len = out[3], dims = out[5:(4 + out[4])])
             end
@@ -758,11 +758,11 @@ function runtests()
             @test bs[3].len == 3 && bs[3].dims == [3]       # constraint link
             # A second instance at another size reports ITS layout, which is
             # what makes this instance state rather than library state.
-            lid2 = ccall(dl(:lay_new), Cint, (Cint,), 5)
+            lid2 = ccall(dl(:lay_new), Int64, (Int64,), 5)
             @test block(0).len == 6                          # first, undisturbed
-            out2 = zeros(Cint, 8)
-            ccall(dl(:lay_block), Cint, (Cint, Cint, Ptr{Cint}), lid2, Cint(0), out2)
-            @test out2[3] == 10 && out2[5:6] == Cint[5, 2]
+            out2 = zeros(Int64, 8)
+            ccall(dl(:lay_block), Int64, (Int64, Int64, Ptr{Int64}), lid2, Int64(0), out2)
+            @test out2[3] == 10 && out2[5:6] == Int64[5, 2]
 
             # Parameters are live state: read them back, write them, and see
             # the WRITE REACH EVALUATION — the objective is w[1]*(y-2)^2 over
@@ -770,18 +770,18 @@ function runtests()
             # than just the round-trip is what distinguishes a parameter that
             # is state from one baked in at compile time.
             objat(id, x) = (o = Ref{Cdouble}(0.0);
-                @test ccall(dl(:lay_obj), Cint, (Cint, Ptr{Cdouble}, Ptr{Cdouble}),
+                @test ccall(dl(:lay_obj), Int64, (Int64, Ptr{Cdouble}, Ptr{Cdouble}),
                             id, x, o) == 0; o[])
             y0 = zeros(Cdouble, 6)
             vals = zeros(Cdouble, 3)
-            @test ccall(dl(:lay_get_value), Cint,
-                        (Cint, Cint, Ptr{Cdouble}, Cint), lid, Cint(1), vals, Cint(3)) == 0
+            @test ccall(dl(:lay_get_value), Int64,
+                        (Int64, Int64, Ptr{Cdouble}, Int64), lid, Int64(1), vals, Int64(3)) == 0
             @test vals == [1.0, 1.0, 1.0]
             @test objat(lid, y0) ≈ 24.0
-            @test ccall(dl(:lay_set_value), Cint, (Cint, Cint, Ptr{Cdouble}, Cint),
-                        lid, Cint(1), [2.0, 3.0, 4.0], Cint(3)) == 0
-            @test ccall(dl(:lay_get_value), Cint,
-                        (Cint, Cint, Ptr{Cdouble}, Cint), lid, Cint(1), vals, Cint(3)) == 0
+            @test ccall(dl(:lay_set_value), Int64, (Int64, Int64, Ptr{Cdouble}, Int64),
+                        lid, Int64(1), [2.0, 3.0, 4.0], Int64(3)) == 0
+            @test ccall(dl(:lay_get_value), Int64,
+                        (Int64, Int64, Ptr{Cdouble}, Int64), lid, Int64(1), vals, Int64(3)) == 0
             @test vals == [2.0, 3.0, 4.0]
             @test objat(lid, y0) ≈ 48.0                     # w[1] = 2 now
             # And the OTHER instance is untouched. Parameter state is per
@@ -792,10 +792,10 @@ function runtests()
             # by identity. This assertion is what would catch losing it.
             @test objat(lid2, zeros(Cdouble, 10)) ≈ 40.0    # 10 entries, w[1] = 1
             # A non-parameter block and a wrong length are refused, not aborts.
-            @test ccall(dl(:lay_set_value), Cint, (Cint, Cint, Ptr{Cdouble}, Cint),
-                        lid, Cint(0), [1.0], Cint(1)) == 1          # `y` is a variable
-            @test ccall(dl(:lay_set_value), Cint, (Cint, Cint, Ptr{Cdouble}, Cint),
-                        lid, Cint(1), [1.0], Cint(1)) == 3          # wrong length
+            @test ccall(dl(:lay_set_value), Int64, (Int64, Int64, Ptr{Cdouble}, Int64),
+                        lid, Int64(0), [1.0], Int64(1)) == 1          # `y` is a variable
+            @test ccall(dl(:lay_set_value), Int64, (Int64, Int64, Ptr{Cdouble}, Int64),
+                        lid, Int64(1), [1.0], Int64(1)) == 3          # wrong length
 
             # Wrong-arity and incomplete data are the consumer's errors, not
             # aborts: the library reports, the consumer explains.

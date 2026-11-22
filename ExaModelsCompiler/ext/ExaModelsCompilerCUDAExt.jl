@@ -235,41 +235,41 @@ function ExaModelsCompiler._device_source(::Val{:cuda}, p::AbstractString, probe
     L(kind, k, b) = _isrange(b.itr) ? "length($(blk(kind, k)).itr)" : "length(g.$(kind)_$k)"
     common = "x, n, MiniAOT.devptr(g.theta), length(g.theta)"
     callback(name, sig, body) = begin
-        pr("    Base.@ccallable function $(p)_$name($sig)::Cint")
-        pr("        _valid_$p(id) || return Cint(1)")
+        pr("    Base.@ccallable function $(p)_$name($sig)::Int64")
+        pr("        _valid_$p(id) || return Int64(1)")
         pr("        try")
         pr("            m = MODELS_$p[Int(id)]; g = _gpu_$p(Int(id))")
         pr("            n = m.meta.nvar; x = _dev_$p(xh)")
         print(io, body)
         pr("            MiniAOT.synchronize()")
-        pr("            return Cint(0)")
+        pr("            return Int64(0)")
         pr("        catch")
-        pr("            return Cint(2)")
+        pr("            return Int64(2)")
         pr("        end")
         pr("    end")
     end
     pr("    # witness of the device tier: 1 = CUDA, device 0, primary context")
-    pr("    Base.@ccallable function $(p)_device(id::Cint)::Cint")
-    pr("        return _valid_$p(id) ? Cint(1) : Cint(-1)")
+    pr("    Base.@ccallable function $(p)_device(id::Int64)::Int64")
+    pr("        return _valid_$p(id) ? Int64(1) : Int64(-1)")
     pr("    end")
     b_obj = join(["            MiniAOT.launch(KERNELS_$p.obj_$k, $(L(:obj,k,b)), $(blk(:obj,k)).f, $(itarg(:obj,k,b)), $(L(:obj,k,b)), MiniAOT.devptr(g.out), $common)\n" for (k, b) in enumerate(objs)])
-    callback("obj_d", "id::Cint, xh::Ptr{Cdouble}, out::Ptr{Cdouble}",
+    callback("obj_d", "id::Int64, xh::Ptr{Cdouble}, out::Ptr{Cdouble}",
              "            MiniAOT.zero!(MiniAOT.devptr(g.out), 1)\n" * b_obj *
              "            MiniAOT.synchronize(); unsafe_store!(out, MiniAOT.download(g.out)[1])\n")
     b_grad = join(["            MiniAOT.launch(KERNELS_$p.grad_$k, $(L(:obj,k,b)), $(blk(:obj,k)).f, $(itarg(:obj,k,b)), $(L(:obj,k,b)), MiniAOT.devptr(g.gbuf), length(g.gbuf), $common)\n" for (k, b) in enumerate(objs)])
-    callback("grad_d", "id::Cint, xh::Ptr{Cdouble}, gh::Ptr{Cdouble}",
+    callback("grad_d", "id::Int64, xh::Ptr{Cdouble}, gh::Ptr{Cdouble}",
              "            gd = _dev_$p(gh); MiniAOT.zero!(gd, n); MiniAOT.zero!(MiniAOT.devptr(g.gbuf), length(g.gbuf))\n" * b_grad *
              "            MiniAOT.launch(KERNELS_$p.scatter, length(g.gvar), gd, n, MiniAOT.devptr(g.gbuf), length(g.gbuf), MiniAOT.devptr(g.gvar), MiniAOT.devptr(g.gpos), length(g.gvar))\n")
     b_con = join(["            MiniAOT.launch(KERNELS_$p.con_$k, $(L(:con,k,b)), $(blk(:con,k)).f, $(itarg(:con,k,b)), ExaModels._constraint_dims($(blk(:con,k))), $(L(:con,k,b)), cd, m.meta.ncon, $common)\n" for (k, b) in enumerate(cons)])
-    callback("cons_d", "id::Cint, xh::Ptr{Cdouble}, ch::Ptr{Cdouble}",
+    callback("cons_d", "id::Int64, xh::Ptr{Cdouble}, ch::Ptr{Cdouble}",
              "            cd = _dev_$p(ch); MiniAOT.zero!(cd, m.meta.ncon)\n" * b_con)
     b_jac = join(["            MiniAOT.launch(KERNELS_$p.jac_$k, $(L(:con,k,b)), $(blk(:con,k)).f, $(itarg(:con,k,b)), ExaModels._constraint_dims($(blk(:con,k))), $(L(:con,k,b)), jd, m.meta.nnzj, $common)\n" for (k, b) in enumerate(cons)])
-    callback("jac_d", "id::Cint, xh::Ptr{Cdouble}, vh::Ptr{Cdouble}",
+    callback("jac_d", "id::Int64, xh::Ptr{Cdouble}, vh::Ptr{Cdouble}",
              "            jd = _dev_$p(vh); MiniAOT.zero!(jd, m.meta.nnzj)\n" * b_jac)
     b_hess = join(vcat(
         ["            MiniAOT.launch(KERNELS_$p.hessobj_$k, $(L(:obj,k,b)), $(blk(:obj,k)).f, $(itarg(:obj,k,b)), $(L(:obj,k,b)), hd, m.meta.nnzh, $common, obj_weight)\n" for (k, b) in enumerate(objs)],
         ["            MiniAOT.launch(KERNELS_$p.hesscon_$k, $(L(:con,k,b)), $(blk(:con,k)).f, $(itarg(:con,k,b)), ExaModels._constraint_dims($(blk(:con,k))), $(L(:con,k,b)), hd, m.meta.nnzh, $common, _dev_$p(yh), m.meta.ncon)\n" for (k, b) in enumerate(cons)]))
-    callback("hess_d", "id::Cint, xh::Ptr{Cdouble}, yh::Ptr{Cdouble}, obj_weight::Cdouble, vh::Ptr{Cdouble}",
+    callback("hess_d", "id::Int64, xh::Ptr{Cdouble}, yh::Ptr{Cdouble}, obj_weight::Cdouble, vh::Ptr{Cdouble}",
              "            hd = _dev_$p(vh); MiniAOT.zero!(hd, m.meta.nnzh)\n" * b_hess)
     return String(take!(io))
 end
