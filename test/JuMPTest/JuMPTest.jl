@@ -157,9 +157,9 @@ end
 # structural change rebuilds it.
 function test_parameter_update_reuses_model()
     for jm in (
-        JuMP.Model(() -> ExaModels.Optimizer(NLPModelsIpopt.ipopt)),
-        JuMP.direct_model(ExaModels.Optimizer(NLPModelsIpopt.ipopt)),
-    )
+            JuMP.Model(() -> ExaModels.Optimizer(NLPModelsIpopt.ipopt)),
+            JuMP.direct_model(ExaModels.Optimizer(NLPModelsIpopt.ipopt)),
+        )
         JuMP.set_attribute(jm, "print_level", 0)
         JuMP.@variable(jm, x)
         JuMP.@variable(jm, p in JuMP.Parameter(1.0))

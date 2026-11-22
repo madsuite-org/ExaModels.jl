@@ -36,7 +36,7 @@ function parse_ac_power_data(filename)
         ],
         arc = [
             (i = k, rate_a = ref[:branch][l]["rate_a"], bus = busdict[i]) for
-            (k, (l, i, j)) in enumerate(ref[:arcs])
+                (k, (l, i, j)) in enumerate(ref[:arcs])
         ],
         branch = [
             begin
@@ -89,7 +89,7 @@ function parse_ac_power_data(filename)
     )
 end
 
-convert_data(data::N, backend) where {names,N<:NamedTuple{names}} =
+convert_data(data::N, backend) where {names, N <: NamedTuple{names}} =
     NamedTuple{names}(ExaModels.convert_array(d, backend) for d in data)
 
 parse_ac_power_data(filename, backend) =
@@ -101,7 +101,7 @@ function ac_power_model(filename; backend = nothing, T = Float64)
 
     w = ExaCore(T; backend = backend, concrete = Val(true))
 
-    @add_var(w, va, length(data.bus);)
+    @add_var(w, va, length(data.bus))
 
     @add_var(
         w,
@@ -127,38 +127,38 @@ function ac_power_model(filename; backend = nothing, T = Float64)
         w,
         c2,
         p[b.f_idx] - b.c5 * vm[b.f_bus]^2 -
-        b.c3 * (vm[b.f_bus] * vm[b.t_bus] * cos(va[b.f_bus] - va[b.t_bus])) -
-        b.c4 * (vm[b.f_bus] * vm[b.t_bus] * sin(va[b.f_bus] - va[b.t_bus])) for
-        b in data.branch
+            b.c3 * (vm[b.f_bus] * vm[b.t_bus] * cos(va[b.f_bus] - va[b.t_bus])) -
+            b.c4 * (vm[b.f_bus] * vm[b.t_bus] * sin(va[b.f_bus] - va[b.t_bus])) for
+            b in data.branch
     )
 
     @add_con(
         w,
         c3,
         q[b.f_idx] +
-        b.c6 * vm[b.f_bus]^2 +
-        b.c4 * (vm[b.f_bus] * vm[b.t_bus] * cos(va[b.f_bus] - va[b.t_bus])) -
-        b.c3 * (vm[b.f_bus] * vm[b.t_bus] * sin(va[b.f_bus] - va[b.t_bus])) for
-        b in data.branch
+            b.c6 * vm[b.f_bus]^2 +
+            b.c4 * (vm[b.f_bus] * vm[b.t_bus] * cos(va[b.f_bus] - va[b.t_bus])) -
+            b.c3 * (vm[b.f_bus] * vm[b.t_bus] * sin(va[b.f_bus] - va[b.t_bus])) for
+            b in data.branch
     )
 
     @add_con(
         w,
         c4,
         p[b.t_idx] - b.c7 * vm[b.t_bus]^2 -
-        b.c1 * (vm[b.t_bus] * vm[b.f_bus] * cos(va[b.t_bus] - va[b.f_bus])) -
-        b.c2 * (vm[b.t_bus] * vm[b.f_bus] * sin(va[b.t_bus] - va[b.f_bus])) for
-        b in data.branch
+            b.c1 * (vm[b.t_bus] * vm[b.f_bus] * cos(va[b.t_bus] - va[b.f_bus])) -
+            b.c2 * (vm[b.t_bus] * vm[b.f_bus] * sin(va[b.t_bus] - va[b.f_bus])) for
+            b in data.branch
     )
 
     @add_con(
         w,
         c5,
         q[b.t_idx] +
-        b.c8 * vm[b.t_bus]^2 +
-        b.c2 * (vm[b.t_bus] * vm[b.f_bus] * cos(va[b.t_bus] - va[b.f_bus])) -
-        b.c1 * (vm[b.t_bus] * vm[b.f_bus] * sin(va[b.t_bus] - va[b.f_bus])) for
-        b in data.branch
+            b.c8 * vm[b.t_bus]^2 +
+            b.c2 * (vm[b.t_bus] * vm[b.f_bus] * cos(va[b.t_bus] - va[b.f_bus])) -
+            b.c1 * (vm[b.t_bus] * vm[b.f_bus] * sin(va[b.t_bus] - va[b.f_bus])) for
+            b in data.branch
     )
 
     @add_con(

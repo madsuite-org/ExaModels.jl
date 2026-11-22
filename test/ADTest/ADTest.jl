@@ -29,14 +29,14 @@ const FUNCTIONS = [
     ("basic-functions-cot", x -> cot(x[1])),
     ("basic-functions-atan", x -> atan(x[1])),
     ("basic-functions-acot", x -> acot(x[1])),
-    # ("basic-functions-sind", x-> sind(x[1])), # cannot extend function 
-    # ("basic-functions-cosd", x-> cosd(x[1])), # cannot extend function 
-    # ("basic-functions-tand", x-> tand(x[1])), # cannot extend function 
+    # ("basic-functions-sind", x-> sind(x[1])), # cannot extend function
+    # ("basic-functions-cosd", x-> cosd(x[1])), # cannot extend function
+    # ("basic-functions-tand", x-> tand(x[1])), # cannot extend function
     ("basic-functions-cscd", x -> cscd(x[1])),
     ("basic-functions-secd", x -> secd(x[1])),
     ("basic-functions-cotd", x -> cotd(x[1])),
-    # ("basic-functions-atand", x-> atand(x[1])), # cannot extend function 
-    # ("basic-functions-acotd", x-> acotd(x[1])), # cannot extend function 
+    # ("basic-functions-atand", x-> atand(x[1])), # cannot extend function
+    # ("basic-functions-acotd", x-> acotd(x[1])), # cannot extend function
     ("basic-functions-sinh", x -> sinh(x[1])),
     ("basic-functions-asinh", x -> asinh(x[1])),
     ("basic-functions-cosh", x -> cosh(x[1])),
@@ -52,11 +52,11 @@ const FUNCTIONS = [
     ("basic-functions-:*", x -> *(x[1], x[2])),
     ("basic-functions-:^", x -> ^(x[1], x[2])),
     ("basic-functions-:/", x -> /(x[1], x[2])),
-    # ("basic-functions-:<=", x-> <=(x[1], x[2])), # not implemented 
-    # ("basic-functions-:>=", x-> >=(x[1], x[2])), # not implemented 
-    # ("basic-functions-:(==),", x-> (==)(x[1], x[2])), # not implemented 
-    # ("basic-functions-:<", x-> <(x[1], x[2])), # not implemented 
-    # ("basic-functions-:>", x-> >(x[1], x[2])), # not implemented 
+    # ("basic-functions-:<=", x-> <=(x[1], x[2])), # not implemented
+    # ("basic-functions-:>=", x-> >=(x[1], x[2])), # not implemented
+    # ("basic-functions-:(==),", x-> (==)(x[1], x[2])), # not implemented
+    # ("basic-functions-:<", x-> <(x[1], x[2])), # not implemented
+    # ("basic-functions-:>", x-> >(x[1], x[2])), # not implemented
     ("special-functions-erfi", x -> erfi(x[1])),
     ("special-functions-erfcinv", x -> erfcinv(x[1])),
     ("special-functions-erfcx", x -> erfcx(x[1])),
@@ -140,13 +140,13 @@ function sgradient(f, x)
 
     ff = f(ExaModels.VarSource())
     d = ff(ExaModels.Identity(), ExaModels.AdjointNodeSource(ExaModels.NaNSource{T}()), ExaModels.NaNSource{T}())
-    y1, a1 = ExaModels.grpass(d, nothing, nothing, ExaModels.NaNSource{T}(), ((),()), T(NaN))
+    y1, a1 = ExaModels.grpass(d, nothing, nothing, ExaModels.NaNSource{T}(), ((), ()), T(NaN))
 
     comp = ExaModels.Compressor(y1)
 
     n = length(a1)
     buffer = fill!(similar(x, n), zero(T))
-    buffer_I = similar(x, Tuple{Int,Int}, n)
+    buffer_I = similar(x, Tuple{Int, Int}, n)
 
     ExaModels.sgradient!(buffer_I, ff, nothing, ExaModels.NaNSource{T}(), ExaModels.NaNSource{T}(), comp, 0, T(NaN))
     ExaModels.sgradient!(buffer, ff, nothing, x, nothing, comp, 0, one(T))
@@ -162,13 +162,13 @@ function sgradient_with_params(f, x, θ)
 
     ff = f(ExaModels.VarSource(), ExaModels.ParameterSource())
     d = ff(ExaModels.Identity(), ExaModels.AdjointNodeSource(ExaModels.NaNSource{T}()), ExaModels.NaNSource{T}())
-    y1, a1 = ExaModels.grpass(d, nothing, nothing, ExaModels.NaNSource{T}(), ((),()), T(NaN))
+    y1, a1 = ExaModels.grpass(d, nothing, nothing, ExaModels.NaNSource{T}(), ((), ()), T(NaN))
 
     comp = ExaModels.Compressor(y1)
 
     n = length(a1)
     buffer = fill!(similar(x, n), zero(T))
-    buffer_I = similar(x, Tuple{Int,Int}, n)
+    buffer_I = similar(x, Tuple{Int, Int}, n)
 
     ExaModels.sgradient!(buffer_I, ff, ExaModels.NaNSource{T}(), ExaModels.NaNSource{T}(), θ, comp, 0, T(NaN))
     ExaModels.sgradient!(buffer, ff, nothing, x, θ, comp, 0, one(T))
@@ -184,7 +184,7 @@ function sjacobian(f, x)
 
     ff = f(ExaModels.VarSource())
     d = ff(ExaModels.Identity(), ExaModels.AdjointNodeSource(ExaModels.NaNSource{T}()), ExaModels.NaNSource{T}())
-    y1, a1 = ExaModels.grpass(d, nothing, nothing, ExaModels.NaNSource{T}(), ((),()), T(NaN))
+    y1, a1 = ExaModels.grpass(d, nothing, nothing, ExaModels.NaNSource{T}(), ((), ()), T(NaN))
 
     comp = ExaModels.Compressor(y1)
 
@@ -207,7 +207,7 @@ function sjacobian_with_params(f, x, θ)
 
     ff = f(ExaModels.VarSource(), ExaModels.ParameterSource())
     d = ff(ExaModels.Identity(), ExaModels.AdjointNodeSource(ExaModels.NaNSource{T}()), ExaModels.NaNSource{T}())
-    y1, a1 = ExaModels.grpass(d, nothing, nothing, nothing, ((),()), T(NaN))
+    y1, a1 = ExaModels.grpass(d, nothing, nothing, nothing, ((), ()), T(NaN))
 
     comp = ExaModels.Compressor(y1)
 
@@ -230,7 +230,7 @@ function shessian(f, x)
 
     ff = f(ExaModels.VarSource())
     t = ff(ExaModels.Identity(), ExaModels.SecondAdjointNodeSource(ExaModels.NaNSource{T}()), ExaModels.NaNSource{T}())
-    y2, a2 = ExaModels.hrpass0(t, nothing, nothing, ExaModels.NaNSource{T}(), ExaModels.NaNSource{T}(), ((),()), T(NaN), T(NaN))
+    y2, a2 = ExaModels.hrpass0(t, nothing, nothing, ExaModels.NaNSource{T}(), ExaModels.NaNSource{T}(), ((), ()), T(NaN), T(NaN))
 
     comp = ExaModels.Compressor(y2)
 
@@ -270,7 +270,7 @@ function shessian_with_params(f, x, θ)
 
     ff = f(ExaModels.VarSource(), ExaModels.ParameterSource())
     t = ff(ExaModels.Identity(), ExaModels.SecondAdjointNodeSource(ExaModels.NaNSource{T}()), ExaModels.NaNSource{T}())
-    y2, a2 = ExaModels.hrpass0(t, nothing, nothing, ExaModels.NaNSource{T}(), ExaModels.NaNSource{T}(), ((),()), T(NaN), T(NaN))
+    y2, a2 = ExaModels.hrpass0(t, nothing, nothing, ExaModels.NaNSource{T}(), ExaModels.NaNSource{T}(), ((), ()), T(NaN), T(NaN))
 
     comp = ExaModels.Compressor(y2)
 
@@ -335,9 +335,9 @@ function verify_derivative_tables()
         c, x = ExaModels.add_var(c, 2; start = [2.0, 0.0])
         c, _ = ExaModels.add_obj(
             c,
-            ExaModels.bselect(step(-x[d.i+1]), x[d.i]^2) +
-            ExaModels.bselect(1.0 - step(-x[d.i+1]), log(x[d.i+1])) for
-            d in [(i = 1,)]
+            ExaModels.bselect(step(-x[d.i + 1]), x[d.i]^2) +
+                ExaModels.bselect(1.0 - step(-x[d.i + 1]), log(x[d.i + 1])) for
+                d in [(i = 1,)]
         )
         m = ExaModels.ExaModel(c)
         x0 = [2.0, 0.0]
@@ -367,17 +367,17 @@ function verify_derivative_tables()
 end
 
 function runtests()
-    @testset "AD test" begin
+    return @testset "AD test" begin
         verify_derivative_tables()
         for (name, f) in FUNCTIONS
             x0 = rand(10)
             @testset "$name" begin
                 g = ForwardDiff.gradient(f, x0)
                 h = ForwardDiff.hessian(f, x0)
-                @test gradient(f, x0) ≈ g atol = 1e-6
-                @test sgradient(f, x0) ≈ g atol = 1e-6
-                @test sjacobian(f, x0) ≈ g atol = 1e-6
-                @test shessian(f, x0) ≈ h atol = 1e-6
+                @test gradient(f, x0) ≈ g atol = 1.0e-6
+                @test sgradient(f, x0) ≈ g atol = 1.0e-6
+                @test sjacobian(f, x0) ≈ g atol = 1.0e-6
+                @test shessian(f, x0) ≈ h atol = 1.0e-6
             end
         end
         @testset "Parameter tests" begin
@@ -388,10 +388,10 @@ function runtests()
                     f_fixed_θ = x -> f(x, θ0)
                     g = ForwardDiff.gradient(f_fixed_θ, x0)
                     h = ForwardDiff.hessian(f_fixed_θ, x0)
-                    @test gradient_with_params(f, x0, θ0) ≈ g atol = 1e-6
-                    @test sgradient_with_params(f, x0, θ0) ≈ g atol = 1e-6
-                    @test sjacobian_with_params(f, x0, θ0) ≈ g atol = 1e-6
-                    @test shessian_with_params(f, x0, θ0) ≈ h atol = 1e-6
+                    @test gradient_with_params(f, x0, θ0) ≈ g atol = 1.0e-6
+                    @test sgradient_with_params(f, x0, θ0) ≈ g atol = 1.0e-6
+                    @test sjacobian_with_params(f, x0, θ0) ≈ g atol = 1.0e-6
+                    @test shessian_with_params(f, x0, θ0) ≈ h atol = 1.0e-6
                 end
             end
         end

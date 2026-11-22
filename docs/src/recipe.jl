@@ -71,8 +71,8 @@ N, N - 1, 1:N
 # Write the model exactly as you would with real values:
 
 @add_var(core, x, N; start = x0)
-@add_obj(core, 100 * (x[i+1] - x[i]^2)^2 + (x[i] - 1)^2 for i = 1:N-1)
-@add_con(core, x[i] + x[i+1] for i = 1:N-1; lcon = -1.5, ucon = 1.5)
+@add_obj(core, 100 * (x[i + 1] - x[i]^2)^2 + (x[i] - 1)^2 for i in 1:(N - 1))
+@add_con(core, x[i] + x[i + 1] for i in 1:(N - 1); lcon = -1.5, ucon = 1.5)
 
 # That core is a recipe. It is **not a new kind of object** — it is an ordinary
 # `ExaCore`, the very type you get without placeholders, holding symbolic
@@ -117,7 +117,7 @@ NLPModels.obj(m10, m10.meta.x0)
 
 function chain_pairs(n)
     ## whatever it takes — comprehensions, randomness, file parsing
-    return [(i = i, j = j) for i = 1:n-1 for j = i+1:n]
+    return [(i = i, j = j) for i in 1:(n - 1) for j in (i + 1):n]
 end
 
 chain, n, pairs, h = ExaCore(concrete = Val(true), nargs = Val(3))

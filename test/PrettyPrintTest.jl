@@ -6,17 +6,17 @@ using Test, ExaModels
 ExaModels.enable_short_type_printing()
 
 function runtests()
-    @testset "Pretty printing" begin
+    return @testset "Pretty printing" begin
         c = ExaCore(concrete = Val(true))
         c, x = add_var(c, 5)
 
         @testset "Node expression strings" begin
-            @test sprint(show, sin(x[1]))      == "sin(x[1])"
-            @test sprint(show, x[1] + x[2])    == "x[1] + x[2]"
-            @test sprint(show, x[1] * x[2])    == "x[1] * x[2]"
-            @test sprint(show, x[1]^2)           == "x[1]^2"  # abs2 specialization
-            @test sprint(show, x[1] - x[2])     == "x[1] - x[2]"
-            @test sprint(show, x[1] / x[2])     == "x[1] / x[2]"
+            @test sprint(show, sin(x[1])) == "sin(x[1])"
+            @test sprint(show, x[1] + x[2]) == "x[1] + x[2]"
+            @test sprint(show, x[1] * x[2]) == "x[1] * x[2]"
+            @test sprint(show, x[1]^2) == "x[1]^2"  # abs2 specialization
+            @test sprint(show, x[1] - x[2]) == "x[1] - x[2]"
+            @test sprint(show, x[1] / x[2]) == "x[1] / x[2]"
         end
 
         @testset "Identity simplification" begin
@@ -37,13 +37,13 @@ function runtests()
 
         @testset "Named variable" begin
             c2 = ExaCore(concrete = Val(true))
-            c2, z = add_var(c2, 4; name=Val(:z))
+            c2, z = add_var(c2, 4; name = Val(:z))
             @test occursin("z ∈ R^{4}", sprint(show, z))
         end
 
         @testset "Short type display" begin
-            @test sprint(show, typeof(sin(x[1])))      == "Node1{sin,…}"
-            @test sprint(show, typeof(x[1] + x[2]))     == "Node2{+,…}"
+            @test sprint(show, typeof(sin(x[1]))) == "Node1{sin,…}"
+            @test sprint(show, typeof(x[1] + x[2])) == "Node2{+,…}"
             @test sprint(show, typeof(ExaModels.Var(1))) == "Var{…}"
         end
 
@@ -59,7 +59,7 @@ function runtests()
             @test occursin("Node2{+}", s)
             @test occursin("sin(x[1])", s)
         end
-        
+
         @testset "Expression show" begin
             c3 = ExaCore(concrete = Val(true))
             c3, y = add_var(c3, 3)

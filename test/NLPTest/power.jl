@@ -14,7 +14,7 @@ function get_power_data_ref(filename)
     return PowerModels.build_ref(data)[:it][:pm][:nw][0]
 end
 
-convert_data(data::N, backend) where {names,N<:NamedTuple{names}} =
+convert_data(data::N, backend) where {names, N <: NamedTuple{names}} =
     NamedTuple{names}(ExaModels.convert_array(d, backend) for d in data)
 parse_ac_power_data(filename, backend) =
     convert_data(parse_ac_power_data(filename), backend)
@@ -51,7 +51,7 @@ function parse_ac_power_data(filename)
         ],
         arc = [
             (i = k, rate_a = ref[:branch][l]["rate_a"], bus = busdict[i]) for
-            (k, (l, i, j)) in enumerate(ref[:arcs])
+                (k, (l, i, j)) in enumerate(ref[:arcs])
         ],
         branch = [
             begin
@@ -106,14 +106,14 @@ end
 
 function _exa_ac_power_model(backend, filename)
     data = parse_ac_power_data(filename, backend)
-    __exa_ac_power_model(backend, data)
+    return __exa_ac_power_model(backend, data)
 end
 
 function __exa_ac_power_model(backend, data)
 
     w = ExaModels.ExaCore(backend = backend, concrete = Val(true))
 
-    @add_var(w, va, length(data.bus);)
+    @add_var(w, va, length(data.bus))
 
     @add_var(
         w,
@@ -142,38 +142,38 @@ function __exa_ac_power_model(backend, data)
         w,
         c2,
         p[b.f_idx] - b.c5 * vm[b.f_bus]^2 -
-        b.c3 * (vm[b.f_bus] * vm[b.t_bus] * cos(va[b.f_bus] - va[b.t_bus])) -
-        b.c4 * (vm[b.f_bus] * vm[b.t_bus] * sin(va[b.f_bus] - va[b.t_bus])) for
-        b in data.branch
+            b.c3 * (vm[b.f_bus] * vm[b.t_bus] * cos(va[b.f_bus] - va[b.t_bus])) -
+            b.c4 * (vm[b.f_bus] * vm[b.t_bus] * sin(va[b.f_bus] - va[b.t_bus])) for
+            b in data.branch
     )
 
     @add_con(
         w,
         c3,
         q[b.f_idx] +
-        b.c6 * vm[b.f_bus]^2 +
-        b.c4 * (vm[b.f_bus] * vm[b.t_bus] * cos(va[b.f_bus] - va[b.t_bus])) -
-        b.c3 * (vm[b.f_bus] * vm[b.t_bus] * sin(va[b.f_bus] - va[b.t_bus])) for
-        b in data.branch
+            b.c6 * vm[b.f_bus]^2 +
+            b.c4 * (vm[b.f_bus] * vm[b.t_bus] * cos(va[b.f_bus] - va[b.t_bus])) -
+            b.c3 * (vm[b.f_bus] * vm[b.t_bus] * sin(va[b.f_bus] - va[b.t_bus])) for
+            b in data.branch
     )
 
     @add_con(
         w,
         c4,
         p[b.t_idx] - b.c7 * vm[b.t_bus]^2 -
-        b.c1 * (vm[b.t_bus] * vm[b.f_bus] * cos(va[b.t_bus] - va[b.f_bus])) -
-        b.c2 * (vm[b.t_bus] * vm[b.f_bus] * sin(va[b.t_bus] - va[b.f_bus])) for
-        b in data.branch
+            b.c1 * (vm[b.t_bus] * vm[b.f_bus] * cos(va[b.t_bus] - va[b.f_bus])) -
+            b.c2 * (vm[b.t_bus] * vm[b.f_bus] * sin(va[b.t_bus] - va[b.f_bus])) for
+            b in data.branch
     )
 
     @add_con(
         w,
         c5,
         q[b.t_idx] +
-        b.c8 * vm[b.t_bus]^2 +
-        b.c2 * (vm[b.t_bus] * vm[b.f_bus] * cos(va[b.t_bus] - va[b.f_bus])) -
-        b.c1 * (vm[b.t_bus] * vm[b.f_bus] * sin(va[b.t_bus] - va[b.f_bus])) for
-        b in data.branch
+            b.c8 * vm[b.t_bus]^2 +
+            b.c2 * (vm[b.t_bus] * vm[b.f_bus] * cos(va[b.t_bus] - va[b.f_bus])) -
+            b.c1 * (vm[b.t_bus] * vm[b.f_bus] * sin(va[b.t_bus] - va[b.f_bus])) for
+            b in data.branch
     )
 
     @add_con(
@@ -207,8 +207,8 @@ function __exa_ac_power_model(backend, data)
     c14 = @add_con!(w, c10, g.bus => -qg[g.i] for g in data.gen)
 
     return ExaModels.ExaModel(w; prod = true),
-    (va, vm, pg, qg, p, q),
-    (c1, c2, c3, c4, c5, c6, c7, c8, c9, c10)
+        (va, vm, pg, qg, p, q),
+        (c1, c2, c3, c4, c5, c6, c7, c8, c9, c10)
 
 end
 
@@ -243,14 +243,14 @@ function _jump_ac_power_model(backend, filename)
     JuMP.@variable(
         model,
         -ref[:branch][l]["rate_a"] <=
-        p[(l, i, j) in ref[:arcs]] <=
-        ref[:branch][l]["rate_a"]
+            p[(l, i, j) in ref[:arcs]] <=
+            ref[:branch][l]["rate_a"]
     )
     JuMP.@variable(
         model,
         -ref[:branch][l]["rate_a"] <=
-        q[(l, i, j) in ref[:arcs]] <=
-        ref[:branch][l]["rate_a"]
+            q[(l, i, j) in ref[:arcs]] <=
+            ref[:branch][l]["rate_a"]
     )
 
     JuMP.@NLobjective(
@@ -258,7 +258,7 @@ function _jump_ac_power_model(backend, filename)
         Min,
         sum(
             gen["cost"][1] * pg[i]^2 + gen["cost"][2] * pg[i] + gen["cost"][3] for
-            (i, gen) in ref[:gen]
+                (i, gen) in ref[:gen]
         )
     )
 
@@ -306,9 +306,9 @@ function _jump_ac_power_model(backend, filename)
             JuMP.@NLconstraint(
                 model,
                 p_fr ==
-                (g + g_fr) / ttm * vm_fr^2 +
-                (-g * tr + b * ti) / ttm * (vm_fr * vm_to * cos(va_fr - va_to)) +
-                (-b * tr - g * ti) / ttm * (vm_fr * vm_to * sin(va_fr - va_to))
+                    (g + g_fr) / ttm * vm_fr^2 +
+                    (-g * tr + b * ti) / ttm * (vm_fr * vm_to * cos(va_fr - va_to)) +
+                    (-b * tr - g * ti) / ttm * (vm_fr * vm_to * sin(va_fr - va_to))
             )
         )
     end
@@ -339,9 +339,9 @@ function _jump_ac_power_model(backend, filename)
             JuMP.@NLconstraint(
                 model,
                 q_fr ==
-                -(b + b_fr) / ttm * vm_fr^2 -
-                (-b * tr - g * ti) / ttm * (vm_fr * vm_to * cos(va_fr - va_to)) +
-                (-g * tr + b * ti) / ttm * (vm_fr * vm_to * sin(va_fr - va_to))
+                    -(b + b_fr) / ttm * vm_fr^2 -
+                    (-b * tr - g * ti) / ttm * (vm_fr * vm_to * cos(va_fr - va_to)) +
+                    (-g * tr + b * ti) / ttm * (vm_fr * vm_to * sin(va_fr - va_to))
             )
         )
     end
@@ -373,9 +373,9 @@ function _jump_ac_power_model(backend, filename)
             JuMP.@NLconstraint(
                 model,
                 p_to ==
-                (g + g_to) * vm_to^2 +
-                (-g * tr - b * ti) / ttm * (vm_to * vm_fr * cos(va_to - va_fr)) +
-                (-b * tr + g * ti) / ttm * (vm_to * vm_fr * sin(va_to - va_fr))
+                    (g + g_to) * vm_to^2 +
+                    (-g * tr - b * ti) / ttm * (vm_to * vm_fr * cos(va_to - va_fr)) +
+                    (-b * tr + g * ti) / ttm * (vm_to * vm_fr * sin(va_to - va_fr))
             )
         )
     end
@@ -406,9 +406,9 @@ function _jump_ac_power_model(backend, filename)
             JuMP.@NLconstraint(
                 model,
                 q_to ==
-                -(b + b_to) * vm_to^2 -
-                (-b * tr + g * ti) / ttm * (vm_to * vm_fr * cos(va_to - va_fr)) +
-                (-g * tr - b * ti) / ttm * (vm_to * vm_fr * sin(va_to - va_fr))
+                    -(b + b_to) * vm_to^2 -
+                    (-b * tr + g * ti) / ttm * (vm_to * vm_fr * cos(va_to - va_fr)) +
+                    (-g * tr - b * ti) / ttm * (vm_to * vm_fr * sin(va_to - va_fr))
             )
         )
     end
@@ -449,9 +449,9 @@ function _jump_ac_power_model(backend, filename)
             JuMP.@NLconstraint(
                 model,
                 sum(p[a] for a in ref[:bus_arcs][i]) ==
-                sum(pg[g] for g in ref[:bus_gens][i]) -
-                sum(load["pd"] for load in bus_loads) -
-                sum(shunt["gs"] for shunt in bus_shunts) * vm[i]^2
+                    sum(pg[g] for g in ref[:bus_gens][i]) -
+                    sum(load["pd"] for load in bus_loads) -
+                    sum(shunt["gs"] for shunt in bus_shunts) * vm[i]^2
             )
         )
     end
@@ -464,17 +464,17 @@ function _jump_ac_power_model(backend, filename)
             JuMP.@NLconstraint(
                 model,
                 sum(q[a] for a in ref[:bus_arcs][i]) ==
-                sum(qg[g] for g in ref[:bus_gens][i]) -
-                sum(load["qd"] for load in bus_loads) +
-                sum(shunt["bs"] for shunt in bus_shunts) * vm[i]^2
+                    sum(qg[g] for g in ref[:bus_gens][i]) -
+                    sum(load["qd"] for load in bus_loads) +
+                    sum(shunt["bs"] for shunt in bus_shunts) * vm[i]^2
             )
         )
     end
 
 
     return model,
-    (va.data, vm.data, pg.data, qg.data, p.data, q.data),
-    (c1, c2, c3, c4, c5, c6, c7, c8, c9, c10)
+        (va.data, vm.data, pg.data, qg.data, p.data, q.data),
+        (c1, c2, c3, c4, c5, c6, c7, c8, c9, c10)
 end
 
 function jump_ac_power_model(backend, filename)

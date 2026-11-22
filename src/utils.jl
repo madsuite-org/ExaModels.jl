@@ -14,13 +14,13 @@ Use [`WrapperNLPModel(m)`](@ref) or [`WrapperNLPModel(VT, m)`](@ref) rather than
 constructing this struct directly.
 """
 struct WrapperNLPModel{
-    T,
-    VT,
-    T2,
-    VT2<:AbstractVector{T2},
-    VI,
-    I<:NLPModels.AbstractNLPModel{T2,VT2},
-} <: NLPModels.AbstractNLPModel{T,VT}
+        T,
+        VT,
+        T2,
+        VT2 <: AbstractVector{T2},
+        VI,
+        I <: NLPModels.AbstractNLPModel{T2, VT2},
+    } <: NLPModels.AbstractNLPModel{T, VT}
 
     inner::I
 
@@ -44,7 +44,7 @@ struct WrapperNLPModel{
     hess_I_buffer::VI
     hess_J_buffer::VI
 
-    meta::NLPModels.AbstractNLPModelMeta{T,VT}
+    meta::NLPModels.AbstractNLPModelMeta{T, VT}
     counters::NLPModels.Counters
 end
 
@@ -135,10 +135,10 @@ function WrapperNLPModel(VT, m)
 end
 
 function NLPModels.jac_structure!(
-    m::WrapperNLPModel,
-    rows::AbstractVector,
-    cols::AbstractVector,
-)
+        m::WrapperNLPModel,
+        rows::AbstractVector,
+        cols::AbstractVector,
+    )
     NLPModels.jac_structure!(m.inner, m.jac_I_buffer, m.jac_J_buffer)
     copyto!(rows, m.jac_I_buffer)
     copyto!(cols, m.jac_J_buffer)
@@ -146,10 +146,10 @@ function NLPModels.jac_structure!(
 end
 
 function NLPModels.hess_structure!(
-    m::WrapperNLPModel,
-    rows::AbstractVector,
-    cols::AbstractVector,
-)
+        m::WrapperNLPModel,
+        rows::AbstractVector,
+        cols::AbstractVector,
+    )
     NLPModels.hess_structure!(m.inner, m.hess_I_buffer, m.hess_J_buffer)
     copyto!(rows, m.hess_I_buffer)
     copyto!(cols, m.hess_J_buffer)
@@ -186,12 +186,12 @@ function NLPModels.jac_coord!(m::WrapperNLPModel, x::AbstractVector, jac::Abstra
     return jac
 end
 function NLPModels.hess_coord!(
-    m::WrapperNLPModel,
-    x::AbstractVector,
-    y::AbstractVector,
-    hess::AbstractVector;
-    obj_weight = one(eltype(x)),
-)
+        m::WrapperNLPModel,
+        x::AbstractVector,
+        y::AbstractVector,
+        hess::AbstractVector;
+        obj_weight = one(eltype(x)),
+    )
     copyto!(m.x_buffer, x)
     copyto!(m.y_buffer, y)
     NLPModels.hess_coord!(
@@ -209,14 +209,14 @@ end
 
 function buffered_copyto!(a, b, c)
     copyto!(b, c)
-    copyto!(a, b)
+    return copyto!(a, b)
 end
 function NLPModels.jprod!(
-    m::WrapperNLPModel,
-    x::AbstractVector,
-    v::AbstractVector,
-    Jv::AbstractVector,
-)
+        m::WrapperNLPModel,
+        x::AbstractVector,
+        v::AbstractVector,
+        Jv::AbstractVector,
+    )
     buffered_copyto!(m.x_buffer, m.x_result, x)
     buffered_copyto!(m.grad_buffer, m.x_result2, v)
 
@@ -226,11 +226,11 @@ function NLPModels.jprod!(
     return Jv
 end
 function NLPModels.jtprod_nln!(
-    m::WrapperNLPModel,
-    x::AbstractVector,
-    v::AbstractVector,
-    Jtv::AbstractVector,
-)
+        m::WrapperNLPModel,
+        x::AbstractVector,
+        v::AbstractVector,
+        Jtv::AbstractVector,
+    )
 
     buffered_copyto!(m.x_buffer, m.x_result, x)
     buffered_copyto!(m.cons_buffer, m.y_result, v)
@@ -241,13 +241,13 @@ function NLPModels.jtprod_nln!(
     return Jtv
 end
 function NLPModels.hprod!(
-    m::WrapperNLPModel,
-    x::AbstractVector,
-    y::AbstractVector,
-    v::AbstractVector,
-    Hv::AbstractVector;
-    obj_weight = one(eltype(x)),
-)
+        m::WrapperNLPModel,
+        x::AbstractVector,
+        y::AbstractVector,
+        v::AbstractVector,
+        Hv::AbstractVector;
+        obj_weight = one(eltype(x)),
+    )
 
     buffered_copyto!(m.x_buffer, m.x_result, x)
     buffered_copyto!(m.y_buffer, m.y_result, y)
@@ -295,10 +295,10 @@ timings and call counts for each NLP callback (`obj`, `cons!`, `grad!`,
 Statistics accumulate in the `stats` field and can be printed with `print(m)`.
 Construct via [`TimedNLPModel(m)`](@ref).
 """
-struct TimedNLPModel{T,VT,I<:NLPModels.AbstractNLPModel{T,VT}} <:
-       NLPModels.AbstractNLPModel{T,VT}
+struct TimedNLPModel{T, VT, I <: NLPModels.AbstractNLPModel{T, VT}} <:
+    NLPModels.AbstractNLPModel{T, VT}
     inner::I
-    meta::NLPModels.AbstractNLPModelMeta{T,VT}
+    meta::NLPModels.AbstractNLPModelMeta{T, VT}
     stats::CallbackStats
     counters::NLPModels.Counters
 end
@@ -324,10 +324,10 @@ function TimedNLPModel(c::ExaModels.ExaCore; kwargs...)
 end
 
 function NLPModels.jac_structure!(
-    m::M,
-    rows::V,
-    cols::V,
-) where {M<:TimedNLPModel,V<:AbstractVector}
+        m::M,
+        rows::V,
+        cols::V,
+    ) where {M <: TimedNLPModel, V <: AbstractVector}
 
     m.stats.jac_structure_cnt += 1
     t = time()
@@ -337,10 +337,10 @@ function NLPModels.jac_structure!(
 end
 
 function NLPModels.hess_structure!(
-    m::M,
-    rows::V,
-    cols::V,
-) where {M<:TimedNLPModel,V<:AbstractVector}
+        m::M,
+        rows::V,
+        cols::V,
+    ) where {M <: TimedNLPModel, V <: AbstractVector}
 
     m.stats.hess_structure_cnt += 1
     t = time()
@@ -378,12 +378,12 @@ function NLPModels.jac_coord!(m::TimedNLPModel, x::AbstractVector, jac::Abstract
     return jac
 end
 function NLPModels.hess_coord!(
-    m::TimedNLPModel,
-    x::AbstractVector,
-    y::AbstractVector,
-    hess::AbstractVector;
-    obj_weight = one(eltype(x)),
-)
+        m::TimedNLPModel,
+        x::AbstractVector,
+        y::AbstractVector,
+        hess::AbstractVector;
+        obj_weight = one(eltype(x)),
+    )
     m.stats.hess_coord_cnt += 1
     t = time()
     NLPModels.hess_coord!(m.inner, x, y, hess; obj_weight = obj_weight)
@@ -403,7 +403,7 @@ function Base.print(io::IO, e::TimedNLPModel)
         end
     end
     println("------------------------------------------")
-    Printf.@printf "       total AD time:  %13.6f secs\n" tot
+    return Printf.@printf "       total AD time:  %13.6f secs\n" tot
 end
 Base.show(io::IO, ::MIME"text/plain", e::TimedNLPModel) = Base.print(io, e);
 
@@ -423,14 +423,14 @@ with no repeated coordinates.
 Construct via [`CompressedNLPModel(m)`](@ref).
 """
 struct CompressedNLPModel{
-    T,
-    VT<:AbstractVector{T},
-    B,
-    VI<:AbstractVector{Int},
-    VI2<:AbstractVector{Tuple{Tuple{Int,Int},Int}},
-    M<:NLPModels.AbstractNLPModel{T,VT},
+        T,
+        VT <: AbstractVector{T},
+        B,
+        VI <: AbstractVector{Int},
+        VI2 <: AbstractVector{Tuple{Tuple{Int, Int}, Int}},
+        M <: NLPModels.AbstractNLPModel{T, VT},
         P,
-} <: NLPModels.AbstractNLPModel{T,VT}
+    } <: NLPModels.AbstractNLPModel{T, VT}
 
     inner::M
     jptr::VI
@@ -442,7 +442,7 @@ struct CompressedNLPModel{
     hplan::P
 
     backend::B
-    meta::NLPModels.NLPModelMeta{T,VT}
+    meta::NLPModels.NLPModelMeta{T, VT}
     counters::NLPModels.Counters
 end
 
@@ -459,7 +459,7 @@ _col_ne(a, b) = a[1][2] != b[1][2]
 
 function getptr(backend::Nothing, array; cmp = !=)
     return push!(
-        pushfirst!(findall(cmp.(@view(array[1:(end-1)]), @view(array[2:end]))) .+= 1, 1),
+        pushfirst!(findall(cmp.(@view(array[1:(end - 1)]), @view(array[2:end]))) .+= 1, 1),
         length(array) + 1,
     )
 end
@@ -532,15 +532,15 @@ get_compressed_sparsity(nnz, Ibuffer, Jbuffer, backend::Nothing) =
     map((k, i, j) -> ((j, i), k), 1:nnz, Ibuffer, Jbuffer)
 
 function NLPModels.obj(m::CompressedNLPModel, x::AbstractVector)
-    NLPModels.obj(m.inner, x)
+    return NLPModels.obj(m.inner, x)
 end
 
 function NLPModels.grad!(m::CompressedNLPModel, x::AbstractVector, y::AbstractVector)
-    NLPModels.grad!(m.inner, x, y)
+    return NLPModels.grad!(m.inner, x, y)
 end
 
 function NLPModels.cons!(m::CompressedNLPModel, x::AbstractVector, g::AbstractVector)
-    NLPModels.cons!(m.inner, x, g)
+    return NLPModels.cons!(m.inner, x, g)
 end
 
 function NLPModels.jac_coord!(m::CompressedNLPModel, x::AbstractVector, j::AbstractVector)
@@ -550,31 +550,31 @@ function NLPModels.jac_coord!(m::CompressedNLPModel, x::AbstractVector, j::Abstr
 end
 
 function NLPModels.hess_coord!(
-    m::CompressedNLPModel,
-    x::AbstractVector,
-    y::AbstractVector,
-    h::AbstractVector;
-    obj_weight = one(eltype(x)),
-)
+        m::CompressedNLPModel,
+        x::AbstractVector,
+        y::AbstractVector,
+        h::AbstractVector;
+        obj_weight = one(eltype(x)),
+    )
     NLPModels.hess_coord!(m.inner, x, y, m.buffer; obj_weight = obj_weight)
     _compress!(h, m.buffer, m.hptr, m.hsparsity, m.backend, m.hplan)
     return h
 end
 
 function NLPModels.jac_structure!(
-    m::CompressedNLPModel,
-    I::AbstractVector,
-    J::AbstractVector,
-)
+        m::CompressedNLPModel,
+        I::AbstractVector,
+        J::AbstractVector,
+    )
     _structure!(I, J, m.jptr, m.jsparsity, m.backend)
     return I, J
 end
 
 function NLPModels.hess_structure!(
-    m::CompressedNLPModel,
-    I::AbstractVector,
-    J::AbstractVector,
-)
+        m::CompressedNLPModel,
+        I::AbstractVector,
+        J::AbstractVector,
+    )
     _structure!(I, J, m.hptr, m.hsparsity, m.backend)
     return I, J
 end
@@ -584,15 +584,15 @@ _compress_plan(backend, x0, ptr) = nothing
 
 function _compress!(V, buffer, ptr, sparsity, backend::Nothing, plan = nothing)
     fill!(V, zero(eltype(V)))
-    @simd for i = 1:(length(ptr)-1)
-        for j = ptr[i]:(ptr[i+1]-1)
+    return @simd for i in 1:(length(ptr) - 1)
+        for j in ptr[i]:(ptr[i + 1] - 1)
             V[i] += buffer[sparsity[j][2]]
         end
     end
 end
 
 function _structure!(I, J, ptr, sparsity, backend::Nothing)
-    @simd for i = 1:(length(ptr)-1)
+    return @simd for i in 1:(length(ptr) - 1)
         J[i], I[i] = sparsity[ptr[i]][1]
     end
 end

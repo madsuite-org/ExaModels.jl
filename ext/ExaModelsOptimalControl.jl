@@ -498,9 +498,9 @@ end
 # ============================================================================
 
 function ExaModels.add_con(
-    c::ExaModels.ExaCore{T},
-    v::VecExaNode;
-    start = zero(T), lcon = zero(T), ucon = zero(T), kwargs...,
+        c::ExaModels.ExaCore{T},
+        v::VecExaNode;
+        start = zero(T), lcon = zero(T), ucon = zero(T), kwargs...,
     ) where {T}
     n = length(v)
     _get(x::AbstractVector, i) = x[i]

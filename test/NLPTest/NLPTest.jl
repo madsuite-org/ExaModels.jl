@@ -56,7 +56,7 @@ function test_nlp(m1, m2; full = false, tol = sol_tolerance(eltype(m1.meta.x0), 
         end
     end
 
-    @testset "NLP callback tests" begin
+    return @testset "NLP callback tests" begin
         x0 = copy(m2.meta.x0)
         y0 = randn(eltype(m2.meta.x0), m2.meta.ncon)
         u = randn(eltype(m2.meta.x0), m2.meta.nvar)
@@ -103,9 +103,9 @@ function test_nlp(m1, m2; full = false, tol = sol_tolerance(eltype(m1.meta.x0), 
     end
 end
 
-function test_nlp_solution(result1, result2; tol = sol_tolerance(eltype(result1.solution),eltype(result2.solution)))
+function test_nlp_solution(result1, result2; tol = sol_tolerance(eltype(result1.solution), eltype(result2.solution)))
 
-    @testset "solution test" begin
+    return @testset "solution test" begin
         @test result1.status == result2.status
         for field in [:solution, :multipliers, :multipliers_L, :multipliers_U]
             @testset "$field" begin
@@ -119,7 +119,7 @@ dual_lb(x) = has_lower_bound(x) ? dual(LowerBoundRef(x)) : 0.0
 dual_ub(x) = has_upper_bound(x) ? dual(UpperBoundRef(x)) : 0.0
 
 function test_api(result1, vars1, cons1, vars2, cons2, minimize::Bool; tol = sol_tolerance(eltype(result1.solution)))
-    @testset "API test" begin
+    return @testset "API test" begin
         for (var1, var2) in zip(vars1, vars2)
             @test solution(result1, var1) ≈ [value(var) for var in var2] atol = tol rtol = tol
             @test multipliers_L(result1, var1) ≈ [dual_lb(var) for var in var2] atol = tol rtol = tol
@@ -136,7 +136,7 @@ function test_api(result1, vars1, cons1, vars2, cons2, minimize::Bool; tol = sol
 end
 
 function runtests()
-    @testset "NLP test" begin
+    return @testset "NLP test" begin
         # The JuMP comparisons build only host models, so they sit outside the
         # backend loop.
         BACKEND_TESTS_ONLY || @testset "Comparison to JuMP" begin
@@ -219,7 +219,7 @@ function runtests()
 end
 
 function __init__()
-    PowerModels.silence()
+    return PowerModels.silence()
 end
 
 

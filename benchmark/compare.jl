@@ -1,8 +1,8 @@
 using Printf
 
 function read_results(dir, pattern)
-    results = Dict{Tuple{String,String,String}, NamedTuple}()
-    for f in readdir(dir; join=true)
+    results = Dict{Tuple{String, String, String}, NamedTuple}()
+    for f in readdir(dir; join = true)
         endswith(f, ".csv") || continue
         occursin(pattern, basename(f)) || continue
         for line in readlines(f)
@@ -10,15 +10,15 @@ function read_results(dir, pattern)
             parts = split(line, ',')
             length(parts) == 10 || continue
             backend, instance, param = parts[1], parts[2], parts[3]
-            nvar  = parse(Int, parts[4])
-            ncon  = parse(Int, parts[5])
-            tobj  = parse(Float64, parts[6])
-            tcon  = parse(Float64, parts[7])
+            nvar = parse(Int, parts[4])
+            ncon = parse(Int, parts[5])
+            tobj = parse(Float64, parts[6])
+            tcon = parse(Float64, parts[7])
             tgrad = parse(Float64, parts[8])
-            tjac  = parse(Float64, parts[9])
+            tjac = parse(Float64, parts[9])
             thess = parse(Float64, parts[10])
             results[(backend, instance, param)] =
-                (nvar=nvar, ncon=ncon, tobj=tobj, tcon=tcon, tgrad=tgrad, tjac=tjac, thess=thess)
+                (nvar = nvar, ncon = ncon, tobj = tobj, tcon = tcon, tgrad = tgrad, tjac = tjac, thess = thess)
         end
     end
     return results
@@ -48,7 +48,7 @@ function ratio_str(c, m)
 end
 
 const NAME_W = 30
-const SEP = "=" ^ (NAME_W + 5 + 5 * 9)
+const SEP = "="^(NAME_W + 5 + 5 * 9)
 
 println()
 println("Relative timing: current / main  (values < 1.0 are improvements)")
@@ -61,7 +61,7 @@ prev_backend = Ref("")
 for key in all_keys
     backend, instance, param = key
     if backend != prev_backend[] && prev_backend[] != ""
-        println("-" ^ length(SEP))
+        println("-"^length(SEP))
     end
     prev_backend[] = backend
 
@@ -76,12 +76,13 @@ for key in all_keys
     end
     m = main_res[key]
     c = current_res[key]
-    @printf("  %-*s  | %s %s %s %s %s\n",
+    @printf(
+        "  %-*s  | %s %s %s %s %s\n",
         NAME_W, name,
-        ratio_str(c.tobj,  m.tobj),
-        ratio_str(c.tcon,  m.tcon),
+        ratio_str(c.tobj, m.tobj),
+        ratio_str(c.tcon, m.tcon),
         ratio_str(c.tgrad, m.tgrad),
-        ratio_str(c.tjac,  m.tjac),
+        ratio_str(c.tjac, m.tjac),
         ratio_str(c.thess, m.thess),
     )
 end
