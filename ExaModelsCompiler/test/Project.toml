@@ -1,5 +1,5 @@
 [deps]
-CNLPModels = "e8ddee8d-ce21-405b-9ec9-45cea2c1b284"
+CNLPLib = "e8ddee8d-ce21-405b-9ec9-45cea2c1b284"
 ExaModels = "1037b233-b668-4ce9-9b63-f9f681f55dd2"
 ExaModelsCompiler = "3d1e9a26-5b74-4f0c-9a2b-7c8f4e11d3a7"
 NLPModels = "a4795742-8479-5a88-8948-cc11e1c8c1a6"
@@ -14,8 +14,8 @@ ExaModelsCompiler = {path = ".."}
 # A stand-in modelling library, so a recipe can be built that owns a type no
 # other package does — see the "a recipe's own package" testset.
 RecipeKernels = {path = "fixtures/RecipeKernels"}
-# CNLPModels is unregistered, so it is resolved straight from its repository.
-# The Python consumer (https://github.com/MadNLP/cnlpmodels-py) is not a Julia
-# dependency at all — the test finds it through CNLPMODELS_PY and skips when it
+# CNLPLib is not registered yet, so it is resolved straight from its repository.
+# The Python consumer (https://github.com/madsuite-org/cnlplib-py) is not a Julia
+# dependency at all — the test finds it through CNLPLIB_PY and skips when it
 # is absent.
-CNLPModels = {url = "https://github.com/MadNLP/CNLPModels.jl", rev = "master"}
+CNLPLib = {url = "https://github.com/madsuite-org/CNLPLib.jl", rev = "master"}

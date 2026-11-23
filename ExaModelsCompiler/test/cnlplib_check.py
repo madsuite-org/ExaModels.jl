@@ -1,24 +1,27 @@
 """Evaluate a compiled ExaModelsCompiler library through the Python consumer.
 
-Loads the shared library with `cnlpmodels` (https://github.com/MadNLP/cnlpmodels-py)
+Loads the shared library with `cnlplib` (https://github.com/madsuite-org/cnlplib-py)
 and writes its readings to a text file for the Julia side to compare against
 `ExaModels` directly. Kept deliberately dependency-light — plain text out, no
 JSON — so the test needs nothing beyond numpy.
 
-    python3 cnlpmodels_check.py <libpath> <prefix> <n> <outfile>
+    python3 cnlplib_check.py <libpath> <prefix> <n> <outfile>
 """
 
 import sys
 import numpy as np
 
-import cnlpmodels
+try:
+    import cnlplib
+except ImportError:   # before the rename to cnlplib
+    import cnlpmodels as cnlplib
 
 
 def main():
     libpath, prefix, n, outfile = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
 
-    lib = cnlpmodels.load(libpath)
-    m = cnlpmodels.CModel(lib, n, prefix=prefix)
+    lib = cnlplib.load(libpath)
+    m = cnlplib.CModel(lib, n, prefix=prefix)
 
     # The same point the Julia side uses, generated identically rather than
     # passed across, so a mismatch in the point itself would show up as a

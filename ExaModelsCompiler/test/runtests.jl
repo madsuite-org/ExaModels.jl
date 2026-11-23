@@ -4,7 +4,7 @@ module ExaModelsCompilerTest
     using ExaModels, ExaModelsCompiler
     import Pkg
     import RecipeKernels
-    import CNLPModels
+    import CNLPLib
     import NLPModels
     import NLPModelsIpopt
 
@@ -243,10 +243,10 @@ module ExaModelsCompilerTest
                 # any string without the sigil is a local path, exactly as written.
                 @test ExaModelsCompiler._resolve_out("rosen", true) == abspath("rosen")
                 @test ExaModelsCompiler._resolve_out("./rosen", true) == abspath("./rosen")
-                withenv("CNLPMODELS_PATH" => nothing) do
+                withenv("CNLPLIB_PATH" => nothing) do
                     @test_throws ArgumentError ExaModelsCompiler._resolve_out("@rosen", true)
                 end
-                withenv("CNLPMODELS_PATH" => "/tmp/models") do
+                withenv("CNLPLIB_PATH" => "/tmp/models") do
                     @test ExaModelsCompiler._resolve_out("@rosen", true) == joinpath("/tmp/models", "rosen")
                     @test ExaModelsCompiler._resolve_out("@rosen", false) == "/tmp/models"
                 end
@@ -258,7 +258,7 @@ module ExaModelsCompilerTest
             # Compiling takes minutes, so the library is built once and every
             # behavioural test below reads that one artifact.  Bundled explicitly:
             # this is the bundle-path coverage (the default — unbundled — has its
-            # own testset below), and the bundle is the form CNLPModels.jl can
+            # own testset below), and the bundle is the form CNLPLib.jl can
             # load on every OS.
             r = compile_library(joinpath(OUT, "rosen"), build(), 4; bundle = true)
 
@@ -267,13 +267,13 @@ module ExaModelsCompilerTest
                 @test r.prefix == "rosen"
             end
 
-            lib = CNLPModels.load(r.libpath)
+            lib = CNLPLib.load(r.libpath)
 
             @testset "instantiated at a size the compile never saw" begin
                 # Compiled with the example N = 4; instantiated at 25.  If the size
                 # had been baked in rather than deferred, this is where it shows.
                 N = 25
-                m = CNLPModels.CNLPModel(lib, N; prefix = r.prefix)
+                m = CNLPLib.CNLPModel(lib, N; prefix = r.prefix)
                 ref = ExaModel(build(), N)
 
                 @test m.meta.nvar == ref.meta.nvar == N
@@ -304,8 +304,8 @@ module ExaModelsCompilerTest
             end
 
             @testset "instances are independent" begin
-                m1 = CNLPModels.CNLPModel(lib, 6; prefix = r.prefix)
-                m2 = CNLPModels.CNLPModel(lib, 11; prefix = r.prefix)
+                m1 = CNLPLib.CNLPModel(lib, 6; prefix = r.prefix)
+                m2 = CNLPLib.CNLPModel(lib, 11; prefix = r.prefix)
                 @test m1.meta.nvar == 6
                 @test m2.meta.nvar == 11
                 # The second instantiation must not have disturbed the first.
@@ -315,7 +315,7 @@ module ExaModelsCompilerTest
 
             @testset "the recipe library declares its arity" begin
                 @test ccall(
-                    CNLPModels.Libdl.dlsym(lib.handle, Symbol(r.prefix, "_nargs")),
+                    CNLPLib.Libdl.dlsym(lib.handle, Symbol(r.prefix, "_nargs")),
                     Int64, ()
                 ) == 1
             end
@@ -340,28 +340,28 @@ module ExaModelsCompilerTest
                 # path, with the prefix defaulting to the name.  Bundled, so the
                 # in-Julia consumption below works on every OS — and a second
                 # bundle in one process is the salt-collision regression case.
-                f = withenv("CNLPMODELS_PATH" => OUT) do
+                f = withenv("CNLPLIB_PATH" => OUT) do
                     compile_library("@fixed", c; bundle = true)
                 end
                 @test f.outdir == joinpath(OUT, "fixed")
                 @test f.prefix == "fixed"
                 @test isfile(f.libpath)
-                flib = CNLPModels.load(f.libpath)
+                flib = CNLPLib.load(f.libpath)
 
                 # The library says it consumes no instantiation arguments.
                 @test ccall(
-                    CNLPModels.Libdl.dlsym(flib.handle, Symbol(f.prefix, "_nargs")),
+                    CNLPLib.Libdl.dlsym(flib.handle, Symbol(f.prefix, "_nargs")),
                     Int64, ()
                 ) == 0
 
-                # The whole chain with no instance data anywhere: CNLPModels
+                # The whole chain with no instance data anywhere: CNLPLib
                 # consults `_nargs` and instantiates from nothing but the handle.
-                m3 = CNLPModels.CNLPModel(flib; prefix = f.prefix)
+                m3 = CNLPLib.CNLPModel(flib; prefix = f.prefix)
                 @test m3.meta.nvar == n
 
                 # `_new` keeps its one-integer C signature and ignores the value:
                 # any integer instantiates the same fixed model.
-                m = CNLPModels.CNLPModel(flib, 0; prefix = f.prefix)
+                m = CNLPLib.CNLPModel(flib, 0; prefix = f.prefix)
                 @test m.meta.nvar == ref.meta.nvar == n
                 @test m.meta.ncon == ref.meta.ncon == n - 1
                 @test m.meta.x0 ≈ ref.meta.x0
@@ -371,7 +371,7 @@ module ExaModelsCompilerTest
                 @test NLPModels.grad(m, x) ≈ NLPModels.grad(ref, x)
                 @test NLPModels.cons(m, x) ≈ NLPModels.cons(ref, x)
 
-                m2 = CNLPModels.CNLPModel(flib, 999; prefix = f.prefix)
+                m2 = CNLPLib.CNLPModel(flib, 999; prefix = f.prefix)
                 @test m2.meta.nvar == n
             end
 
@@ -389,15 +389,15 @@ module ExaModelsCompilerTest
                 @test filesize(u.libpath) < filesize(r.libpath) * 10 # far smaller than bundled
 
                 if Sys.islinux()
-                    # In-process consumption: CNLPModels detects the standard
+                    # In-process consumption: CNLPLib detects the standard
                     # libjulia NEEDED and provisions a load-time private runtime
                     # (loading this library as-is would abort the process, so
                     # this block passing IS the mechanism working). The bundled
                     # `rosen` runtime above is already resident: the two must
                     # coexist.
-                    ulib = CNLPModels.load(u.libpath)
+                    ulib = CNLPLib.load(u.libpath)
                     N = 17
-                    um = CNLPModels.CNLPModel(ulib, N; prefix = u.prefix)
+                    um = CNLPLib.CNLPModel(ulib, N; prefix = u.prefix)
                     ref = ExaModel(build(), N)
                     x = collect(range(0.5, 3.0; length = N))
                     @test um.meta.nvar == ref.meta.nvar == N
@@ -408,7 +408,7 @@ module ExaModelsCompilerTest
                     @test res.solution ≈ fill(2.0, N) atol = 1.0e-5
                     # And the bundled library is still alive next to it.
                     @test NLPModels.obj(
-                        CNLPModels.CNLPModel(lib, 5; prefix = r.prefix),
+                        CNLPLib.CNLPModel(lib, 5; prefix = r.prefix),
                         fill(1.0, 5)
                     ) ≈ 5.0
                 else
@@ -444,24 +444,24 @@ module ExaModelsCompilerTest
                 @test basename(g.libpath) ==
                     "libgrid." * Base.BinaryPlatforms.platform_dlext()
 
-                glib = CNLPModels.load(g.libpath)
+                glib = CNLPLib.load(g.libpath)
 
                 # Each model declares its own arity, out of the one library.
                 @test ccall(
-                    CNLPModels.Libdl.dlsym(glib.handle, :sized_nargs), Int64, ()
+                    CNLPLib.Libdl.dlsym(glib.handle, :sized_nargs), Int64, ()
                 ) == 1
                 @test ccall(
-                    CNLPModels.Libdl.dlsym(glib.handle, :other_nargs), Int64, ()
+                    CNLPLib.Libdl.dlsym(glib.handle, :other_nargs), Int64, ()
                 ) == 1
                 @test ccall(
-                    CNLPModels.Libdl.dlsym(glib.handle, :flat_nargs), Int64, ()
+                    CNLPLib.Libdl.dlsym(glib.handle, :flat_nargs), Int64, ()
                 ) == 0
 
                 # Instances of three different models, from one library, at once —
                 # and at sizes neither compile saw (the examples were 4 and 6).
-                a = CNLPModels.CNLPModel(glib, 9; prefix = "sized")
-                b = CNLPModels.CNLPModel(glib, 13; prefix = "other")
-                c = CNLPModels.CNLPModel(glib; prefix = "flat")
+                a = CNLPLib.CNLPModel(glib, 9; prefix = "sized")
+                b = CNLPLib.CNLPModel(glib, 13; prefix = "other")
+                c = CNLPLib.CNLPModel(glib; prefix = "flat")
                 @test a.meta.nvar == 9
                 @test b.meta.nvar == 13
                 @test c.meta.nvar == n
@@ -490,7 +490,7 @@ module ExaModelsCompilerTest
 
                 # The consumer's own spelling for this selection is
                 # `CNLPModel(glib, :sized, 9)` — the same prefix, named as a
-                # symbol; it is exercised in CNLPModels' own suite.
+                # symbol; it is exercised in CNLPLib' own suite.
             end
 
             @testset "a multi-model library is checked before it is compiled" begin
@@ -649,8 +649,8 @@ module ExaModelsCompilerTest
                         :mn => (sbuild(true), RecipeKernels.parsed_args, "4");
                         writers = (:mx => w, :mn => w), readers = (:mx => rd, :mn => rd), bundle = true,
                     )
-                    slib = CNLPModels.load(sr.libpath)
-                    dl(s) = CNLPModels.Libdl.dlsym(slib.handle, s)
+                    slib = CNLPLib.load(sr.libpath)
+                    dl(s) = CNLPLib.Libdl.dlsym(slib.handle, s)
                     @test ccall(dl(:cnlp_abi_version), Int64, ()) == 2
                     for (p, mn) in (("mx", 0), ("mn", 1))
                         sym(s) = dl(Symbol(p, "_", s))
@@ -701,16 +701,16 @@ module ExaModelsCompilerTest
                     writers = (:strd => (:summary => RecipeKernels.summary_writer,),),
                 )
                 @test sb.prefixes == ["structm", "knob", "dbl", "strd", "lay"]
-                slib = CNLPModels.load(sb.libpath)
+                slib = CNLPLib.load(sb.libpath)
                 # The library ANNOUNCES what it carries — the catalogue read back
                 # through the consumer, from the compiled artifact itself, so a
                 # caller holding only this path discovers all five by name.
-                @test CNLPModels.available_models(slib) ==
+                @test CNLPLib.available_models(slib) ==
                     [:structm, :knob, :dbl, :strd, :lay]
 
                 # The builder model exports no one-integer constructor; the knob
                 # model exports no builder. Disjoint, as the consumers assume.
-                dl(s) = CNLPModels.Libdl.dlsym(slib.handle, s; throw_error = false)
+                dl(s) = CNLPLib.Libdl.dlsym(slib.handle, s; throw_error = false)
                 @test dl(:structm_new) === nothing
                 @test dl(:structm_data_begin) !== nothing
                 @test dl(:knob_new) !== nothing
@@ -719,7 +719,7 @@ module ExaModelsCompilerTest
 
                 # The published schema is the flattened example: bare values by
                 # position, NamedTuple entries by key, the table with its columns.
-                sj = CNLPModels.schema_json(slib; prefix = "structm")
+                sj = CNLPLib.schema_json(slib; prefix = "structm")
                 for needle in (
                         "\"arg1\"", "\"v0\"", "\"lo\"",
                         """{"name":"arg3","kind":"table","columns":[{"name":"i","type":"i64"},{"name":"w","type":"f64"},{"name":"s","type":"f64"}]}""",
@@ -729,7 +729,7 @@ module ExaModelsCompilerTest
 
                 # Instantiated at a size and data the compile never saw, through
                 # the consumer's positional spelling — one value per schema field.
-                m = CNLPModels.CNLPModel(slib, S_N, S_V0, S_LO, S_TAB; prefix = "structm")
+                m = CNLPLib.CNLPModel(slib, S_N, S_V0, S_LO, S_TAB; prefix = "structm")
                 ref = ExaModel(sbuild(), S_N, (v0 = S_V0, lo = S_LO), S_TAB)
 
                 @test m.meta.nvar == ref.meta.nvar == S_N
@@ -748,12 +748,12 @@ module ExaModelsCompilerTest
 
                 # A second builder instance and the sibling knob model, with the
                 # first instance undisturbed.
-                m2 = CNLPModels.CNLPModel(
+                m2 = CNLPLib.CNLPModel(
                     slib, 4, fill(0.5, 4), fill(-10.0, 4), S_EXTAB; prefix = "structm",
                 )
                 @test m2.meta.nvar == 4
                 @test NLPModels.obj(m, x) ≈ NLPModels.obj(ref, x)
-                k = CNLPModels.CNLPModel(slib, 7; prefix = "knob")
+                k = CNLPLib.CNLPModel(slib, 7; prefix = "knob")
                 @test k.meta.nvar == 7
 
                 # The third surface: argument functions of both kinds, in the same
@@ -780,7 +780,7 @@ module ExaModelsCompilerTest
                 # structured models have.
                 @test ak("lay") == "int|size"
                 # :int kind — `P_new(n)` hands n to the function (size 2n here).
-                dm = CNLPModels.CNLPModel(slib, 5; prefix = "dbl")
+                dm = CNLPLib.CNLPModel(slib, 5; prefix = "dbl")
                 @test dm.meta.nvar == 10
                 # :str kind — `P_new_str` instantiates; `P_new` is not its entry
                 # point and returns the documented failure value.
@@ -908,7 +908,7 @@ module ExaModelsCompilerTest
 
                 # Wrong-arity and incomplete data are the consumer's errors, not
                 # aborts: the library reports, the consumer explains.
-                @test_throws ErrorException CNLPModels.CNLPModel(
+                @test_throws ErrorException CNLPLib.CNLPModel(
                     slib, S_N, S_V0; prefix = "structm"
                 )
 
@@ -920,15 +920,15 @@ module ExaModelsCompilerTest
             end
 
             @testset "the Python consumer reads the same model" begin
-                # cnlpmodels is an unrelated package (https://github.com/MadNLP/cnlpmodels-py),
+                # cnlplib (Python) is an unrelated package (https://github.com/madsuite-org/cnlplib-py),
                 # so this leg is skipped rather than failed when it is not present.
                 # It is pure Python over ctypes+numpy, hence usable straight from a
-                # source checkout — point CNLPMODELS_PY at one.
+                # source checkout — point CNLPLIB_PY at one.
                 pysrc = get(
-                    ENV, "CNLPMODELS_PY",
-                    joinpath(homedir(), "git", "pkg", "cnlpmodels-py", "src"),
+                    ENV, "CNLPLIB_PY",
+                    get(ENV, "CNLPMODELS_PY", joinpath(homedir(), "git", "pkg", "cnlplib-py", "src")),
                 )
-                script = joinpath(@__DIR__, "cnlpmodels_check.py")
+                script = joinpath(@__DIR__, "cnlplib_check.py")
                 # `python3` on unix, `python` on Windows — probe for one that both
                 # exists and has numpy, rather than assuming either.
                 py = nothing
@@ -1001,8 +1001,8 @@ module ExaModelsCompilerTest
                 # Same probing as the leg above; additionally needs the structured
                 # library the builder testset compiled.
                 pysrc = get(
-                    ENV, "CNLPMODELS_PY",
-                    joinpath(homedir(), "git", "pkg", "cnlpmodels-py", "src"),
+                    ENV, "CNLPLIB_PY",
+                    get(ENV, "CNLPMODELS_PY", joinpath(homedir(), "git", "pkg", "cnlplib-py", "src")),
                 )
                 py = nothing
                 for cand in ("python3", "python")
@@ -1047,7 +1047,7 @@ module ExaModelsCompilerTest
 
             @testset "solving through the library agrees with solving in Julia" begin
                 N = 20
-                m = CNLPModels.CNLPModel(lib, N; prefix = r.prefix)
+                m = CNLPLib.CNLPModel(lib, N; prefix = r.prefix)
                 ref = ExaModel(build(), N)
 
                 res = NLPModelsIpopt.ipopt(m; print_level = 0)

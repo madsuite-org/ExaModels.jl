@@ -1,25 +1,25 @@
 # [Compiling Models to Shared Libraries](@id compiler)
 
 `ExaModelsCompiler` compiles an `ExaCore` into a shared library that evaluates the
-model through a plain C interface, the [cnlp ABI](https://github.com/madsuite-org/cnlp-abi).
+model through a plain C interface, the [cnlp ABI](https://cnlplib.madsuite.org).
 The library needs no Julia installation on the consumer's side and no compilation at
 run time. It can be used from Julia through
-[CNLPModels.jl](https://github.com/madsuite-org/CNLPModels.jl), from Python through
-`cnlpmodels`, and from C or any language that can call C.
+[CNLPLib.jl](https://github.com/madsuite-org/CNLPLib.jl), from Python through
+`cnlplib`, and from C or any language that can call C.
 
 A library compiled with `device = :cuda` also evaluates the model on an NVIDIA GPU, on
 device pointers. The same file serves both: the CPU entry points are always present.
 
-ExaModelsCompiler is registered; CNLPModels is installed from its repository:
+ExaModelsCompiler is registered; CNLPLib is installed from its repository:
 
 ```julia
 using Pkg
 Pkg.add("ExaModelsCompiler")
-Pkg.add(url = "https://github.com/madsuite-org/CNLPModels.jl")
+Pkg.add(url = "https://github.com/madsuite-org/CNLPLib.jl")
 ```
 
 This page describes ExaModelsCompiler 0.4, whose libraries implement cnlp ABI 0.2 and are
-read by CNLPModels 0.4.
+read by CNLPLib 0.4.
 
 Compiling requires Julia 1.12 or later (it uses `juliac` through JuliaC.jl, which is a
 dependency) and takes from one to a few minutes per library.
@@ -53,14 +53,14 @@ fix the argument types; the library is then instantiated at any size.
 The library is consumed by name or by path:
 
 ```julia
-using CNLPModels, MadNLP
+using CNLPLib, MadNLP
 
 m = CNLPModel("rosen", 100_000)      # rosen_new(100000)
 madnlp(m)
 ```
 
-`compile_library("@rosen", ...)` installs the library on the CNLPModels search path
-(`CNLPMODELS_PATH`), where `CNLPModel("@rosen", n)` finds it.
+`compile_library("@rosen", ...)` installs the library on the CNLPLib search path
+(`CNLPLIB_PATH`), where `CNLPModel("@rosen", n)` finds it.
 
 ### Bundled or not
 
@@ -138,7 +138,7 @@ From Julia, the same library gives a model whose vectors live on the GPU, for a 
 solver:
 
 ```julia
-using CUDA, CUDSS, CNLPModels, MadNLPGPU         # MadNLPGPU needs CUDSS for GPU KKT systems
+using CUDA, CUDSS, CNLPLib, MadNLPGPU         # MadNLPGPU needs CUDSS for GPU KKT systems
 
 m = CNLPModel("rosen", 100_000; device = :cuda)   # a CNLPModel{CuVector{Float64}}
 madnlp(m)
@@ -152,7 +152,7 @@ tuple. Both are refused when compiling.
 
 ## Calling the library from C
 
-The entry points are declared by [`cnlp.h`](https://github.com/madsuite-org/cnlp-abi/blob/master/cnlp.h).
+The entry points are declared by [`cnlp.h`](https://github.com/madsuite-org/cnlplib/blob/main/cnlp.h).
 Every integer is `int64_t`, indices are 1-based, the Hessian is the lower triangle of
 ``\sigma \nabla^2 f + \sum_i y_i \nabla^2 c_i`` with ``\sigma`` given as `obj_weight`,
 and every function returns 0 on success. Nothing throws across the boundary.
@@ -207,7 +207,7 @@ cc -std=c99 -O2 -o lvdemo main.c -Lmodels/lib -lmodels \
 # n = 1000, m = 998, f = 6493.500000 (GPU 6493.500000), max |grad - grad_d| = 0.0e+00
 ```
 
-(`cnlp.h` is not shipped with the library; take it from the cnlp-abi repository and
+(`cnlp.h` is not shipped with the library; take it from the cnlplib repository and
 put it next to `main.c`.) A
 consumer that only learns the model names at run time loads the library with `dlopen`
 and asks `cnlp_nmodels` and `cnlp_model_name`, as the Julia and Python consumers do.
@@ -227,7 +227,7 @@ first.
   compiles readers of the model's own formats: `P_new_from_<name>(path)` instantiates,
   `P_start_from_<name>` fills a starting point, `P_set_from_<name>` sets parameters.
 - **Multiplier signs.** The ABI uses the convention of the
-  [cnlp solution format](https://github.com/madsuite-org/cnlp-abi/blob/master/formats/solution.md),
+  [cnlp solution format](https://github.com/madsuite-org/cnlplib/blob/main/formats/solution.md),
   ``\sigma \nabla f + J^\top y - z_L + z_U = 0`` with ``\sigma = -1`` when maximizing.
   Writer and reader functions are written in the NLPModels convention (the one solver
   results use); the library converts between the two.

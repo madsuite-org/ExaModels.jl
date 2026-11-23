@@ -19,7 +19,7 @@
 # core becomes code, what goes into the arguments crosses the boundary as data.
 # A recipe that builds and instantiates is on the compilation pathway, and the
 # author never reasons about trimming.  `ExaModelsCompiler` takes it from there —
-# shared library, C ABI, consumed by CNLPModels.jl or cnlpmodels.
+# shared library, C ABI, consumed by CNLPLib.jl or cnlplib.
 #
 # The same mechanism happens to make one core reusable at any size, which is
 # convenient, but it is a consequence rather than the motivation.

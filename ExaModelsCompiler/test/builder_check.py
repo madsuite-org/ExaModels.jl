@@ -7,11 +7,14 @@ import sys
 
 import numpy as np
 
-import cnlpmodels
+try:
+    import cnlplib
+except ImportError:   # before the rename to cnlplib
+    import cnlpmodels as cnlplib
 
 libpath, prefix, n, outfile = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
 
-lib = cnlpmodels.load(libpath)
+lib = cnlplib.load(libpath)
 v0 = np.linspace(0.1, 0.6, n)
 lo = np.full(n, -5.0)
 tab = {
@@ -20,7 +23,7 @@ tab = {
     "s": np.array([2.0, -1.0, 0.0]),
 }
 
-m = cnlpmodels.CModel(lib, n, v0, lo, tab, prefix=prefix)
+m = cnlplib.CModel(lib, n, v0, lo, tab, prefix=prefix)
 x = np.linspace(0.5, 3.0, n)
 
 with open(outfile, "w") as f:

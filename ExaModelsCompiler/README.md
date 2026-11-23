@@ -1,14 +1,14 @@
 # ExaModelsCompiler
 
 Compiles an ExaModels `ExaCore` into a shared library implementing the
-[cnlp ABI](https://github.com/madsuite-org/cnlp-abi) 0.2: the model is evaluated through
+[cnlp ABI](https://cnlplib.madsuite.org) 0.2: the model is evaluated through
 a plain C interface, on the CPU and optionally on an NVIDIA GPU (`device = :cuda`), with
 no Julia installation needed by the consumer and no compilation at run time. Libraries
-are consumed from Julia by [CNLPModels.jl](https://github.com/madsuite-org/CNLPModels.jl),
-from Python by `cnlpmodels`, and from C through `cnlp.h`.
+are consumed from Julia by [CNLPLib.jl](https://github.com/madsuite-org/CNLPLib.jl),
+from Python by `cnlplib`, and from C through `cnlp.h`.
 
 ```julia
-using ExaModels, ExaModelsCompiler, CNLPModels, MadNLP
+using ExaModels, ExaModelsCompiler, CNLPLib, MadNLP
 
 c, N = ExaCore(nargs = Val(1))
 @add_var(c, x, N; start = 0.5)
