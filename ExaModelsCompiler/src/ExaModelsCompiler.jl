@@ -6,7 +6,7 @@ Compile an [`ExaModels.ExaCore`](@ref) into a shared library implementing
 [`cnlp.h` in madsuite-org/cnlplib](https://github.com/madsuite-org/cnlplib/blob/main/cnlp.h)
 and consumed by
 [CNLPLib.jl](https://github.com/madsuite-org/CNLPLib.jl) (and its Python
-twin `cnlpmodels`).
+twin `cnlplib`).
 
 The core is the compile-time artifact.  It is built once against
 [`ExaModels.ArgSource`](@ref) placeholders — sizes, starting points and bounds left
@@ -35,7 +35,7 @@ which is part of ExaModels:
   - [CNLPLib.jl](https://github.com/madsuite-org/CNLPLib.jl) — loads the library
     as an `NLPModels.AbstractNLPModel`, so any JuliaSmoothOptimizers-compatible
     solver can solve it.
-  - [cnlpmodels](https://github.com/madsuite-org/cnlpmodels-py) — the same consumer
+  - [cnlplib](https://github.com/madsuite-org/cnlplib-py) — the same consumer
     for Python, over ctypes and numpy, needing no Julia runtime on the caller's
     side.
 
@@ -46,9 +46,9 @@ ipopt(CNLPModel(lib, 1000; prefix = "rosen"))
 ```
 
 ```python
-import cnlpmodels
-lib = cnlpmodels.load("/opt/models/rosen/librosen.so")
-m = cnlpmodels.CModel(lib, 1000, prefix="rosen")
+import cnlplib
+lib = cnlplib.load("/opt/models/rosen/librosen.so")
+m = cnlplib.CModel(lib, 1000, prefix="rosen")
 ```
 
 Both consumers default `prefix` to `"rec"` when handed a library handle, while
@@ -67,7 +67,7 @@ compile_library("@grid", :acopf => (ac_core, 100), :dcopf => (dc_core, 100))
 CNLPModel("@grid", :acopf, 100)                  # Julia
 ```
 ```python
-cnlpmodels.CModel("grid", 100, prefix="acopf")   # Python — a bare name, no sigil
+cnlplib.CModel("grid", 100, prefix="acopf")   # Python — a bare name, no sigil
 ```
 
 They share the library file and, in a bundle, its one privatized ~80 MB Julia
@@ -147,7 +147,7 @@ Julia on the consumer's side.
 
 | consumer | `bundle = false` (default) | `bundle = true` |
 |:---------|:---------------------------|:----------------|
-| Python (`cnlpmodels`), C | works | works |
+| Python (`cnlplib`), C | works | works |
 | Julia (`CNLPLib.jl`) | works on Linux; refused elsewhere | works |
 
 !!! warning "Windows"
@@ -702,7 +702,7 @@ _concretize(core::ExaModels.ExaCore) = ExaModels._concretize(core)
 
 # `@name` installs on the CNLPLib search path, so
 # `compile_library("@rosenrock", core, ...)` lands where
-# `CNLPModel("@rosenrock")` and `cnlpmodels.CModel("@rosenrock")` will look
+# `CNLPModel("@rosenrock")` and `cnlplib.CModel("@rosenrock")` will look
 # for it; any other string is a local path exactly as written — the same
 # convention the consumers apply to their string spec.
 #

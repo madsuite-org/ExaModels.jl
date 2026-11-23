@@ -15,7 +15,7 @@ ExaModelsCompiler = {path = ".."}
 # other package does — see the "a recipe's own package" testset.
 RecipeKernels = {path = "fixtures/RecipeKernels"}
 # CNLPLib is not registered yet, so it is resolved straight from its repository.
-# The Python consumer (https://github.com/MadNLP/cnlpmodels-py) is not a Julia
-# dependency at all — the test finds it through CNLPMODELS_PY and skips when it
+# The Python consumer (https://github.com/madsuite-org/cnlplib-py) is not a Julia
+# dependency at all — the test finds it through CNLPLIB_PY and skips when it
 # is absent.
 CNLPLib = {url = "https://github.com/madsuite-org/CNLPLib.jl", rev = "master"}

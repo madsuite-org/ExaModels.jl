@@ -920,15 +920,15 @@ module ExaModelsCompilerTest
             end
 
             @testset "the Python consumer reads the same model" begin
-                # cnlpmodels is an unrelated package (https://github.com/MadNLP/cnlpmodels-py),
+                # cnlplib (Python) is an unrelated package (https://github.com/madsuite-org/cnlplib-py),
                 # so this leg is skipped rather than failed when it is not present.
                 # It is pure Python over ctypes+numpy, hence usable straight from a
-                # source checkout — point CNLPMODELS_PY at one.
+                # source checkout — point CNLPLIB_PY at one.
                 pysrc = get(
-                    ENV, "CNLPMODELS_PY",
-                    joinpath(homedir(), "git", "pkg", "cnlpmodels-py", "src"),
+                    ENV, "CNLPLIB_PY",
+                    get(ENV, "CNLPMODELS_PY", joinpath(homedir(), "git", "pkg", "cnlplib-py", "src")),
                 )
-                script = joinpath(@__DIR__, "cnlpmodels_check.py")
+                script = joinpath(@__DIR__, "cnlplib_check.py")
                 # `python3` on unix, `python` on Windows — probe for one that both
                 # exists and has numpy, rather than assuming either.
                 py = nothing
@@ -1001,8 +1001,8 @@ module ExaModelsCompilerTest
                 # Same probing as the leg above; additionally needs the structured
                 # library the builder testset compiled.
                 pysrc = get(
-                    ENV, "CNLPMODELS_PY",
-                    joinpath(homedir(), "git", "pkg", "cnlpmodels-py", "src"),
+                    ENV, "CNLPLIB_PY",
+                    get(ENV, "CNLPMODELS_PY", joinpath(homedir(), "git", "pkg", "cnlplib-py", "src")),
                 )
                 py = nothing
                 for cand in ("python3", "python")

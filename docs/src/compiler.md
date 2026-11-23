@@ -5,7 +5,7 @@ model through a plain C interface, the [cnlp ABI](https://cnlplib.madsuite.org).
 The library needs no Julia installation on the consumer's side and no compilation at
 run time. It can be used from Julia through
 [CNLPLib.jl](https://github.com/madsuite-org/CNLPLib.jl), from Python through
-`cnlpmodels`, and from C or any language that can call C.
+`cnlplib`, and from C or any language that can call C.
 
 A library compiled with `device = :cuda` also evaluates the model on an NVIDIA GPU, on
 device pointers. The same file serves both: the CPU entry points are always present.

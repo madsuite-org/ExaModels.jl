@@ -384,12 +384,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # The Python consumer is an unrelated package and not a Julia dependency;
-      # the test finds it through CNLPMODELS_PY and skips the leg if absent.
+      # the test finds it through CNLPLIB_PY and skips the leg if absent.
       - uses: actions/checkout@v4
         with:
-          repository: madsuite-org/cnlpmodels-py
+          repository: madsuite-org/cnlplib-py
           ref: master
-          path: cnlpmodels-py
+          path: cnlplib-py
       - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
@@ -403,7 +403,7 @@ jobs:
       # probes for one with numpy and skips that leg when it finds none.
       - name: Run ExaModelsCompiler tests
         env:
-          CNLPMODELS_PY: ${{ github.workspace }}/cnlpmodels-py/src
+          CNLPLIB_PY: ${{ github.workspace }}/cnlplib-py/src
         # The linux leg is instrumented so ExaModelsCompiler/src reaches the coverage
         # report; the mac leg runs the same tests uninstrumented.
         run: |

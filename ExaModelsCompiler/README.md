@@ -5,7 +5,7 @@ Compiles an ExaModels `ExaCore` into a shared library implementing the
 a plain C interface, on the CPU and optionally on an NVIDIA GPU (`device = :cuda`), with
 no Julia installation needed by the consumer and no compilation at run time. Libraries
 are consumed from Julia by [CNLPLib.jl](https://github.com/madsuite-org/CNLPLib.jl),
-from Python by `cnlpmodels`, and from C through `cnlp.h`.
+from Python by `cnlplib`, and from C through `cnlp.h`.
 
 ```julia
 using ExaModels, ExaModelsCompiler, CNLPLib, MadNLP
