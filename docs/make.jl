@@ -23,6 +23,7 @@ if !(@isdefined _PAGES)
             "opf.md",
             "upgrade.md",
             "io.md",
+            "compiler.md",
         ],
         "Oracle Constraints" => "oracle.md",
         "JuMP Interface (experimental)" => "jump.md",

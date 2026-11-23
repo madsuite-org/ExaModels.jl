@@ -16,7 +16,7 @@ recompiles, whereas a closure carries a gensym that is not.
 """
 module RecipeKernels
 
-export alternating, offsets, doubled_args, parsed_args, table2d, datant, summary_writer
+export alternating, offsets, doubled_args, parsed_args, table2d, datant, summary_writer, const_start, short_start
 
 "Alternating starting point — the shape a per-index start generator takes."
 @inline alternating(i) = isodd(i) ? -1.2 : 1.0
@@ -53,20 +53,40 @@ datant(n) = (
 
 "A solution writer for the writer surface: records what it was handed, so the
 test can check every argument crossed the boundary."
-function summary_writer(out::AbstractString, arg, model, x, y, zl, zu;
-                        objective::Float64 = NaN, status::AbstractString = "")
+function summary_writer(
+        out::AbstractString, arg, model, x, y, zl, zu;
+        objective::Float64 = NaN, status::AbstractString = ""
+    )
     # `open(f, path, mode)` splats its arguments, which `--trim=safe` refuses.
     io = open(out, "w")
     try
         # One string: a long `println` argument list is a `Vararg` call trim cannot resolve.
-        words = (string(arg), string(model.meta.nvar), string(length(x)), string(sum(x)),
-                 string(length(y)), string(sum(y)), string(sum(zl)), string(sum(zu)),
-                 string(objective), String(status))
+        words = (
+            string(arg), string(model.meta.nvar), string(length(x)), string(sum(x)),
+            string(length(y)), string(sum(y)), string(sum(zl)), string(sum(zu)),
+            string(objective), String(status),
+        )
         println(io, join(words, ' '))
     finally
         close(io)
     end
     return out
 end
+
+"A start reader, in the NLPModels sign convention: one number `v` read from the file
+gives `x0 = v`, `y0 = v`, `zl = v`, `zu = 2v`."
+function const_start(path::AbstractString, model)
+    io = open(path)
+    v = try
+        parse(Float64, readline(io))
+    finally
+        close(io)
+    end
+    n, m = model.meta.nvar, model.meta.ncon
+    return (fill(v, n), fill(v, m), fill(v, n), fill(2v, n))
+end
+
+"A start reader that returns one entry too few."
+short_start(path::AbstractString, model) = zeros(model.meta.nvar - 1)
 
 end # module
