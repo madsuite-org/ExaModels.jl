@@ -92,6 +92,39 @@ module ExaModelsCompilerTest
                 @test_throws ArgumentError compile_library(OUT, c, 4; prefix = "2fast")
             end
 
+            @testset "the generated app gets the caller's manifest" begin
+                # juliac instantiates the app project; without a manifest it resolves
+                # the newest versions and drops the caller's pins. A caller
+                # environment with a pinned version and a relative-path package:
+                dir = mktempdir()
+                write(joinpath(dir, "Project.toml"), "[deps]\nFoo = \"$(Base.UUID(1))\"\n")
+                write(joinpath(dir, "Manifest.toml"), """
+                    julia_version = "$(VERSION)"
+                    manifest_format = "2.0"
+
+                    [[deps.Foo]]
+                    path = "sub/Foo"
+                    uuid = "$(Base.UUID(1))"
+                    version = "0.1.0"
+
+                    [[deps.Bar]]
+                    git-tree-sha1 = "0000000000000000000000000000000000000000"
+                    uuid = "$(Base.UUID(2))"
+                    version = "2.4.0"
+                    """)
+                app = mktempdir()
+                old = Base.active_project()
+                try
+                    Base.set_active_project(joinpath(dir, "Project.toml"))
+                    ExaModelsCompiler._copy_manifest(app)
+                finally
+                    Base.set_active_project(old)
+                end
+                m = ExaModelsCompiler.TOML.parsefile(joinpath(app, "Manifest.toml"))["deps"]
+                @test m["Bar"][1]["version"] == "2.4.0"
+                @test m["Foo"][1]["path"] == replace(joinpath(dir, "sub", "Foo"), '\\' => '/')
+            end
+
             @testset "builder examples are read, not guessed" begin
                 c = build()
                 # Types that cannot cross the boundary stay refused with the

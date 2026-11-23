@@ -1081,6 +1081,7 @@ function _generate_app(specs::Vector{ModelSpec}, libname::AbstractString; device
     # would drag unrelated packages into every app's compile.
     dev = [q for q in _developed_packages() if !any(r -> r.uuid == q.uuid, pkgs)]
     write(joinpath(appdir, "Project.toml"), _project_toml(modname, exadir, pkgs, dev))
+    _copy_manifest(appdir)
     device_src = ""
     if device !== :cpu
         # The device tier: the dependency-free runtime travels as a source file, and
@@ -1095,6 +1096,26 @@ function _generate_app(specs::Vector{ModelSpec}, libname::AbstractString; device
 end
 
 _toml_path(dir::AbstractString) = replace(dir, '\\' => '/')
+
+# The app is compiled at the versions the caller resolved, not at whatever is newest:
+# juliac instantiates the app project, and without a manifest that resolves afresh,
+# undoing every pin in the caller's environment (a newer dependency can pull code into
+# the image that `--trim` refuses). So the caller's manifest goes with the app, its
+# relative paths made absolute; Pkg drops the entries the app does not need and keeps
+# the versions of the rest.
+function _copy_manifest(appdir)
+    proj = Base.active_project()
+    proj === nothing && return
+    man = Base.project_file_manifest_path(proj)
+    (man === nothing || !isfile(man)) && return
+    toml = TOML.parsefile(man)
+    for entries in values(get(toml, "deps", Dict{String, Any}())), e in entries
+        e isa AbstractDict && haskey(e, "path") &&
+            (e["path"] = _toml_path(abspath(dirname(man), e["path"])))
+    end
+    open(io -> TOML.print(io, toml), joinpath(appdir, "Manifest.toml"), "w")
+    return
+end
 
 # The generated MODULE name must be a Julia identifier. The library FILE name
 # need not be — a consumer resolves `libmy-lib.so` out of a `my-lib/` bundle
