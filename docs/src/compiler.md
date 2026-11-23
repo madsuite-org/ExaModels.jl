@@ -4,22 +4,22 @@
 model through a plain C interface, the [cnlp ABI](https://github.com/madsuite-org/cnlp-abi).
 The library needs no Julia installation on the consumer's side and no compilation at
 run time. It can be used from Julia through
-[CNLPModels.jl](https://github.com/madsuite-org/CNLPModels.jl), from Python through
+[CNLPLib.jl](https://github.com/madsuite-org/CNLPLib.jl), from Python through
 `cnlpmodels`, and from C or any language that can call C.
 
 A library compiled with `device = :cuda` also evaluates the model on an NVIDIA GPU, on
 device pointers. The same file serves both: the CPU entry points are always present.
 
-ExaModelsCompiler is registered; CNLPModels is installed from its repository:
+ExaModelsCompiler is registered; CNLPLib is installed from its repository:
 
 ```julia
 using Pkg
 Pkg.add("ExaModelsCompiler")
-Pkg.add(url = "https://github.com/madsuite-org/CNLPModels.jl")
+Pkg.add(url = "https://github.com/madsuite-org/CNLPLib.jl")
 ```
 
 This page describes ExaModelsCompiler 0.4, whose libraries implement cnlp ABI 0.2 and are
-read by CNLPModels 0.4.
+read by CNLPLib 0.4.
 
 Compiling requires Julia 1.12 or later (it uses `juliac` through JuliaC.jl, which is a
 dependency) and takes from one to a few minutes per library.
@@ -53,14 +53,14 @@ fix the argument types; the library is then instantiated at any size.
 The library is consumed by name or by path:
 
 ```julia
-using CNLPModels, MadNLP
+using CNLPLib, MadNLP
 
 m = CNLPModel("rosen", 100_000)      # rosen_new(100000)
 madnlp(m)
 ```
 
-`compile_library("@rosen", ...)` installs the library on the CNLPModels search path
-(`CNLPMODELS_PATH`), where `CNLPModel("@rosen", n)` finds it.
+`compile_library("@rosen", ...)` installs the library on the CNLPLib search path
+(`CNLPLIB_PATH`), where `CNLPModel("@rosen", n)` finds it.
 
 ### Bundled or not
 
@@ -138,7 +138,7 @@ From Julia, the same library gives a model whose vectors live on the GPU, for a 
 solver:
 
 ```julia
-using CUDA, CUDSS, CNLPModels, MadNLPGPU         # MadNLPGPU needs CUDSS for GPU KKT systems
+using CUDA, CUDSS, CNLPLib, MadNLPGPU         # MadNLPGPU needs CUDSS for GPU KKT systems
 
 m = CNLPModel("rosen", 100_000; device = :cuda)   # a CNLPModel{CuVector{Float64}}
 madnlp(m)

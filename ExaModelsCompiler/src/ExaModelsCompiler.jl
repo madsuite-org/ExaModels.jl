@@ -5,7 +5,7 @@ Compile an [`ExaModels.ExaCore`](@ref) into a shared library implementing
 **cnlp ABI 0.2** — the plain C interface specified by
 [`cnlp.h` in madsuite-org/cnlp-abi](https://github.com/madsuite-org/cnlp-abi/blob/master/cnlp.h)
 and consumed by
-[CNLPModels.jl](https://github.com/madsuite-org/CNLPModels.jl) (and its Python
+[CNLPLib.jl](https://github.com/madsuite-org/CNLPLib.jl) (and its Python
 twin `cnlpmodels`).
 
 The core is the compile-time artifact.  It is built once against
@@ -32,7 +32,7 @@ statically, so the example fixes what `N` *is* (an `Int`) while leaving what it
 The C interface is the one implemented by two companion packages, neither of
 which is part of ExaModels:
 
-  - [CNLPModels.jl](https://github.com/madsuite-org/CNLPModels.jl) — loads the library
+  - [CNLPLib.jl](https://github.com/madsuite-org/CNLPLib.jl) — loads the library
     as an `NLPModels.AbstractNLPModel`, so any JuliaSmoothOptimizers-compatible
     solver can solve it.
   - [cnlpmodels](https://github.com/madsuite-org/cnlpmodels-py) — the same consumer
@@ -40,8 +40,8 @@ which is part of ExaModels:
     side.
 
 ```julia
-using CNLPModels, NLPModelsIpopt
-lib = CNLPModels.load("/opt/models/rosen/librosen.so")
+using CNLPLib, NLPModelsIpopt
+lib = CNLPLib.load("/opt/models/rosen/librosen.so")
 ipopt(CNLPModel(lib, 1000; prefix = "rosen"))
 ```
 
@@ -148,7 +148,7 @@ Julia on the consumer's side.
 | consumer | `bundle = false` (default) | `bundle = true` |
 |:---------|:---------------------------|:----------------|
 | Python (`cnlpmodels`), C | works | works |
-| Julia (`CNLPModels.jl`) | works on Linux; refused elsewhere | works |
+| Julia (`CNLPLib.jl`) | works on Linux; refused elsewhere | works |
 
 !!! warning "Windows"
     `juliac` implements runtime privatization for Linux and macOS only — on
@@ -171,25 +171,25 @@ reproduce the abort; measured, not assumed.
 
 The two forms therefore differ only in *when* privatization happens.  A bundle
 carries its privatized runtime with it; an unbundled library gets one at load
-time — on Linux, `CNLPModels.load` detects the standard `libjulia` soname in
+time — on Linux, `CNLPLib.load` detects the standard `libjulia` soname in
 its NEEDED entries and provisions a salted copy of the consumer's *installed*
 runtime (the same transformation JuliaC's bundler applies, replayed in
 scratch).  Python and C callers load either form as-is: there the calling
 thread is genuinely foreign and the library's own runtime initializes on the
 first call.  On macOS the load-time half is not implemented, so
-`CNLPModels.jl` needs the bundle there; it refuses the unbundled form with an
+`CNLPLib.jl` needs the bundle there; it refuses the unbundled form with an
 explanation rather than aborting.
 
 ## Where it goes
 
-`out` is `"@name"` to install on the CNLPModels search path
-(`CNLPMODELS_PATH`), where both consumers find it by that name — or any
+`out` is `"@name"` to install on the CNLPLib search path
+(`CNLPLIB_PATH`), where both consumers find it by that name — or any
 other string as a local path, exactly as written (`"rosen"` is `./rosen`,
 `"/path/to/rosen"` is the full path). The same convention the consumers
 apply to their string spec:
 
 ```julia
-compile_library("@rosenrock", core, 1000)       # → \$CNLPMODELS_PATH/rosenrock/
+compile_library("@rosenrock", core, 1000)       # → \$CNLPLIB_PATH/rosenrock/
 CNLPModel("@rosenrock", 1000)                   # finds it, prefix defaults to the name
 ```
 
@@ -700,7 +700,7 @@ _concretize(core::ExaModels.ExaCore) = ExaModels._concretize(core)
 
 # ── Where the library goes ────────────────────────────────────────────────────
 
-# `@name` installs on the CNLPModels search path, so
+# `@name` installs on the CNLPLib search path, so
 # `compile_library("@rosenrock", core, ...)` lands where
 # `CNLPModel("@rosenrock")` and `cnlpmodels.CModel("@rosenrock")` will look
 # for it; any other string is a local path exactly as written — the same
@@ -712,11 +712,12 @@ function _resolve_out(out::AbstractString, bundle::Bool)
     startswith(out, "@") || return abspath(out)
     name = String(out[2:end])
     isempty(name) && throw(ArgumentError("`@` names a library — give one, like `@rosenrock`"))
-    dirs = filter(!isempty, split(get(ENV, "CNLPMODELS_PATH", ""), ':'))
+    # CNLPMODELS_PATH: the variable's name before CNLPLib was renamed
+    dirs = filter(!isempty, split(get(ENV, "CNLPLIB_PATH", get(ENV, "CNLPMODELS_PATH", "")), ':'))
     isempty(dirs) && throw(
         ArgumentError(
-            "`$out` names a library to install on the CNLPModels search path — " *
-                "but CNLPMODELS_PATH is not set. Set it, or pass a path such as " *
+            "`$out` names a library to install on the CNLPLib search path — " *
+                "but CNLPLIB_PATH is not set. Set it, or pass a path such as " *
                 "`\"./$name\"`.",
         ),
     )
@@ -2337,7 +2338,7 @@ Call it with the package itself; a package that ships models implements the
 and its keywords mean the same thing everywhere:
 
   - `path` — where the library goes, as [`compile_library`](@ref) takes it
-    (`"@cops"` installs on the `CNLPMODELS_PATH`); each package picks its own
+    (`"@cops"` installs on the `CNLPLIB_PATH`); each package picks its own
     default name.
   - everything else is forwarded to `compile_library` (`bundle`, `trim`, …).
 

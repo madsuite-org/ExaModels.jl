@@ -39,7 +39,7 @@
 #    library, with the data left open;
 # 2. a plain C interface on that library, so the caller needs no Julia;
 # 3. consumption through
-#    [CNLPModels.jl](https://github.com/MadNLP/CNLPModels.jl) or
+#    [CNLPLib.jl](https://github.com/madsuite-org/CNLPLib.jl) or
 #    [cnlpmodels](https://github.com/MadNLP/cnlpmodels-py), which present it as
 #    an ordinary NLP to solvers on either side.
 
@@ -173,7 +173,7 @@ m = ExaModel(chain, 6, chain_pairs(6), 1 / 7)
 # The C interface is the one used by two companion packages, neither of which
 # is part of ExaModels:
 
-# * [CNLPModels.jl](https://github.com/MadNLP/CNLPModels.jl) — loads the
+# * [CNLPLib.jl](https://github.com/madsuite-org/CNLPLib.jl) — loads the
 #   library as an `NLPModels.AbstractNLPModel`, so any
 #   JuliaSmoothOptimizers-compatible solver can solve it.
 # * [cnlpmodels](https://github.com/MadNLP/cnlpmodels-py) — the same consumer
@@ -183,9 +183,9 @@ m = ExaModel(chain, 6, chain_pairs(6), 1 / 7)
 # From Julia:
 
 # ```julia
-# using CNLPModels, NLPModelsIpopt
+# using CNLPLib, NLPModelsIpopt
 #
-# lib = CNLPModels.load("/opt/models/rosen/lib/librosen.so")
+# lib = CNLPLib.load("/opt/models/rosen/lib/librosen.so")
 # m = CNLPModel(lib, 1000; prefix = "rosen")          # rosen_new(1000)
 # result = ipopt(m)
 # ```
