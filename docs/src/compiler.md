@@ -1,7 +1,7 @@
 # [Compiling Models to Shared Libraries](@id compiler)
 
 `ExaModelsCompiler` compiles an `ExaCore` into a shared library that evaluates the
-model through a plain C interface, the [cnlp ABI](https://github.com/madsuite-org/cnlp-abi).
+model through a plain C interface, the [cnlp ABI](https://cnlplib.madsuite.org).
 The library needs no Julia installation on the consumer's side and no compilation at
 run time. It can be used from Julia through
 [CNLPLib.jl](https://github.com/madsuite-org/CNLPLib.jl), from Python through
@@ -152,7 +152,7 @@ tuple. Both are refused when compiling.
 
 ## Calling the library from C
 
-The entry points are declared by [`cnlp.h`](https://github.com/madsuite-org/cnlp-abi/blob/master/cnlp.h).
+The entry points are declared by [`cnlp.h`](https://github.com/madsuite-org/cnlplib/blob/main/cnlp.h).
 Every integer is `int64_t`, indices are 1-based, the Hessian is the lower triangle of
 ``\sigma \nabla^2 f + \sum_i y_i \nabla^2 c_i`` with ``\sigma`` given as `obj_weight`,
 and every function returns 0 on success. Nothing throws across the boundary.
@@ -207,7 +207,7 @@ cc -std=c99 -O2 -o lvdemo main.c -Lmodels/lib -lmodels \
 # n = 1000, m = 998, f = 6493.500000 (GPU 6493.500000), max |grad - grad_d| = 0.0e+00
 ```
 
-(`cnlp.h` is not shipped with the library; take it from the cnlp-abi repository and
+(`cnlp.h` is not shipped with the library; take it from the cnlplib repository and
 put it next to `main.c`.) A
 consumer that only learns the model names at run time loads the library with `dlopen`
 and asks `cnlp_nmodels` and `cnlp_model_name`, as the Julia and Python consumers do.
@@ -227,7 +227,7 @@ first.
   compiles readers of the model's own formats: `P_new_from_<name>(path)` instantiates,
   `P_start_from_<name>` fills a starting point, `P_set_from_<name>` sets parameters.
 - **Multiplier signs.** The ABI uses the convention of the
-  [cnlp solution format](https://github.com/madsuite-org/cnlp-abi/blob/master/formats/solution.md),
+  [cnlp solution format](https://github.com/madsuite-org/cnlplib/blob/main/formats/solution.md),
   ``\sigma \nabla f + J^\top y - z_L + z_U = 0`` with ``\sigma = -1`` when maximizing.
   Writer and reader functions are written in the NLPModels convention (the one solver
   results use); the library converts between the two.

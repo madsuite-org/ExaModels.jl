@@ -3,7 +3,7 @@
 
 Compile an [`ExaModels.ExaCore`](@ref) into a shared library implementing
 **cnlp ABI 0.2** — the plain C interface specified by
-[`cnlp.h` in madsuite-org/cnlp-abi](https://github.com/madsuite-org/cnlp-abi/blob/master/cnlp.h)
+[`cnlp.h` in madsuite-org/cnlplib](https://github.com/madsuite-org/cnlplib/blob/main/cnlp.h)
 and consumed by
 [CNLPLib.jl](https://github.com/madsuite-org/CNLPLib.jl) (and its Python
 twin `cnlpmodels`).
