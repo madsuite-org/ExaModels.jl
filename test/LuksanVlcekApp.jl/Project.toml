@@ -13,10 +13,13 @@ ExaModels = {path = "../.."}
 NLPModelsIpoptLite = {path = "../NLPModelsIpoptLite.jl"}
 LuksanVlcekBenchmark = {url = "https://github.com/MadNLP/LuksanVlcekBenchmark.jl", rev= "ss/aot"}
 
-# Libiconv_jll 1.18.1 moved to LazyJLLWrappers, whose lazy `__init__` juliac --trim
-# cannot compile (unresolved `dlopen(::LazyLibrary)`); it arrives through XML2_jll.
+# Libiconv_jll 1.18.1 and XML2_jll 2.15.5 moved to LazyJLLWrappers, whose lazy `__init__`
+# juliac --trim cannot compile (unresolved `dlopen(::LazyLibrary)`); they arrive through
+# Hwloc_jll. Held at their last JLLWrappers releases.
 [weakdeps]
 Libiconv_jll = "94ce4f54-9a6c-5748-9c1c-f9c7231a4531"
+XML2_jll = "02c8fc9c-b97f-50b9-bbe4-9be30ff0a78a"
 
 [compat]
 Libiconv_jll = "=1.18.0"
+XML2_jll = "=2.15.4"
