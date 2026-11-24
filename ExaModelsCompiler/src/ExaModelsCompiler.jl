@@ -101,6 +101,13 @@ struct Writer
     fun::Any
 end
 
+# A report carried into the library (cnlp.h, the reports tier): a package-owned function the
+# library calls by name (`call`) for text about an instance or a solution.
+struct Report
+    call::String
+    fun::Any
+end
+
 # A model's own input format (cnlp.h, the readers tier). `kind` is the ABI's:
 # 0 = instance (path -> the argument tuple), 1 = parameters (path, model ->
 # a NamedTuple of parameter-block values), 2 = start (path, model -> x0, or
@@ -124,7 +131,11 @@ struct ModelSpec
     default_writer::String     # the writer consumers use by default; "" for the standard format
     readers::Vector{Reader}
     default_reader::String     # the instance reader for a bare path; "" for none
+    report_instance::Union{Nothing, Report}
+    report_solution::Union{Nothing, Report}
 end
+ModelSpec(prefix, core, arg, field, writers, dw, readers, dr) =
+    ModelSpec(prefix, core, arg, field, writers, dw, readers, dr, nothing, nothing)
 ModelSpec(prefix, core, arg, field) = ModelSpec(prefix, core, arg, field, Writer[], "", Reader[], "")
 ModelSpec(prefix, core, arg, field, writers) = ModelSpec(prefix, core, arg, field, writers, "", Reader[], "")
 ModelSpec(prefix, core, arg, field, writers, dw) = ModelSpec(prefix, core, arg, field, writers, dw, Reader[], "")
@@ -298,6 +309,22 @@ Instance readers need a model with a string argument function. A start reader's
 multipliers are in the NLPModels convention; the library converts them. `default`
 names the instance reader for a bare path (`P_default_reader`).
 
+## Reports
+
+`reports = (instance = f, solution = g)` compiles text for a person about an instance and
+about a solution (cnlp.h, the reports tier; `cnlp solve` prints them before and after a
+solve), for a model with an argument function. Each is a named function a package owns,
+returning a `String`:
+
+    f(arg, model)
+    g(arg, model, x, y, zl, zu; objective::Float64, status::String)
+
+with the arguments of a writer (multipliers in the NLPModels convention). They are
+exported as `P_report_instance(id, buf, cap)` and
+`P_report_solution(id, x, y, zl, zu, objective, status, buf, cap)`, by the copy-out
+convention; either may be left out. Each runs once on the example instance before
+compiling.
+
 ## GPU evaluation
 
 `device = :cuda` (with CUDACore and GPUCompiler loaded) adds `P_device` and the
@@ -322,9 +349,10 @@ function compile_library(
         argfun = nothing,
         writers = (),
         readers = (),
+        reports = (),
         device::Symbol = :cpu,
     )
-    spec = _with_readers(_with_writers(_model_spec(prefix, core, argfun, args), writers), readers)
+    spec = _with_reports(_with_readers(_with_writers(_model_spec(prefix, core, argfun, args), writers), readers), reports)
     r = _compile([spec], out, prefix, trim, bundle, verbose; device)
     # One model keeps the singular field it has always returned.
     return (; libpath = r.libpath, outdir = r.outdir, prefix = spec.prefix)
@@ -378,6 +406,7 @@ function compile_library(
         verbose::Bool = false,
         writers = (),
         readers = (),
+        reports = (),
         device::Symbol = :cpu,
     )
     isempty(models) && throw(ArgumentError("give at least one `:name => core` model"))
@@ -396,6 +425,17 @@ function compile_library(
     end
     specs = ModelSpec[
         _with_writers(s, (ws for (name, ws) in writers if Symbol(name) == Symbol(s.prefix))...)
+            for s in specs
+    ]
+    for (name, _) in reports
+        Symbol(name) in names || throw(
+            ArgumentError(
+                "`reports` names a model `$name` that is not in this library; it has $(sort(collect(names)))"
+            )
+        )
+    end
+    specs = ModelSpec[
+        _with_reports(s, (rs for (name, rs) in reports if Symbol(name) == Symbol(s.prefix))...)
             for s in specs
     ]
     for (name, _) in readers
@@ -502,7 +542,34 @@ function _with_writers(s::ModelSpec, writers)
             "`$(s.prefix)`: the default writer `$default` is not one of its writers $(map(x -> x.name, out))"
         )
     )
-    return ModelSpec(s.prefix, s.core, s.arg, s.field, out, default, s.readers, s.default_reader)
+    return ModelSpec(s.prefix, s.core, s.arg, s.field, out, default, s.readers, s.default_reader, s.report_instance, s.report_solution)
+end
+
+# Attach reports to a model: `(instance = f, solution = g)`, either may be left out, each a
+# named function a package owns (as writers are).
+_with_reports(s::ModelSpec) = s
+function _with_reports(s::ModelSpec, reports)
+    isempty(reports) && return s
+    reports isa NamedTuple || throw(
+        ArgumentError("`$(s.prefix)`: reports are `(instance = f, solution = g)`, got $(repr(reports))")
+    )
+    for k in keys(reports)
+        k in (:instance, :solution) || throw(
+            ArgumentError("`$(s.prefix)`: a report is `instance` or `solution`, got `$k`")
+        )
+        reports[k] isa Function || throw(ArgumentError("`$(s.prefix)`: report `$k` is not a function"))
+    end
+    s.field isa UserArgs || throw(
+        ArgumentError(
+            "`$(s.prefix)`: reports need a model with an argument function — a report is " *
+                "handed the value that function was called with."
+        )
+    )
+    mk(k) = haskey(reports, k) ? Report(_argfun_call(s.prefix, reports[k]; what = "a report"), reports[k]) : nothing
+    return ModelSpec(
+        s.prefix, s.core, s.arg, s.field, s.writers, s.default_writer, s.readers, s.default_reader,
+        mk(:instance), mk(:solution),
+    )
 end
 
 _with_readers(s::ModelSpec) = s
@@ -541,7 +608,7 @@ function _with_readers(s::ModelSpec, readers)
             "`$(s.prefix)`: the default reader `$default` is not one of its instance readers"
         )
     )
-    return ModelSpec(s.prefix, s.core, s.arg, s.field, s.writers, s.default_writer, out, default)
+    return ModelSpec(s.prefix, s.core, s.arg, s.field, s.writers, s.default_writer, out, default, s.report_instance, s.report_solution)
 end
 
 # The per-model validation both entry points share. Everything here is checked
@@ -646,6 +713,7 @@ function _compile(specs::Vector{ModelSpec}, out, libname, trim, bundle, verbose;
         verbose && @info "compile_library: core instantiates" prefix = s.prefix nvar =
             probe.meta.nvar ncon = probe.meta.ncon
         _probe_writers(s, probe)
+        _probe_reports(s, probe)
         push!(probes, probe)
     end
 
@@ -679,6 +747,26 @@ function _probe_writers(s::ModelSpec, probe)
         finally
             rm(out; force = true)
         end
+    end
+    return
+end
+
+# Each report runs once on the example instance, at its starting point, and must return a
+# String, so a report that cannot handle this model fails here rather than at run time.
+function _probe_reports(s::ModelSpec, probe)
+    nv, nc = probe.meta.nvar, probe.meta.ncon
+    for (k, r) in (("instance", s.report_instance), ("solution", s.report_solution))
+        r === nothing && continue
+        out = try
+            k == "instance" ? r.fun(s.field.example, probe) :
+                r.fun(s.field.example, probe, copy(probe.meta.x0), zeros(nc), zeros(nv), zeros(nv);
+                      objective = NaN, status = "probe")
+        catch err
+            throw(ArgumentError("`$(s.prefix)`: the $k report failed on the example instance: " * sprint(showerror, err)))
+        end
+        out isa AbstractString || throw(
+            ArgumentError("`$(s.prefix)`: the $k report returned a $(typeof(out)), not a String")
+        )
     end
     return
 end
@@ -2012,6 +2100,60 @@ function _writers_source(p::AbstractString, writers::Vector{Writer})
     $entries"""
 end
 
+# The reports tier: P_report_instance and P_report_solution, copying out the text the
+# package's functions return (0 when a report throws, -1 for a bad id). Exported only
+# when the model has a report (the witness is P_report_instance).
+function _reports_source(p::AbstractString, s)
+    s.report_instance === nothing && s.report_solution === nothing && return ""
+    copyout = """
+                b = codeunits(String(txt))
+                n = length(b)
+                m = min(Int(cap), n)
+                if m > 0 && buf != Ptr{UInt8}(0)
+                    GC.@preserve b unsafe_copyto!(buf, pointer(b), m)
+                end
+                return Int64(n)
+    """
+    inst = s.report_instance === nothing ? "            return Int64(0)\n" : """
+            try
+                txt = $(s.report_instance.call)(ARGIN_$p[Int(id)], MODELS_$p[Int(id)])
+    $copyout        catch
+                return Int64(0)
+            end
+    """
+    sol = s.report_solution === nothing ? "            return Int64(0)\n" : """
+            try
+                m = MODELS_$p[Int(id)]
+                nv = Int(m.meta.nvar)
+                nc = Int(m.meta.ncon)
+                st = status == Ptr{Cchar}(0) ? "" : unsafe_string(status)
+                # cnlp multipliers -> NLPModels convention (negated for maximization)
+                sg = m.meta.minimize ? 1.0 : -1.0
+                txt = $(s.report_solution.call)(
+                    ARGIN_$p[Int(id)], m,
+                    copy(unsafe_wrap(Array, x, nv)), sg .* unsafe_wrap(Array, y, nc),
+                    sg .* unsafe_wrap(Array, zl, nv), sg .* unsafe_wrap(Array, zu, nv);
+                    objective = Float64(objective), status = st,
+                )
+    $copyout        catch
+                return Int64(0)
+            end
+    """
+    return """
+        # ── reports of `$p` ──────────────────────────────────────────────────────
+        Base.@ccallable function $(p)_report_instance(id::Int64, buf::Ptr{UInt8}, cap::Int64)::Int64
+            _valid_$p(id) || return Int64(-1)
+    $inst    end
+
+        Base.@ccallable function $(p)_report_solution(
+            id::Int64, x::Ptr{Cdouble}, y::Ptr{Cdouble}, zl::Ptr{Cdouble}, zu::Ptr{Cdouble},
+            objective::Cdouble, status::Ptr{Cchar}, buf::Ptr{UInt8}, cap::Int64,
+        )::Int64
+            _valid_$p(id) || return Int64(-1)
+    $sol    end
+    """
+end
+
 function _model_source(s::ModelSpec)
     p = s.prefix
     # A builder spec's example is the whole tuple of values, splatted back the
@@ -2039,6 +2181,7 @@ function _model_source(s::ModelSpec)
     $(_layout_source(p, s.core))
     $(_writers_source(p, s.writers))
     $(_default_writer_source(p, s.default_writer))
+    $(_reports_source(p, s))
     $(_readers_source(p, s))
         Base.@ccallable function $(p)_nvar(id::Int64)::Int64
             _valid_$p(id) || return Int64(-1)

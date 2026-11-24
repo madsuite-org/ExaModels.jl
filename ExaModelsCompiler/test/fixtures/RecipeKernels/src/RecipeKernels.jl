@@ -16,7 +16,7 @@ recompiles, whereas a closure carries a gensym that is not.
 """
 module RecipeKernels
 
-export alternating, offsets, doubled_args, parsed_args, table2d, datant, summary_writer, const_start, short_start
+export alternating, offsets, doubled_args, parsed_args, table2d, datant, summary_writer, const_start, short_start, instance_report, solution_report, count_report
 
 "Alternating starting point — the shape a per-index start generator takes."
 @inline alternating(i) = isodd(i) ? -1.2 : 1.0
@@ -50,6 +50,16 @@ datant(n) = (
     v_start = fill(0.5, 3 * n),
     tab = [(i, j, 0.5 + i) for i in 1:n, j in 1:3],
 )
+
+"A report about an instance: its size (the reports tier)."
+instance_report(arg, model) = string("instance: nvar ", model.meta.nvar, " ncon ", model.meta.ncon)
+
+"Not a report: returns a number, which `compile_library` refuses."
+count_report(arg, model) = model.meta.nvar
+
+"A report about a solution: its status, objective and the sums of the multipliers."
+solution_report(arg, model, x, y, zl, zu; objective::Float64 = NaN, status::AbstractString = "") =
+    string("solution: ", status, " ", objective, " ", sum(y), " ", sum(zl), " ", sum(zu))
 
 "A solution writer for the writer surface: records what it was handed, so the
 test can check every argument crossed the boundary."

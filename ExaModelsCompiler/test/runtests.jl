@@ -632,6 +632,32 @@ module ExaModelsCompilerTest
                 @test occursin("Int64(0)", ExaModelsCompiler._writers_source("m", ExaModelsCompiler.Writer[]))
             end
 
+            @testset "reports are checked before they are compiled" begin
+                c = build()
+                rp = (instance = RecipeKernels.instance_report,)
+                @test_throws "need a model with an argument function" compile_library(OUT, c, 4; reports = rp)
+                @test_throws "a report is `instance` or `solution`" compile_library(
+                    OUT, c, 4; argfun = RecipeKernels.doubled_args, reports = (before = RecipeKernels.instance_report,)
+                )
+                @test_throws "a report must be a named function" compile_library(
+                    OUT, c, 4; argfun = RecipeKernels.doubled_args, reports = (instance = (arg, m) -> "x",)
+                )
+                @test_throws "not a String" compile_library(
+                    OUT, c, 4; argfun = RecipeKernels.doubled_args, reports = (instance = RecipeKernels.count_report,)
+                )
+                @test_throws "names a model `nope`" compile_library(
+                    OUT, :m => (c, RecipeKernels.doubled_args, 4); reports = (:nope => rp,)
+                )
+                s = ExaModelsCompiler._with_reports(
+                    ExaModelsCompiler._model_spec("m", c, RecipeKernels.parsed_args, ("4",)), rp
+                )
+                src = ExaModelsCompiler._model_source(s)
+                @test occursin("function m_report_instance(", src) && occursin("function m_report_solution(", src)
+                @test occursin("RecipeKernels.instance_report(", src)
+                @test !occursin("report_instance", ExaModelsCompiler._model_source(
+                    ExaModelsCompiler._model_spec("m", c, RecipeKernels.parsed_args, ("4",))))
+            end
+
             @testset "sense, writers and start readers in the cnlp sign convention" begin
                 let   # local names: this runs inside `runtests()`, whose later testsets reuse them
                     function sbuild(minimize)
@@ -648,6 +674,8 @@ module ExaModelsCompilerTest
                         :mx => (sbuild(false), RecipeKernels.parsed_args, "4"),
                         :mn => (sbuild(true), RecipeKernels.parsed_args, "4");
                         writers = (:mx => w, :mn => w), readers = (:mx => rd, :mn => rd), bundle = true,
+                        reports = (:mx => (instance = RecipeKernels.instance_report, solution = RecipeKernels.solution_report),
+                                   :mn => (instance = RecipeKernels.instance_report,)),
                     )
                     slib = CNLPLib.load(sr.libpath)
                     dl(s) = CNLPLib.Libdl.dlsym(slib.handle, s)
@@ -683,6 +711,25 @@ module ExaModelsCompilerTest
                         ) == 0
                         words = split(readline(out))
                         @test parse.(Float64, words[6:8]) == σ .* [3.0, 4.0, 8.0]   # Σy, Σzl, Σzu
+                        # reports: copied out, the solution report in the NLPModels convention
+                        # like a writer; `mn` has no solution report (0, nothing to report)
+                        n = ccall(sym(:report_instance), Int64, (Int64, Ptr{UInt8}, Int64), id, C_NULL, 0)
+                        b = zeros(UInt8, n)
+                        @test ccall(sym(:report_instance), Int64, (Int64, Ptr{UInt8}, Int64), id, b, n) == n
+                        @test String(b) == "instance: nvar 4 ncon 3"
+                        @test ccall(sym(:report_instance), Int64, (Int64, Ptr{UInt8}, Int64), 99, C_NULL, 0) == -1
+                        rs(buf, cap) = ccall(
+                            sym(:report_solution), Int64,
+                            (Int64, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Cdouble, Cstring, Ptr{UInt8}, Int64),
+                            id, ones(4), ones(3), ones(4), fill(2.0, 4), 1.5, "solved", buf, cap
+                        )
+                        if p == "mx"
+                            n = rs(C_NULL, 0); b = zeros(UInt8, n)
+                            @test rs(b, n) == n
+                            @test String(b) == string("solution: solved 1.5 ", σ * 3.0, " ", σ * 4.0, " ", σ * 8.0)
+                        else
+                            @test rs(C_NULL, 0) == 0
+                        end
                     end
                 end
             end
