@@ -23,6 +23,10 @@ const EM = ExaModels
 
 const LP{T} = Core.LLVMPtr{T, 1}
 const PTX_ARCH = v"7.0"     # lowest target; the driver compiles the PTX for newer GPUs
+# The PTX ISA version, fixed: left to CUDACore it is the newest the build machine's toolkit
+# supports, and a driver older than that toolkit cannot load the library (PTX 9.4 from a
+# CUDA 13.2 build fails on a CUDA 13.0 driver). 7.8 is CUDA 11.8's.
+const PTX_ISA = v"7.8"
 
 # ── device code ─────────────────────────────────────────────────────────────────
 @inline _tid() = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
@@ -132,7 +136,7 @@ the host type's.  A mismatch here would otherwise be a silent miscompute.
 function ptx(f, argtypes::Tuple)
     job = GPUCompiler.CompilerJob(
         CUDACore.methodinstance(typeof(f), Tuple{argtypes...}),
-        CUDACore.compiler_config(CUDACore.device(); arch = PTX_ARCH)
+        CUDACore.compiler_config(CUDACore.device(); arch = PTX_ARCH, ptx = PTX_ISA)
     )
     asm, _ = CUDACore.JuliaContext() do ctx
         GPUCompiler.compile(:asm, job)
@@ -185,7 +189,7 @@ function ExaModelsCompiler._device_source(::Val{:cuda}, p::AbstractString, probe
 
     io = IOBuffer()
     pr(s...) = println(io, s...)
-    pr("    # ── device tier for `$p` (ExaModelsCompilerCUDAExt; PTX for sm_$(PTX_ARCH.major)$(PTX_ARCH.minor)+) ──")
+    pr("    # ── device tier for `$p` (ExaModelsCompilerCUDAExt; PTX $(PTX_ISA) for sm_$(PTX_ARCH.major)$(PTX_ARCH.minor)+) ──")
     pr("    module KERNELS_$p")
     pr("    import ..MiniAOT")
     for (name, f, args) in kernels
