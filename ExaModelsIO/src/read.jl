@@ -25,6 +25,22 @@ function read_model(path::AbstractString; backend = nothing, functions = Dict{St
 end
 
 """
+    read_core(path; backend = nothing, functions = Dict())
+
+Read a model written by [`write_model`](@ref) and return its `ExaCore`: the model
+[`read_model`](@ref) returns, before `ExaModel` is called on it. ExaModelsCompiler
+compiles a core, so this is what `compile_library` takes.
+"""
+function read_core(path::AbstractString; backend = nothing, functions = Dict{String, Any}())
+    return HDF5.h5open(path, "r") do f
+        _check_format(f)
+        s = JSON3.read(_read_text(f["structure"]), Dict{String, Any})
+        a(k) = _read_column(f["arrays/$k"])
+        return _build_core(s, a, k -> _read_column(f[k]), backend, functions)
+    end
+end
+
+"""
     read_solution(path)
 
 Return the solver output stored by `write_model(path, model; solution)` as a
@@ -88,6 +104,17 @@ _slice(v, r) = v[r]
 _count(v) = length(v)
 
 function _build(s, array, column, backend, functions, product_helper)
+    m = ExaModel(_build_core(s, array, column, backend, functions); prod = product_helper)
+    # Variable and parameter indices in the file are global, so the rebuilt model
+    # must lay out its blocks exactly as the file says; a mismatch would be silent.
+    (m.meta.nvar, m.meta.ncon, _count(m.θ)) == (s["nvar"], s["ncon"], s["npar"]) || error(
+        "rebuilt model has $(m.meta.nvar) variables, $(m.meta.ncon) constraints, " *
+            "$(length(m.θ)) parameters; the file says $(s["nvar"]), $(s["ncon"]), $(s["npar"])"
+    )
+    return m
+end
+
+function _build_core(s, array, column, backend, functions)
     missing_ext = filter(k -> !haskey(functions, k), s["extensions"])
     isempty(missing_ext) || throw(
         ArgumentError(
@@ -170,14 +197,7 @@ function _build(s, array, column, backend, functions, product_helper)
             c, _ = ExaModels.add_con!(c, base[b["base_offset"]], g)
         end
     end
-    m = ExaModel(c; prod = product_helper)
-    # Variable and parameter indices in the file are global, so the rebuilt model
-    # must lay out its blocks exactly as the file says; a mismatch would be silent.
-    (m.meta.nvar, m.meta.ncon, _count(m.θ)) == (s["nvar"], s["ncon"], s["npar"]) || error(
-        "rebuilt model has $(m.meta.nvar) variables, $(m.meta.ncon) constraints, " *
-            "$(length(m.θ)) parameters; the file says $(s["nvar"]), $(s["ncon"]), $(s["npar"])"
-    )
-    return m
+    return c
 end
 
 _check_offset(got, want, what) = got == want ||

@@ -22,7 +22,7 @@ import NLPModels
 import HDF5
 import JSON3
 
-export write_model, read_model, read_solution
+export write_model, read_model, read_core, read_solution
 
 const FORMAT = "ExaModelsIO"
 # major.minor: a reader accepts files of its major version; a minor version only adds.
