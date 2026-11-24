@@ -15,6 +15,9 @@ end
 function roundtrip_check(m; seed = 1, path = tempname() * ".h5", kwargs...)
     ExaModelsIO.write_model(path, m)
     m2 = ExaModelsIO.read_model(path; kwargs...)
+    # the core `read_core` returns is the one `read_model` wraps
+    mc = ExaModel(ExaModelsIO.read_core(path; (k => v for (k, v) in pairs(kwargs) if k !== :prod)...))
+    @test (mc.meta.nvar, mc.meta.ncon, mc.meta.x0) == (m2.meta.nvar, m2.meta.ncon, m2.meta.x0)
     a, b = m.meta, m2.meta
     @test (a.nvar, a.ncon, a.minimize) == (b.nvar, b.ncon, b.minimize)
     for k in (:x0, :lvar, :uvar, :y0, :lcon, :ucon)
