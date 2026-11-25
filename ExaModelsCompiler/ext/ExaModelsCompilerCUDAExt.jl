@@ -25,8 +25,10 @@ const LP{T} = Core.LLVMPtr{T, 1}
 const PTX_ARCH = v"7.0"     # lowest target; the driver compiles the PTX for newer GPUs
 # The PTX ISA version, fixed: left to CUDACore it is the newest the build machine's toolkit
 # supports, and a driver older than that toolkit cannot load the library (PTX 9.4 from a
-# CUDA 13.2 build fails on a CUDA 13.0 driver). 7.8 is CUDA 11.8's.
-const PTX_ISA = v"7.8"
+# CUDA 13.2 build fails on a CUDA 13.0 driver). 8.1 is CUDA 12.1's (driver R530 or newer);
+# it is the first that allows kernel parameters larger than 4352 bytes, which the kernels of
+# models with large merged blocks need.
+const PTX_ISA = v"8.1"
 
 # ── device code ─────────────────────────────────────────────────────────────────
 @inline _tid() = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
