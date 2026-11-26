@@ -47,6 +47,11 @@ Returns a `SIMDFunction` using the `gen`.
 - `o0`: offset for the function evaluation
 - `o1`: offset for the derivative evaluation
 - `o2`: offset for the second-order derivative evaluation
+
+The body is built as is: a body that indexes an [`Expression`](@ref) over an
+iterator whose elements are not their own indices (see `ExaModels.DataLookup`) must be
+added through [`add_obj`](@ref) / [`add_con`](@ref), which move the looked-up values
+into the row data.
 """
 function SIMDFunction(::Type{T}, gen::Base.Generator, o0 = 0, o1 = 0, o2 = 0) where {T}
     return _simdfunction(T, gen.f(DataSource()), o0, o1, o2)
