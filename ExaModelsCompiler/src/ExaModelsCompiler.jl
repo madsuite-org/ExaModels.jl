@@ -717,7 +717,7 @@ function _compile(specs::Vector{ModelSpec}, out, libname, trim, bundle, verbose;
         push!(probes, probe)
     end
 
-    appdir = _generate_app(specs, libname; device, probes)
+    appdir = _generate_app(specs, libname; device, probes, bundle)
     verbose &&
         @info "compile_library: generated app" appdir models = [s.prefix for s in specs]
 
@@ -1122,7 +1122,7 @@ end
 
 # ── Generating the app package ────────────────────────────────────────────────
 
-function _generate_app(specs::Vector{ModelSpec}, libname::AbstractString; device::Symbol = :cpu, probes = ())
+function _generate_app(specs::Vector{ModelSpec}, libname::AbstractString; device::Symbol = :cpu, probes = (), bundle::Bool = false)
     appdir = mktempdir(; prefix = "examodelscompiler_")
     modname = _modname(libname)
     srcdir = joinpath(appdir, "src")
@@ -1168,7 +1168,15 @@ function _generate_app(specs::Vector{ModelSpec}, libname::AbstractString; device
     # the import. Importing everything a caller happens to be developing
     # would drag unrelated packages into every app's compile.
     dev = [q for q in _developed_packages() if !any(r -> r.uuid == q.uuid, pkgs)]
-    write(joinpath(appdir, "Project.toml"), _project_toml(modname, exadir, pkgs, dev))
+    # A bundle's runtime looks for artifacts in its own depot only (BundleDepot, imported
+    # first); an unbundled library uses the installed Julia's, so it keeps the default.
+    first = _Pkg[]
+    if bundle
+        dir = joinpath(appdir, "BundleDepot")
+        cp(joinpath(@__DIR__, "BundleDepot"), dir)
+        push!(first, _Pkg("BundleDepot", Base.UUID(_BUNDLEDEPOT_UUID), dir))
+    end
+    write(joinpath(appdir, "Project.toml"), _project_toml(modname, exadir, pkgs, vcat(first, dev)))
     device_src = ""
     if device !== :cpu
         # The device tier: the dependency-free runtime travels as a source file, and
@@ -1178,7 +1186,7 @@ function _generate_app(specs::Vector{ModelSpec}, libname::AbstractString; device
         device_src = "    include(\"miniaot.jl\")\n" *
             join((_device_source(Val(device), s.prefix, probe) for (s, probe) in zip(specs, probes)), "\n")
     end
-    write(joinpath(srcdir, modname * ".jl"), _module_source(modname, specs, pkgs, device_src))
+    write(joinpath(srcdir, modname * ".jl"), _module_source(modname, specs, pkgs, device_src; first))
     return appdir
 end
 
@@ -1189,6 +1197,9 @@ _toml_path(dir::AbstractString) = replace(dir, '\\' => '/')
 # quite happily — so the module name is sanitized here rather than the file
 # name being restricted. For a single model this is the prefix, already checked
 # by `_check_prefix`, and the sanitizing is a no-op.
+# BundleDepot (src/BundleDepot), the first package of a bundled library's image
+const _BUNDLEDEPOT_UUID = "9d2f6a4c-7e1b-4c35-8f0a-2b6d5e1c3a97"
+
 _modname(libname::AbstractString) = "ExaLib_" * replace(libname, r"[^A-Za-z0-9_]" => "_")
 
 function _project_toml(
@@ -1663,7 +1674,7 @@ function _instantiation_source(p::AbstractString, bm::BuilderModel)
     """
 end
 
-function _module_source(modname::AbstractString, specs::Vector{ModelSpec}, pkgs = _Pkg[], device_src = "")
+function _module_source(modname::AbstractString, specs::Vector{ModelSpec}, pkgs = _Pkg[], device_src = ""; first = _Pkg[])
     # Imported for their side effect on `Serialization`: a module has to be
     # loaded before a type it owns can be resolved by `PkgId`, and the
     # deserialize below is what needs them.  A dependency alone is not enough.
@@ -1671,7 +1682,7 @@ function _module_source(modname::AbstractString, specs::Vector{ModelSpec}, pkgs 
     return """
         module $modname
 
-        import ExaModels
+        $(join(("import $(p.name)   # first: its __init__ runs before any other package's\n" for p in first)))import ExaModels
         import Serialization
         $imports
         # Start readers return x0, or (x0, y0, zl, zu); every entry of the
