@@ -14,11 +14,12 @@ module BundleDepot
 function __init__()
     ccall(:jl_generating_output, Cint, ()) == 0 || return   # not while the image is built
     trace = get(ENV, "CNLP_DEPOT_TRACE", "0") == "1"
-    trace && println(stderr, "depot path ", DEPOT_PATH)
+    # Core.stderr, a constant: the call resolves in a trimmed image (Base's stderr does not)
+    trace && Core.println(Core.stderr, "depot path ", join(DEPOT_PATH, ":"))
     root = normpath(joinpath(Sys.BINDIR, ".."))
     keep = filter(d -> startswith(normpath(abspath(d)), root), DEPOT_PATH)
     isempty(keep) || (empty!(DEPOT_PATH); append!(DEPOT_PATH, keep))
-    trace && println(stderr, "depot path (bundle only) ", DEPOT_PATH)
+    trace && Core.println(Core.stderr, "depot path (bundle only) ", join(DEPOT_PATH, ":"))
     return nothing
 end
 
