@@ -189,6 +189,17 @@ module ExaModelsCompilerTest
                 @test occursin("RecipeKernels = \"5c1e4a77", proj)
                 @test occursin("RecipeKernels = {path =", proj)
                 @test occursin("import RecipeKernels", src)
+                # a bundle imports BundleDepot first, so its runtime keeps to its own depot;
+                # an unbundled library (this one) uses the installed Julia's, and does not
+                @test !occursin("BundleDepot", proj) && !occursin("BundleDepot", src)
+                bdir = ExaModelsCompiler._generate_app(
+                    [ExaModelsCompiler._model_spec("rk", ExaModelsCompiler._concretize(c), (8,))], "rk";
+                    bundle = true,
+                )
+                bproj = read(joinpath(bdir, "Project.toml"), String)
+                bsrc = read(joinpath(bdir, "src", "ExaLib_rk.jl"), String)
+                @test occursin("BundleDepot = {path =", bproj) && isfile(joinpath(bdir, "BundleDepot", "src", "BundleDepot.jl"))
+                @test findfirst("import BundleDepot", bsrc).start < findfirst("import ExaModels", bsrc).start
 
                 # And the property those two exist for: a *different* process, whose
                 # only knowledge of RecipeKernels is what the generated project says,
